@@ -1,0 +1,25 @@
+# KaraokeTyper Requirements
+# Python 3.12+
+
+# Speech Recognition
+vosk==0.3.45
+
+# Audio Processing
+sounddevice==0.4.6
+numpy==1.24.3
+
+# GTK4 + libadwaita
+PyGObject==3.46.0
+
+# Keyboard/Mouse Input
+pynput==1.7.6
+
+# Database
+# (SQLite is built-in to Python)
+
+# Development Dependencies (optional)
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.7.0
+flake8>=6.1.0
+mypy>=1.5.0

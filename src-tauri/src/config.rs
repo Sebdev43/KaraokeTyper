@@ -7,10 +7,10 @@ pub struct AppConfig {
     pub shortcut: String,
     pub audio_device_index: usize,
     #[serde(default)]
-    pub audio_device_name: Option<String>,  // Device name for robust matching across OS/versions
-    pub model: String,
+    pub audio_device_name: Option<String>, // Device name for robust matching across OS/versions
+    pub model: String, // Canary model: canary-1b-flash, canary-1b, canary-1b-v2
     pub key_delay_ms: u64,
-    pub language: String,  // Whisper language code (en, fr, es, de, etc.)
+    pub language: String, // Language code: fr, en, es, de, etc.
 }
 
 impl Default for AppConfig {
@@ -18,18 +18,17 @@ impl Default for AppConfig {
         Self {
             shortcut: "CommandOrControl+Space".to_string(),
             audio_device_index: 0,
-            audio_device_name: None,  // Will use default device
-            model: "base".to_string(),
+            audio_device_name: None,              // Will use default device
+            model: "canary-1b-flash".to_string(), // NVIDIA Canary-1B Flash (fast, accurate)
             key_delay_ms: 8,
-            language: "fr".to_string(),  // Default to French
+            language: "fr".to_string(), // Default to French
         }
     }
 }
 
 impl AppConfig {
     pub fn config_path() -> Result<PathBuf, String> {
-        let config_dir = dirs::config_dir()
-            .ok_or("Failed to get config directory")?;
+        let config_dir = dirs::config_dir().ok_or("Failed to get config directory")?;
 
         let app_config_dir = config_dir.join("karaoketyper");
 
@@ -65,8 +64,7 @@ impl AppConfig {
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
-        fs::write(&config_path, json)
-            .map_err(|e| format!("Failed to write config file: {}", e))?;
+        fs::write(&config_path, json).map_err(|e| format!("Failed to write config file: {}", e))?;
 
         Ok(())
     }

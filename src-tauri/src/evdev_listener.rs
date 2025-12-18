@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
-use crate::{AppState, do_start_recording, do_stop_recording, do_type_text};
+use crate::{do_start_recording, do_stop_recording, do_type_text, AppState};
 
 const KEY_SPACE: Key = Key::KEY_SPACE;
 const KEY_LEFTCTRL: Key = Key::KEY_LEFTCTRL;
@@ -17,7 +17,7 @@ const MAX_RECONNECT_ATTEMPTS: u32 = 5;
 const RECONNECT_DELAY_MS: u64 = 2000;
 
 struct DeviceState {
-    path: PathBuf,
+    _path: PathBuf,
     reconnect_attempts: AtomicU32,
     is_active: AtomicBool,
 }
@@ -25,8 +25,8 @@ struct DeviceState {
 fn find_keyboard_devices() -> Result<Vec<PathBuf>, String> {
     let mut keyboards = Vec::new();
 
-    for entry in std::fs::read_dir("/dev/input")
-        .map_err(|e| format!("Failed to read /dev/input: {}", e))?
+    for entry in
+        std::fs::read_dir("/dev/input").map_err(|e| format!("Failed to read /dev/input: {}", e))?
     {
         let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
         let path = entry.path();
@@ -79,7 +79,7 @@ pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
 
     for keyboard_path in keyboards {
         let state = Arc::new(DeviceState {
-            path: keyboard_path.clone(),
+            _path: keyboard_path.clone(),
             reconnect_attempts: AtomicU32::new(0),
             is_active: AtomicBool::new(true),
         });
@@ -137,11 +137,14 @@ fn monitor_keyboard_device_with_reconnect(
     space_pressed: Arc<AtomicBool>,
     is_recording: Arc<AtomicBool>,
     state: Arc<DeviceState>,
-    device_states: Arc<Mutex<HashMap<PathBuf, Arc<DeviceState>>>>,
+    _device_states: Arc<Mutex<HashMap<PathBuf, Arc<DeviceState>>>>,
 ) {
     loop {
         if !state.is_active.load(Ordering::SeqCst) {
-            println!("[EVDEV] Device {} marked inactive, stopping monitor", device_path.display());
+            println!(
+                "[EVDEV] Device {} marked inactive, stopping monitor",
+                device_path.display()
+            );
             return;
         }
 
@@ -153,7 +156,10 @@ fn monitor_keyboard_device_with_reconnect(
             &is_recording,
         ) {
             Ok(()) => {
-                println!("[EVDEV] Device {} monitor exited cleanly", device_path.display());
+                println!(
+                    "[EVDEV] Device {} monitor exited cleanly",
+                    device_path.display()
+                );
                 return;
             }
             Err(e) => {
@@ -192,7 +198,10 @@ fn monitor_keyboard_device_with_reconnect(
                     continue;
                 }
 
-                println!("[EVDEV] Attempting to reconnect to {}...", device_path.display());
+                println!(
+                    "[EVDEV] Attempting to reconnect to {}...",
+                    device_path.display()
+                );
             }
         }
     }
@@ -216,9 +225,9 @@ fn monitor_keyboard_device(
     );
 
     loop {
-        let events = device.fetch_events().map_err(|e| {
-            format!("Device {} lost: {}", device_name, e)
-        })?;
+        let events = device
+            .fetch_events()
+            .map_err(|e| format!("Device {} lost: {}", device_name, e))?;
 
         for event in events {
             if let InputEventKind::Key(key) = event.kind() {
@@ -240,22 +249,42 @@ fn monitor_keyboard_device(
                         space_pressed.store(true, Ordering::SeqCst);
 
                         if ctrl_is_pressed && !is_recording.load(Ordering::SeqCst) {
-                            println!("[EVDEV] Ctrl+Space PRESSED - starting cpal recording");
+                            let t0 = std::time::Instant::now();
+                            println!("[TIMING] ========== RECORDING SESSION START ==========");
+                            println!("[TIMING] T+0ms: Ctrl+Space PRESSED");
                             is_recording.store(true, Ordering::SeqCst);
+
+                            // Store t0 in AppState for later use
+                            {
+                                let state = app_handle.state::<AppState>();
+                                *state.recording_start_time.lock().unwrap() = Some(t0);
+                            }
 
                             // Show overlay
                             if let Some(overlay_win) = app_handle.get_webview_window("overlay") {
                                 let _ = overlay_win.show();
                                 let _ = overlay_win.set_focus();
                             }
+                            println!("[TIMING] T+{}ms: overlay shown", t0.elapsed().as_millis());
 
                             // Start recording via cpal
                             let app_clone = app_handle.clone();
                             tauri::async_runtime::spawn(async move {
+                                println!(
+                                    "[TIMING] T+{}ms: async spawn started",
+                                    t0.elapsed().as_millis()
+                                );
                                 let state = app_clone.state::<AppState>();
                                 match do_start_recording(app_clone.clone(), &state).await {
-                                    Ok(_) => println!("[EVDEV] ✅ cpal recording started"),
-                                    Err(e) => println!("[EVDEV] ❌ Failed to start recording: {}", e),
+                                    Ok(_) => println!(
+                                        "[TIMING] T+{}ms: do_start_recording() returned OK",
+                                        t0.elapsed().as_millis()
+                                    ),
+                                    Err(e) => println!(
+                                        "[TIMING] T+{}ms: do_start_recording() FAILED: {}",
+                                        t0.elapsed().as_millis(),
+                                        e
+                                    ),
                                 }
                             });
                         }
@@ -264,43 +293,88 @@ fn monitor_keyboard_device(
 
                         // Stop recording if active (check is_recording, not key states)
                         if is_recording.load(Ordering::SeqCst) {
-                            println!("[EVDEV] Space RELEASED while recording - stopping cpal recording");
+                            // Get t0 from AppState
+                            let t0 = {
+                                let state = app_handle.state::<AppState>();
+                                let guard = state.recording_start_time.lock().unwrap();
+                                guard.unwrap_or_else(std::time::Instant::now)
+                            };
+                            println!("[TIMING] T+{}ms: Space RELEASED", t0.elapsed().as_millis());
                             is_recording.store(false, Ordering::SeqCst);
 
                             // Stop recording, transcribe, and type
                             let app_clone = app_handle.clone();
                             tauri::async_runtime::spawn(async move {
                                 let state = app_clone.state::<AppState>();
+                                let t0 = state
+                                    .recording_start_time
+                                    .lock()
+                                    .unwrap()
+                                    .unwrap_or_else(std::time::Instant::now);
 
+                                println!(
+                                    "[TIMING] T+{}ms: calling do_stop_recording()",
+                                    t0.elapsed().as_millis()
+                                );
                                 match do_stop_recording(app_clone.clone(), &state).await {
                                     Ok(transcription) => {
-                                        println!("[EVDEV] ✅ Transcription: '{}'", transcription);
+                                        println!(
+                                            "[TIMING] T+{}ms: transcription complete: '{}'",
+                                            t0.elapsed().as_millis(),
+                                            transcription
+                                        );
                                         if !transcription.is_empty() {
                                             // Hide overlay before typing
-                                            if let Some(overlay_win) = app_clone.get_webview_window("overlay") {
+                                            if let Some(overlay_win) =
+                                                app_clone.get_webview_window("overlay")
+                                            {
                                                 let _ = overlay_win.hide();
                                             }
                                             // Longer delay for Wayland focus to return to previous window
-                                            println!("[EVDEV] 💤 Waiting 400ms for focus to return...");
-                                            tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+                                            println!(
+                                                "[TIMING] T+{}ms: waiting 400ms for focus",
+                                                t0.elapsed().as_millis()
+                                            );
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(
+                                                400,
+                                            ))
+                                            .await;
 
                                             // Type the text
-                                            println!("[EVDEV] 📝 Pasting text now...");
+                                            println!(
+                                                "[TIMING] T+{}ms: pasting text",
+                                                t0.elapsed().as_millis()
+                                            );
                                             if let Err(e) = do_type_text(transcription).await {
-                                                println!("[EVDEV] ❌ Failed to type text: {}", e);
+                                                println!(
+                                                    "[TIMING] T+{}ms: paste FAILED: {}",
+                                                    t0.elapsed().as_millis(),
+                                                    e
+                                                );
                                             } else {
-                                                println!("[EVDEV] ✅ Text pasted successfully!");
+                                                println!("[TIMING] T+{}ms: ========== SESSION COMPLETE ==========", t0.elapsed().as_millis());
                                             }
                                         } else {
-                                            println!("[EVDEV] No speech detected");
-                                            if let Some(overlay_win) = app_clone.get_webview_window("overlay") {
+                                            println!(
+                                                "[TIMING] T+{}ms: no speech detected",
+                                                t0.elapsed().as_millis()
+                                            );
+                                            if let Some(overlay_win) =
+                                                app_clone.get_webview_window("overlay")
+                                            {
                                                 let _ = overlay_win.hide();
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        println!("[EVDEV] ❌ Failed to stop recording: {}", e);
-                                        if let Some(overlay_win) = app_clone.get_webview_window("overlay") {
+                                        println!(
+                                            "[TIMING] T+{}ms: stop_recording FAILED: {}",
+                                            t0.elapsed().as_millis(),
+                                            e
+                                        );
+                                        if let Some(overlay_win) =
+                                            app_clone.get_webview_window("overlay")
+                                        {
                                             let _ = overlay_win.hide();
                                         }
                                     }

@@ -1,10 +1,12 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { Loader2, Mic } from "lucide-react";
-import { useEffect, useRef, useState, useCallback } from "react";
-import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { Loader2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getAudioCapture, transcribeAudio } from "@/lib/audioCapture";
+import { cn } from "@/lib/utils";
+
+// Static equalizer bar heights (looks like frozen audio waveform)
+const EQUALIZER_BARS = [0.3, 0.7, 0.5, 0.9, 0.4, 0.8, 0.6, 0.95, 0.5, 0.7, 0.4, 0.85, 0.55];
 
 interface StatusEvent {
   status: string;
@@ -19,7 +21,6 @@ const logToRust = (msg: string) => {
 
 function RecordingOverlay() {
   const [status, setStatus] = useState<string>("idle");
-  const [isRecording, setIsRecording] = useState<boolean>(false);
   const isRecordingRef = useRef<boolean>(false);
   const audioCapture = useRef(getAudioCapture());
 
@@ -32,7 +33,6 @@ function RecordingOverlay() {
   const handleStartRecording = useCallback(async () => {
     logToRust("[Overlay] Starting Web Audio recording...");
     setStatus("recording");
-    setIsRecording(true);
     isRecordingRef.current = true;
 
     try {
@@ -41,7 +41,6 @@ function RecordingOverlay() {
     } catch (error) {
       logToRust(`[Overlay] Failed to start Web Audio recording: ${error}`);
       setStatus("idle");
-      setIsRecording(false);
       isRecordingRef.current = false;
     }
   }, []);
@@ -50,7 +49,6 @@ function RecordingOverlay() {
   const handleStopRecording = useCallback(async () => {
     logToRust("[Overlay] Stopping Web Audio recording...");
     setStatus("processing");
-    setIsRecording(false);
     isRecordingRef.current = false;
 
     try {
@@ -63,15 +61,13 @@ function RecordingOverlay() {
         return;
       }
 
-      logToRust(
-        `[Overlay] Got ${audioData.length} samples, sending to backend...`,
-      );
+      logToRust(`[Overlay] Got ${audioData.length} samples, sending to backend...`);
 
       // Send to backend for transcription
       const transcription = await transcribeAudio(audioData);
       logToRust(`[Overlay] Transcription: "${transcription}"`);
 
-      if (transcription && transcription.trim()) {
+      if (transcription?.trim()) {
         // Type the transcription
         await invoke("type_text", { text: transcription.trim() });
         logToRust("[Overlay] Text typed successfully");
@@ -90,15 +86,12 @@ function RecordingOverlay() {
 
     const setupListeners = async () => {
       // Listen for status changes from backend
-      const unlistenStatus = await listen<StatusEvent>(
-        "status-changed",
-        (event) => {
-          // Only update status if not controlled by Web Audio
-          if (!isRecordingRef.current || event.payload.status !== "recording") {
-            setStatus(event.payload.status);
-          }
-        },
-      );
+      const unlistenStatus = await listen<StatusEvent>("status-changed", (event) => {
+        // Only update status if not controlled by Web Audio
+        if (!isRecordingRef.current || event.payload.status !== "recording") {
+          setStatus(event.payload.status);
+        }
+      });
       unlisteners.push(unlistenStatus);
 
       // Listen for recording started event - trigger Web Audio capture
@@ -127,54 +120,42 @@ function RecordingOverlay() {
     };
   }, [handleStartRecording, handleStopRecording]);
 
-  const getStatusVariant = (): "default" | "secondary" | "destructive" => {
-    switch (status) {
-      case "recording":
-        return "destructive";
-      case "processing":
-        return "secondary";
-      case "idle":
-        return "default";
-      default:
-        return "secondary";
-    }
-  };
-
-  const getStatusLabel = () => {
-    switch (status) {
-      case "recording":
-        return "Recording...";
-      case "processing":
-        return "Processing...";
-      case "idle":
-        return "Ready";
-      default:
-        return "Ready";
-    }
-  };
-
   return (
-    <div className="flex items-center gap-2 p-2 bg-background/80 backdrop-blur-sm rounded-lg border border-border shadow-lg">
+    <div className="flex items-center gap-3 px-4 py-3 bg-zinc-900/95 backdrop-blur-sm rounded-xl border border-zinc-700 shadow-2xl">
+      {/* Big Recording Dot */}
       <div
         className={cn(
-          "h-3 w-3 rounded-full",
-          status === "recording" && "bg-destructive animate-pulse",
-          status === "processing" && "bg-yellow-500",
-          status === "idle" && "bg-green-500",
-          !["recording", "processing", "idle"].includes(status) &&
-            "bg-muted-foreground",
+          "h-5 w-5 rounded-full flex-shrink-0 shadow-lg",
+          status === "recording" && "bg-red-500 shadow-red-500/50",
+          status === "processing" && "bg-amber-500 shadow-amber-500/50",
+          status === "idle" && "bg-emerald-500 shadow-emerald-500/50",
+          !["recording", "processing", "idle"].includes(status) && "bg-zinc-500",
         )}
       />
-      <Badge
-        variant={getStatusVariant()}
-        className={cn("text-xs", isRecording && "animate-pulse")}
-      >
-        {status === "recording" && <Mic className="h-3 w-3 mr-1" />}
-        {status === "processing" && (
-          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-        )}
-        {getStatusLabel()}
-      </Badge>
+
+      {/* Static Equalizer Bars */}
+      {status === "recording" && (
+        <div className="flex items-end gap-[3px] h-6">
+          {EQUALIZER_BARS.map((height, i) => (
+            <div
+              key={`bar-${i}-${height}`}
+              className="w-[3px] bg-red-500 rounded-full"
+              style={{ height: `${height * 24}px` }}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Processing Spinner */}
+      {status === "processing" && (
+        <div className="flex items-center gap-2">
+          <Loader2 className="h-5 w-5 text-amber-500 animate-spin" />
+          <span className="text-sm text-zinc-300 font-medium">Transcription...</span>
+        </div>
+      )}
+
+      {/* Idle State */}
+      {status === "idle" && <span className="text-sm text-zinc-400 font-medium">Prêt</span>}
     </div>
   );
 }

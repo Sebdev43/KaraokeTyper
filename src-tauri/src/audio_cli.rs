@@ -36,11 +36,12 @@ impl AudioCaptureCli {
 
         // Build parec command with optional device
         // Format: signed 16-bit little-endian, mono, 16kHz
+        // Low latency settings for responsive push-to-talk
         let mut args = vec![
             "--format=s16le".to_string(),
             "--rate=16000".to_string(),
             "--channels=1".to_string(),
-            "--latency-msec=50".to_string(),
+            "--latency-msec=10".to_string(),
             "--raw".to_string(),
         ];
 
@@ -58,7 +59,10 @@ impl AudioCaptureCli {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| {
-                format!("Failed to start parec: {}. Install with: sudo apt install pulseaudio-utils", e)
+                format!(
+                    "Failed to start parec: {}. Install with: sudo apt install pulseaudio-utils",
+                    e
+                )
             })?;
 
         println!("[AUDIO_CLI] ✅ Started parec recording (16kHz mono S16LE)");
@@ -67,9 +71,10 @@ impl AudioCaptureCli {
         *recording_process.lock().unwrap() = Some(child);
 
         // Spawn thread to read audio data
+        // Use small buffer (1024 bytes = 512 samples = 32ms) for low latency
         std::thread::spawn(move || {
-            let mut reader = std::io::BufReader::with_capacity(4096, stdout);
-            let mut buf = [0u8; 4096]; // 2048 samples at 16-bit
+            let mut reader = std::io::BufReader::with_capacity(1024, stdout);
+            let mut buf = [0u8; 1024]; // 512 samples at 16-bit = 32ms
 
             loop {
                 if !*is_recording.lock().unwrap() {
@@ -112,17 +117,23 @@ impl AudioCaptureCli {
             let _ = child.wait();
         }
 
-        // Give the reader thread time to finish
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Give the reader thread time to finish (reduced for low latency)
+        std::thread::sleep(std::time::Duration::from_millis(50));
 
         let buffer = self.audio_buffer.lock().unwrap().clone();
-        let elapsed = self.recording_start_time.lock().unwrap()
+        let elapsed = self
+            .recording_start_time
+            .lock()
+            .unwrap()
             .map(|t| t.elapsed().as_millis())
             .unwrap_or(0);
 
         println!("[AUDIO_CLI] 🛑 Recording stopped after {}ms", elapsed);
-        println!("[AUDIO_CLI] 🛑 Buffer: {} samples = {:.2}s of audio",
-                 buffer.len(), buffer.len() as f32 / 16000.0);
+        println!(
+            "[AUDIO_CLI] 🛑 Buffer: {} samples = {:.2}s of audio",
+            buffer.len(),
+            buffer.len() as f32 / 16000.0
+        );
 
         if buffer.is_empty() {
             return Err("No audio data captured".to_string());
@@ -130,19 +141,25 @@ impl AudioCaptureCli {
 
         // Check for non-silent samples
         let non_silent = buffer.iter().filter(|&&s| s.abs() > 0.01).count();
-        println!("[AUDIO_CLI] 📊 Non-silent samples: {}/{} ({:.1}%)",
-                 non_silent, buffer.len(), 100.0 * non_silent as f32 / buffer.len() as f32);
+        println!(
+            "[AUDIO_CLI] 📊 Non-silent samples: {}/{} ({:.1}%)",
+            non_silent,
+            buffer.len(),
+            100.0 * non_silent as f32 / buffer.len() as f32
+        );
 
         Ok(buffer)
     }
 
     /// Get the audio buffer (for compatibility with existing code)
+    #[allow(dead_code)] // Kept for API compatibility
     pub fn get_buffer(&self) -> Vec<f32> {
         self.audio_buffer.lock().unwrap().clone()
     }
 }
 
 /// Check if CLI audio tools are available
+#[allow(dead_code)] // Kept for runtime tool detection
 pub fn check_cli_tools() -> Option<&'static str> {
     // Try parec first (most common)
     if Command::new("parec").arg("--version").output().is_ok() {

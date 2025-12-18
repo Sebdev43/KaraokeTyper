@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 ///
 /// *Note: On Wayland, rdev may have limitations. For full Wayland support,
 /// consider using evdev as a fallback (Linux-only, requires input group permissions)
-
+#[allow(dead_code)] // Used on Windows/macOS, Linux uses evdev_listener
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HotkeyEvent {
     PushToTalkPressed,
@@ -17,6 +17,7 @@ pub enum HotkeyEvent {
 }
 
 /// Start the cross-platform keyboard listener for push-to-talk
+#[allow(dead_code)] // Used on Windows/macOS, Linux uses evdev_listener
 pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String> {
     println!("[KEYBOARD] Starting cross-platform keyboard listener...");
     println!("[KEYBOARD] Platform: {}", std::env::consts::OS);
@@ -35,26 +36,14 @@ pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String
     std::thread::spawn(move || {
         println!("[KEYBOARD] rdev listener thread started");
 
-        let callback = move |event: Event| {
-            match event.event_type {
-                EventType::KeyPress(key) => {
-                    handle_key_press(
-                        key,
-                        &ctrl_pressed_clone,
-                        &space_pressed_clone,
-                        &tx,
-                    );
-                }
-                EventType::KeyRelease(key) => {
-                    handle_key_release(
-                        key,
-                        &ctrl_pressed_clone,
-                        &space_pressed_clone,
-                        &tx,
-                    );
-                }
-                _ => {}
+        let callback = move |event: Event| match event.event_type {
+            EventType::KeyPress(key) => {
+                handle_key_press(key, &ctrl_pressed_clone, &space_pressed_clone, &tx);
             }
+            EventType::KeyRelease(key) => {
+                handle_key_release(key, &ctrl_pressed_clone, &space_pressed_clone, &tx);
+            }
+            _ => {}
         };
 
         // Start listening - this blocks
@@ -65,7 +54,9 @@ pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String
             #[cfg(target_os = "linux")]
             {
                 eprintln!("[KEYBOARD] ⚠️  If on Wayland, you may need to:");
-                eprintln!("[KEYBOARD]    1. Add user to 'input' group: sudo usermod -aG input $USER");
+                eprintln!(
+                    "[KEYBOARD]    1. Add user to 'input' group: sudo usermod -aG input $USER"
+                );
                 eprintln!("[KEYBOARD]    2. Log out and log back in");
                 eprintln!("[KEYBOARD]    3. Or use X11 session instead of Wayland");
             }
@@ -112,7 +103,9 @@ pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String
                             match crate::do_type_text(transcription).await {
                                 Ok(_) => {
                                     println!("[KEYBOARD] ✅ Text pasted successfully");
-                                    if let Some(overlay_win) = app_clone.get_webview_window("overlay") {
+                                    if let Some(overlay_win) =
+                                        app_clone.get_webview_window("overlay")
+                                    {
                                         let _ = overlay_win.emit("recording-stopped", ());
                                         let _ = overlay_win.hide();
                                     }
@@ -135,6 +128,7 @@ pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String
 }
 
 /// Handle key press events
+#[allow(dead_code)] // Used on Windows/macOS
 fn handle_key_press(
     key: Key,
     ctrl_pressed: &Arc<AtomicBool>,
@@ -160,6 +154,7 @@ fn handle_key_press(
 }
 
 /// Handle key release events
+#[allow(dead_code)] // Used on Windows/macOS
 fn handle_key_release(
     key: Key,
     ctrl_pressed: &Arc<AtomicBool>,
@@ -198,11 +193,9 @@ pub fn check_linux_permissions() -> Result<(), String> {
     let groups = String::from_utf8_lossy(&output.stdout);
 
     if !groups.contains("input") {
-        return Err(format!(
-            "User is not in 'input' group. Run:\n\
+        return Err("User is not in 'input' group. Run:\n\
             sudo usermod -aG input $USER\n\
-            Then log out and log back in."
-        ));
+            Then log out and log back in.".to_string());
     }
 
     Ok(())

@@ -42,8 +42,15 @@ dirs = "5.0"
 cpal = "0.15"
 hound = "3.5"
 
-# Speech-to-text (cross-platform)
-whisper-rs = "0.11"
+# Zip archive for GNOME extension packaging
+zip = "2.2"
+
+# Lock-free ring buffer for zero-latency audio capture
+ringbuf = "0.4"
+
+# Speech-to-text - NVIDIA Canary-1B via Python subprocess
+# whisper-rs removed - migrated to Canary-1B for better accuracy/speed
+thiserror = "2.0"
 
 # Clipboard (cross-platform: Windows/macOS/Linux+Wayland)
 arboard = "3.4"
@@ -58,11 +65,6 @@ rdev = "0.5"
 [target.'cfg(target_os = "linux")'.dependencies]
 # evdev for low-level keyboard access on Wayland (fallback)
 evdev = "0.12"
-# DBus for GNOME integration (optional)
-zbus = "5"
-# Note: uinput is implemented directly via libc ioctl calls (no external crate needed)
 
 [features]
 default = []
-# Enable Metal acceleration on macOS
-metal = ["whisper-rs/metal"]

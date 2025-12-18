@@ -1,0 +1,11 @@
+# NVIDIA NeMo for Canary-1B Speech Recognition
+nemo_toolkit[asr]>=1.23.0
+
+# Audio processing
+soundfile>=0.12.0
+numpy>=1.24.0
+
+# Dependencies (usually auto-installed by NeMo)
+torch>=2.0.0
+omegaconf>=2.3.0
+hydra-core>=1.3.0

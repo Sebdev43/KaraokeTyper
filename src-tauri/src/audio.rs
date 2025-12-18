@@ -4,6 +4,8 @@ use hound::{WavSpec, WavWriter};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+// AudioCapture uses cpal - used on Windows/macOS, Linux uses audio_cli
+#[allow(dead_code)]
 pub struct AudioCapture {
     pub is_recording: Arc<Mutex<bool>>,
     pub audio_buffer: Arc<Mutex<Vec<f32>>>,
@@ -12,6 +14,7 @@ pub struct AudioCapture {
     recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
+#[allow(dead_code)] // Used on Windows/macOS, Linux uses audio_cli
 impl AudioCapture {
     pub fn new(target_sample_rate: u32) -> Self {
         Self {
@@ -27,7 +30,8 @@ impl AudioCapture {
         let host = cpal::default_host();
 
         // List all input devices for debugging
-        let devices: Vec<_> = host.input_devices()
+        let devices: Vec<_> = host
+            .input_devices()
             .map_err(|e| format!("Failed to enumerate devices: {}", e))?
             .collect();
 
@@ -39,15 +43,30 @@ impl AudioCapture {
 
         // CRITICAL: The "pipewire" device in cpal DOES NOT produce callbacks!
         // Use "default" which routes through ALSA→PipeWire bridge and works.
-        let device = devices.iter()
+        let device = devices
+            .iter()
             // First: "default" device - works via ALSA→PipeWire bridge
             .find(|d| d.name().map(|n| n == "default").unwrap_or(false))
             // Second: USB devices (webcams like Logitech C270)
-            .or_else(|| devices.iter().find(|d| d.name().map(|n| n.starts_with("hw:CARD=U")).unwrap_or(false)))
+            .or_else(|| {
+                devices.iter().find(|d| {
+                    d.name()
+                        .map(|n| n.starts_with("hw:CARD=U"))
+                        .unwrap_or(false)
+                })
+            })
             // Third: any hw:CARD with input capability
-            .or_else(|| devices.iter().find(|d| d.name().map(|n| n.starts_with("hw:CARD=")).unwrap_or(false)))
+            .or_else(|| {
+                devices
+                    .iter()
+                    .find(|d| d.name().map(|n| n.starts_with("hw:CARD=")).unwrap_or(false))
+            })
             // Last resort: first device that's NOT "pipewire"
-            .or_else(|| devices.iter().find(|d| d.name().map(|n| n != "pipewire").unwrap_or(true)))
+            .or_else(|| {
+                devices
+                    .iter()
+                    .find(|d| d.name().map(|n| n != "pipewire").unwrap_or(true))
+            })
             .cloned()
             .ok_or("No input device available")?;
 
@@ -59,7 +78,7 @@ impl AudioCapture {
 
     /// Start recording from a specific cpal device
     fn start_recording_from_device(&self, device: cpal::Device) -> Result<Stream, String> {
-        let actual_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
+        let _actual_name = device.name().unwrap_or_else(|_| "Unknown".to_string());
 
         // Get default config to know the sample format and supported rates
         let default_config = device
@@ -69,14 +88,20 @@ impl AudioCapture {
         let device_sample_rate = default_config.sample_rate().0;
 
         // Try target sample rate first, fallback to device native rate
-        let (config, actual_rate) = self.try_create_config(&device, self.target_sample_rate)
+        let (config, actual_rate) = self
+            .try_create_config(&device, self.target_sample_rate)
             .or_else(|_| {
-                println!("[AUDIO] ⚠️  Device doesn't support {}Hz, using native {}Hz (will resample)",
-                         self.target_sample_rate, device_sample_rate);
+                println!(
+                    "[AUDIO] ⚠️  Device doesn't support {}Hz, using native {}Hz (will resample)",
+                    self.target_sample_rate, device_sample_rate
+                );
                 self.try_create_config(&device, device_sample_rate)
             })?;
 
-        println!("[AUDIO] 📊 Capturing at {}Hz (target: {}Hz)", actual_rate, self.target_sample_rate);
+        println!(
+            "[AUDIO] 📊 Capturing at {}Hz (target: {}Hz)",
+            actual_rate, self.target_sample_rate
+        );
 
         // Store actual sample rate for resampling
         *self.actual_sample_rate.lock().unwrap() = actual_rate;
@@ -89,15 +114,26 @@ impl AudioCapture {
         *self.recording_start_time.lock().unwrap() = Some(std::time::Instant::now());
 
         let stream = match default_config.sample_format() {
-            cpal::SampleFormat::F32 => self.build_stream::<f32>(&device, &config, is_recording, audio_buffer),
-            cpal::SampleFormat::I16 => self.build_stream::<i16>(&device, &config, is_recording, audio_buffer),
-            cpal::SampleFormat::U16 => self.build_stream::<u16>(&device, &config, is_recording, audio_buffer),
+            cpal::SampleFormat::F32 => {
+                self.build_stream::<f32>(&device, &config, is_recording, audio_buffer)
+            }
+            cpal::SampleFormat::I16 => {
+                self.build_stream::<i16>(&device, &config, is_recording, audio_buffer)
+            }
+            cpal::SampleFormat::U16 => {
+                self.build_stream::<u16>(&device, &config, is_recording, audio_buffer)
+            }
             _ => return Err("Unsupported sample format".to_string()),
         }?;
 
-        stream.play().map_err(|e| format!("Stream play error: {}", e))?;
+        stream
+            .play()
+            .map_err(|e| format!("Stream play error: {}", e))?;
 
-        println!("[AUDIO] ✅ Stream started at {:?}", std::time::Instant::now());
+        println!(
+            "[AUDIO] ✅ Stream started at {:?}",
+            std::time::Instant::now()
+        );
         Ok(stream)
     }
 
@@ -106,7 +142,11 @@ impl AudioCapture {
     }
 
     /// Find device by name (robust, works across OS versions and cpal updates)
-    pub fn start_recording_with_device_name(&self, device_index: usize, device_name: Option<&str>) -> Result<Stream, String> {
+    pub fn start_recording_with_device_name(
+        &self,
+        _device_index: usize,
+        device_name: Option<&str>,
+    ) -> Result<Stream, String> {
         let host = cpal::default_host();
 
         // Get all input devices
@@ -137,15 +177,18 @@ impl AudioCapture {
             // Try partial name matching
             let found = devices.iter().find(|d| {
                 if let Ok(n) = d.name() {
-                    n.to_lowercase().contains(&name.to_lowercase()) ||
-                    name.to_lowercase().contains(&n.to_lowercase())
+                    n.to_lowercase().contains(&name.to_lowercase())
+                        || name.to_lowercase().contains(&n.to_lowercase())
                 } else {
                     false
                 }
             });
 
             if let Some(dev) = found {
-                println!("[AUDIO] 🎤 Found device by name: {}", dev.name().unwrap_or_default());
+                println!(
+                    "[AUDIO] 🎤 Found device by name: {}",
+                    dev.name().unwrap_or_default()
+                );
                 dev.clone()
             } else {
                 // Name not found - find a working device
@@ -157,7 +200,10 @@ impl AudioCapture {
             find_working_device(&devices, &host)?
         };
 
-        fn find_working_device(devices: &[cpal::Device], host: &cpal::Host) -> Result<cpal::Device, String> {
+        fn find_working_device(
+            devices: &[cpal::Device],
+            host: &cpal::Host,
+        ) -> Result<cpal::Device, String> {
             use cpal::traits::DeviceTrait;
 
             // CRITICAL: The "pipewire" device in cpal DOES NOT produce callbacks!
@@ -171,9 +217,10 @@ impl AudioCapture {
             // NEVER use the device named "pipewire" directly!
 
             // Priority 1: "default" device - works via ALSA→PipeWire bridge
-            if let Some(dev) = devices.iter().find(|d| {
-                d.name().map(|n| n == "default").unwrap_or(false)
-            }) {
+            if let Some(dev) = devices
+                .iter()
+                .find(|d| d.name().map(|n| n == "default").unwrap_or(false))
+            {
                 println!("[AUDIO] 🎤 Using 'default' device (ALSA→PipeWire bridge)");
                 return Ok(dev.clone());
             }
@@ -190,25 +237,38 @@ impl AudioCapture {
 
             // Priority 3: USB devices (hw:CARD=U*) - webcams, USB mics
             if let Some(dev) = devices.iter().find(|d| {
-                d.name().map(|n| n.starts_with("hw:CARD=U")).unwrap_or(false)
+                d.name()
+                    .map(|n| n.starts_with("hw:CARD=U"))
+                    .unwrap_or(false)
             }) {
-                println!("[AUDIO] 🎤 Using USB device: {}", dev.name().unwrap_or_default());
+                println!(
+                    "[AUDIO] 🎤 Using USB device: {}",
+                    dev.name().unwrap_or_default()
+                );
                 return Ok(dev.clone());
             }
 
             // Priority 4: Any hw:CARD device (direct hardware)
-            if let Some(dev) = devices.iter().find(|d| {
-                d.name().map(|n| n.starts_with("hw:CARD=")).unwrap_or(false)
-            }) {
-                println!("[AUDIO] 🎤 Using hardware device: {}", dev.name().unwrap_or_default());
+            if let Some(dev) = devices
+                .iter()
+                .find(|d| d.name().map(|n| n.starts_with("hw:CARD=")).unwrap_or(false))
+            {
+                println!(
+                    "[AUDIO] 🎤 Using hardware device: {}",
+                    dev.name().unwrap_or_default()
+                );
                 return Ok(dev.clone());
             }
 
             // Priority 5: First available that's NOT "pipewire"
-            if let Some(dev) = devices.iter().find(|d| {
-                d.name().map(|n| n != "pipewire").unwrap_or(true)
-            }) {
-                println!("[AUDIO] 🎤 Using first available device: {}", dev.name().unwrap_or_default());
+            if let Some(dev) = devices
+                .iter()
+                .find(|d| d.name().map(|n| n != "pipewire").unwrap_or(true))
+            {
+                println!(
+                    "[AUDIO] 🎤 Using first available device: {}",
+                    dev.name().unwrap_or_default()
+                );
                 return Ok(dev.clone());
             }
 
@@ -226,14 +286,20 @@ impl AudioCapture {
         let device_sample_rate = default_config.sample_rate().0;
 
         // Try target sample rate first, fallback to device native rate
-        let (config, actual_rate) = self.try_create_config(&device, self.target_sample_rate)
+        let (config, actual_rate) = self
+            .try_create_config(&device, self.target_sample_rate)
             .or_else(|_| {
-                println!("[AUDIO] ⚠️  Device doesn't support {}Hz, using native {}Hz (will resample)",
-                         self.target_sample_rate, device_sample_rate);
+                println!(
+                    "[AUDIO] ⚠️  Device doesn't support {}Hz, using native {}Hz (will resample)",
+                    self.target_sample_rate, device_sample_rate
+                );
                 self.try_create_config(&device, device_sample_rate)
             })?;
 
-        println!("[AUDIO] 📊 Capturing at {}Hz (target: {}Hz)", actual_rate, self.target_sample_rate);
+        println!(
+            "[AUDIO] 📊 Capturing at {}Hz (target: {}Hz)",
+            actual_rate, self.target_sample_rate
+        );
 
         // Store actual sample rate for resampling
         *self.actual_sample_rate.lock().unwrap() = actual_rate;
@@ -246,19 +312,34 @@ impl AudioCapture {
         *self.recording_start_time.lock().unwrap() = Some(std::time::Instant::now());
 
         let stream = match default_config.sample_format() {
-            cpal::SampleFormat::F32 => self.build_stream::<f32>(&device, &config, is_recording, audio_buffer),
-            cpal::SampleFormat::I16 => self.build_stream::<i16>(&device, &config, is_recording, audio_buffer),
-            cpal::SampleFormat::U16 => self.build_stream::<u16>(&device, &config, is_recording, audio_buffer),
+            cpal::SampleFormat::F32 => {
+                self.build_stream::<f32>(&device, &config, is_recording, audio_buffer)
+            }
+            cpal::SampleFormat::I16 => {
+                self.build_stream::<i16>(&device, &config, is_recording, audio_buffer)
+            }
+            cpal::SampleFormat::U16 => {
+                self.build_stream::<u16>(&device, &config, is_recording, audio_buffer)
+            }
             _ => return Err("Unsupported sample format".to_string()),
         }?;
 
-        stream.play().map_err(|e| format!("Stream play error: {}", e))?;
-        println!("[AUDIO] ✅ Stream started at {:?}", std::time::Instant::now());
+        stream
+            .play()
+            .map_err(|e| format!("Stream play error: {}", e))?;
+        println!(
+            "[AUDIO] ✅ Stream started at {:?}",
+            std::time::Instant::now()
+        );
         Ok(stream)
     }
 
     /// Try to create a stream config with the given sample rate
-    fn try_create_config(&self, device: &cpal::Device, sample_rate: u32) -> Result<(cpal::StreamConfig, u32), String> {
+    fn try_create_config(
+        &self,
+        device: &cpal::Device,
+        sample_rate: u32,
+    ) -> Result<(cpal::StreamConfig, u32), String> {
         let config = cpal::StreamConfig {
             channels: 1,
             sample_rate: cpal::SampleRate(sample_rate),
@@ -266,13 +347,15 @@ impl AudioCapture {
         };
 
         // Validate by checking supported configs
-        let supported = device.supported_input_configs()
+        let supported = device
+            .supported_input_configs()
             .map_err(|e| format!("Failed to get supported configs: {}", e))?;
 
         for supported_config in supported {
             if supported_config.min_sample_rate().0 <= sample_rate
                 && supported_config.max_sample_rate().0 >= sample_rate
-                && supported_config.channels() >= 1 {
+                && supported_config.channels() >= 1
+            {
                 return Ok((config, sample_rate));
             }
         }
@@ -307,7 +390,8 @@ impl AudioCapture {
             .build_input_stream(
                 config,
                 move |data: &[T], _: &cpal::InputCallbackInfo| {
-                    let call_num = callback_count_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let call_num =
+                        callback_count_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                     // Debug first few callbacks
                     if call_num < 3 {
@@ -317,9 +401,13 @@ impl AudioCapture {
                     let recording = *is_recording.lock().unwrap();
 
                     // Log state transitions
-                    let was_recording = last_recording_state_clone.swap(recording, std::sync::atomic::Ordering::Relaxed);
+                    let was_recording = last_recording_state_clone
+                        .swap(recording, std::sync::atomic::Ordering::Relaxed);
                     if recording != was_recording {
-                        println!("[AUDIO] 📍 Recording state changed: {} -> {} at callback #{}", was_recording, recording, call_num);
+                        println!(
+                            "[AUDIO] 📍 Recording state changed: {} -> {} at callback #{}",
+                            was_recording, recording, call_num
+                        );
                     }
 
                     if recording {
@@ -332,7 +420,12 @@ impl AudioCapture {
                         // Print progress every ~0.5 second of audio
                         let samples_per_half_sec = sample_rate as usize / 2;
                         if *count % samples_per_half_sec < data.len() {
-                            println!("[AUDIO] 📊 Captured {} samples ({:.2}s at {}Hz)", *count, *count as f32 / sample_rate as f32, sample_rate);
+                            println!(
+                                "[AUDIO] 📊 Captured {} samples ({:.2}s at {}Hz)",
+                                *count,
+                                *count as f32 / sample_rate as f32,
+                                sample_rate
+                            );
                         }
                     }
                 },
@@ -351,20 +444,24 @@ impl AudioCapture {
         let actual_rate = *self.actual_sample_rate.lock().unwrap();
         let start_time = self.recording_start_time.lock().unwrap().take();
 
-        let elapsed_ms = start_time
-            .map(|t| t.elapsed().as_millis())
-            .unwrap_or(0);
+        let elapsed_ms = start_time.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
         println!("[AUDIO] 🛑 Recording stopped after {}ms", elapsed_ms);
-        println!("[AUDIO] 🛑 Buffer: {} samples at {}Hz = {:.2}s of audio",
-                 buffer_size, actual_rate, buffer_size as f32 / actual_rate as f32);
+        println!(
+            "[AUDIO] 🛑 Buffer: {} samples at {}Hz = {:.2}s of audio",
+            buffer_size,
+            actual_rate,
+            buffer_size as f32 / actual_rate as f32
+        );
 
         // Warn if there's a timing discrepancy
         let expected_samples = (elapsed_ms as f32 / 1000.0) * actual_rate as f32;
         if buffer_size > 0 && (buffer_size as f32) < expected_samples * 0.5 {
             println!("[AUDIO] ⚠️  WARNING: Only captured {:.1}% of expected audio! ({} vs {:.0} expected)",
                      100.0 * buffer_size as f32 / expected_samples, buffer_size, expected_samples);
-            println!("[AUDIO] ⚠️  This suggests audio callbacks aren't running or is_recording is false");
+            println!(
+                "[AUDIO] ⚠️  This suggests audio callbacks aren't running or is_recording is false"
+            );
         }
     }
 
@@ -404,7 +501,10 @@ impl AudioCapture {
         }
 
         // Resample to target rate (linear interpolation)
-        println!("[AUDIO] 🔄 Resampling from {}Hz to {}Hz...", actual_rate, self.target_sample_rate);
+        println!(
+            "[AUDIO] 🔄 Resampling from {}Hz to {}Hz...",
+            actual_rate, self.target_sample_rate
+        );
         self.resample(&buffer, actual_rate, self.target_sample_rate)
     }
 
@@ -416,7 +516,8 @@ impl AudioCapture {
 
         // Calculate output length: input_samples * (to_rate / from_rate)
         // Example: 48000 samples at 48kHz -> 16000 samples at 16kHz
-        let output_len = ((input.len() as f64) * (to_rate as f64) / (from_rate as f64)).ceil() as usize;
+        let output_len =
+            ((input.len() as f64) * (to_rate as f64) / (from_rate as f64)).ceil() as usize;
         let mut output = Vec::with_capacity(output_len);
 
         // Ratio of input samples per output sample
@@ -439,8 +540,13 @@ impl AudioCapture {
             output.push(sample as f32);
         }
 
-        println!("[AUDIO] ✅ Resampled {} -> {} samples ({}Hz -> {}Hz)",
-                 input.len(), output.len(), from_rate, to_rate);
+        println!(
+            "[AUDIO] ✅ Resampled {} -> {} samples ({}Hz -> {}Hz)",
+            input.len(),
+            output.len(),
+            from_rate,
+            to_rate
+        );
         output
     }
 }

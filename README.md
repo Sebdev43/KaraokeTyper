@@ -1,186 +1,253 @@
 # 🎤 KaraokeTyper
 
-**Offline voice typing for Ubuntu with push-to-talk**
+**Offline voice dictation application for Linux** with push-to-talk functionality using Whisper AI.
 
-KaraokeTyper is a 100% local, open-source voice dictation application for Linux that respects your privacy. Unlike cloud-based solutions, all speech recognition happens on your machine.
+All speech recognition happens locally using [Whisper.cpp](https://github.com/ggerganov/whisper.cpp), with **no cloud dependencies**.
 
 ## ✨ Features
 
-- 🔒 **Completely Offline** - No data sent to cloud servers
-- ⚡ **Push-to-Talk** - Hold Ctrl+Space to record, release to type
-- 🎯 **Wayland Native** - Full support for modern Linux desktops
-- 💨 **Low Latency** - < 500ms from speech to text
-- 🌍 **Multi-Language** - Support for English, French, Spanish, German (via Vosk models)
-- 📜 **History** - Search and reuse previous dictations
-- 🎨 **Modern UI** - GTK4 with libadwaita
+- 🔴 **Push-to-talk** dictation with Ctrl+Space hotkey
+- 🤖 **100% offline** - All processing happens locally using Whisper
+- ⚡ **Standalone app** - No system dependencies to install
+- 🎯 **Auto-typing** - Text automatically injected into active window
+- 🌐 **Cross-platform** - Built with Tauri (Rust + React)
+- 🎨 **Modern UI** - Dark theme with real-time status indicators
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- Ubuntu 24.04+ (or compatible Linux distribution)
-- Python 3.12+
-- Wayland session (default on Ubuntu GNOME)
+- Node.js 18+ and npm
+- Rust toolchain (will be installed automatically if missing)
 
-### Installation
+### Setup
 
+1. **Clone the repository**
+   ```bash
+   git clone <repo-url>
+   cd KaraokeTyper
+   ```
+
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+3. **Download Whisper model** (~150MB)
+   ```bash
+   ./download-model.sh
+   ```
+
+4. **Run in development mode**
+   ```bash
+   npm run tauri dev
+   ```
+
+## 🔨 Building
+
+### Development Build
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/karaoketyper.git
-cd karaoketyper
-
-# Run installation script
-./install.sh
+npm run tauri dev
 ```
 
-The installer will:
-1. Install system dependencies (ydotool, audio libraries)
-2. Set up Python virtual environment
-3. Download Vosk speech model (~300MB)
-4. Configure ydotoold systemd service
-5. Create desktop launcher
+### Production Build
+```bash
+npm run tauri build
+```
 
-### Manual Installation
-
-See [INSTALLATION.md](INSTALLATION.md) for detailed manual installation steps.
+This creates a standalone executable in `src-tauri/target/release/bundle/`:
+- **AppImage** - Single file, no installation needed
+- **deb** - Debian/Ubuntu package
 
 ## 📖 Usage
 
-### Basic Dictation
+1. **Launch the app** - KaraokeTyper window will appear
+2. **Wait for initialization** - Status will show "Ready! Press Ctrl+Space to dictate"
+3. **Click in target window** - Focus any text editor or application
+4. **Press and hold Ctrl+Space** - Speak clearly into your microphone
+5. **Release Ctrl+Space** - Text will be processed and typed automatically
 
-1. **Start KaraokeTyper** - Launch from application menu or run `karaoketyper`
-2. **Click on any text field** - Position cursor where you want text
-3. **Hold Ctrl+Space** - Start speaking (microphone indicator turns red)
-4. **Release Ctrl+Space** - Text is automatically typed
+### Hotkeys
 
-### Keyboard Shortcuts
+- `Ctrl+Space` - Start/stop recording (global hotkey)
+- Manual button - Click "Start Recording" button as alternative
 
-- `Ctrl+Space` - Push-to-talk (configurable)
-- `Ctrl+H` - Show/hide main window
-- `Ctrl+Q` - Quit application
+### Status Indicators
 
-### Voice Commands (Coming in v1.1)
-
-- "rewrite: [text]" - Improve and rewrite text
-- "reply: [context]" - Generate reply to clipboard content
-- "punctuate: [text]" - Add smart punctuation
+- 🟢 **Green** - Idle, ready to record
+- 🔴 **Red** - Recording audio (pulsing)
+- 🟠 **Orange** - Processing speech-to-text
 
 ## 🏗️ Architecture
 
+### Technology Stack
+
+- **Frontend**: React 18 + TypeScript + Vite
+- **Backend**: Rust + Tauri v2
+- **Speech Recognition**: whisper-rs (Whisper.cpp bindings)
+- **Audio Capture**: cpal (cross-platform audio library)
+- **Text Injection**: enigo (keyboard simulation)
+- **Hotkeys**: tauri-plugin-global-shortcut
+
+### Project Structure
+
 ```
 karaoketyper/
-├── core/           # Core functionality
-│   ├── audio_capture.py    # Microphone recording
-│   ├── stt_engine.py       # Vosk speech recognition
-│   ├── text_output.py      # ydotool typing
-│   └── command_parser.py   # Voice command detection
-├── ui/             # GTK4 interface
-│   ├── main_window.py      # Main application window
-│   ├── settings_dialog.py  # Preferences
-│   └── history_view.py     # Dictation history
-├── services/       # Background services
-│   ├── shortcut_listener.py  # Global hotkeys
-│   └── state_manager.py      # Application state
-└── data/           # Data layer
-    ├── database.py         # SQLite interface
-    └── models.py           # Data models
+├── src/                    # React frontend
+│   ├── App.tsx            # Main UI component
+│   ├── App.css            # Dark theme styling
+│   └── main.tsx           # React entry point
+├── src-tauri/             # Rust backend
+│   ├── src/
+│   │   ├── audio.rs       # Audio capture with cpal
+│   │   ├── stt.rs         # Whisper speech recognition
+│   │   ├── output.rs      # Keyboard text injection
+│   │   └── lib.rs         # Tauri commands & state
+│   ├── models/            # Whisper model storage
+│   │   └── ggml-base.bin  # Base model (~150MB)
+│   ├── Cargo.toml         # Rust dependencies
+│   └── tauri.conf.json    # Tauri configuration
+└── old/                   # Original Python implementation
+
 ```
+
+### Workflow
+
+1. **Initialization** (`init_stt`)
+   - Loads Whisper model from `models/ggml-base.bin`
+   - Creates STT engine with English language settings
+
+2. **Recording** (`start_recording`)
+   - Captures audio at 16kHz mono (Whisper requirement)
+   - Buffers audio samples in real-time using cpal
+   - Emits "recording" status event to UI
+
+3. **Processing** (`stop_recording`)
+   - Stops audio capture
+   - Passes audio buffer to Whisper engine
+   - Transcribes speech to text
+   - Returns text to frontend
+
+4. **Output** (`type_text`)
+   - Simulates keyboard input using enigo
+   - Types text character-by-character with 8ms delay
+   - Works in any focused application
 
 ## 🔧 Configuration
 
-Configuration file: `~/.config/karaoketyper/config.json`
+### Whisper Model
 
-```json
-{
-  "model": "vosk-model-en",
-  "shortcut": "Ctrl+Space",
-  "key_delay_ms": 8,
-  "auto_punctuation": true,
-  "language": "en-US"
-}
+The default model is **Whisper Base** (~150MB):
+- Good balance of speed and accuracy
+- Runs efficiently on most systems
+- English language optimized
+
+To use a different model:
+1. Download from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp/tree/main)
+2. Place in `src-tauri/models/`
+3. Update model path in `lib.rs:35`
+
+Available models:
+- `ggml-tiny.bin` - Fastest, lower accuracy (~75MB)
+- `ggml-base.bin` - Default, good balance (~150MB)
+- `ggml-small.bin` - Better accuracy, slower (~500MB)
+- `ggml-medium.bin` - High accuracy (~1.5GB)
+
+### Keyboard Delay
+
+Default keystroke delay is 8ms. To change:
+Edit `src-tauri/src/lib.rs:121`:
+```rust
+let mut output = TextOutput::new(8)?; // Change to your preferred delay
 ```
 
-## 📊 Supported Languages
+### Global Hotkey
 
-Download additional models from [Vosk Models](https://alphacephei.com/vosk/models):
+Default is `Ctrl+Space`. To change:
+Edit `src/App.tsx:43`:
+```typescript
+const shortcut = "CommandOrControl+Space"; // Change to your preferred hotkey
+```
 
-- **English** (en-US) - Default, ~300MB
-- **French** (fr-FR) - ~300MB
-- **Spanish** (es-ES) - ~300MB
-- **German** (de-DE) - ~300MB
+## 🐛 Troubleshooting
 
-## 🤝 Contributing
+### "Whisper model not found"
+Run `./download-model.sh` to download the model.
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+### No audio captured
+- Check microphone permissions
+- Verify default input device is correct
+- Test microphone in other apps first
 
-### Development Setup
+### Text not typing
+- Ensure target window is focused
+- Check if application blocks simulated input (some games/secure apps do)
+- Try increasing keystroke delay if characters are missing
 
+### Build errors
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/karaoketyper.git
-cd karaoketyper
-
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
-
-# Run tests
-pytest
-
-# Run application
-python -m karaoketyper
+# Clear cache and rebuild
+rm -rf node_modules package-lock.json
+npm install
+npm run tauri build
 ```
-
-## 📝 Comparison
-
-| Feature | VibeTyper | nerd-dictation | **KaraokeTyper** |
-|---------|-----------|----------------|------------------|
-| Offline | ❌ Cloud | ✅ Yes | ✅ Yes |
-| GUI | ✅ Electron | ❌ CLI | ✅ GTK4 |
-| Push-to-talk | ✅ Yes | ❌ Toggle | ✅ Yes |
-| History | ✅ Yes | ❌ No | ✅ Yes |
-| Open Source | ❌ No | ✅ GPL | ✅ GPL v3 |
-| Size | ~200MB | ~50MB | **~80MB** |
 
 ## 🔒 Privacy
 
-KaraokeTyper is designed with privacy as a core principle:
+**KaraokeTyper is completely offline:**
+- ✅ All speech recognition happens locally
+- ✅ No telemetry or analytics
+- ✅ No network connections required
+- ✅ Audio is never stored or transmitted
+- ✅ Whisper model runs on your CPU/GPU only
 
-- **Zero telemetry** - No analytics, no tracking
-- **Local processing** - Speech recognition happens on your machine
-- **No network** - Works completely offline
-- **Open source** - Audit the code yourself
+## 📝 Development
 
-## 📜 License
+### Adding new features
 
-GPL-3.0 License - see [LICENSE](LICENSE) for details.
+1. **Rust backend** - Edit files in `src-tauri/src/`
+2. **React frontend** - Edit files in `src/`
+3. **Tauri commands** - Add to `lib.rs` and update `invoke_handler![]`
 
-## 🙏 Acknowledgments
+### Testing
 
-- [Vosk](https://alphacephei.com/vosk/) - Offline speech recognition
-- [nerd-dictation](https://github.com/ideasman42/nerd-dictation) - Inspiration for Linux voice typing
-- [ydotool](https://github.com/ReimuNotMoe/ydotool) - Wayland input injection
-- AlterFlow.ai - Original guide for offline voice typing
+```bash
+# Run development build with console output
+npm run tauri dev
 
-## 🐛 Support
+# Check Rust compilation
+cd src-tauri
+cargo check
 
-- **Issues**: [GitHub Issues](https://github.com/yourusername/karaoketyper/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/karaoketyper/discussions)
+# Format Rust code
+cargo fmt
+
+# Lint Rust code
+cargo clippy
+```
+
+## 📄 License
+
+[Your license here]
+
+## 🙏 Credits
+
+- [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) - Fast C++ implementation of OpenAI Whisper
+- [Tauri](https://tauri.app) - Build smaller, faster desktop apps
+- [cpal](https://github.com/RustAudio/cpal) - Cross-platform audio I/O
+- [enigo](https://github.com/enigo-rs/enigo) - Cross-platform input simulation
 
 ## 🗺️ Roadmap
 
-- [x] Core dictation functionality
-- [ ] Voice commands (rewrite, reply)
-- [ ] Multi-language support
-- [ ] Whisper integration (alternative STT)
-- [ ] Custom vocabulary
-- [ ] Noise cancellation
-- [ ] VSCode/IntelliJ plugins
+- [ ] Multi-language support (Spanish, French, German, etc.)
+- [ ] Voice commands ("new paragraph", "delete that")
+- [ ] Dictation history with local SQLite storage
+- [ ] Custom vocabulary and auto-corrections
+- [ ] System tray integration
+- [ ] Pause/resume during recording
+- [ ] Audio level meter
+- [ ] Configurable settings UI
 
 ---
 
-Made with ❤️ for the Linux community
+**Built with ❤️ for the Linux community**

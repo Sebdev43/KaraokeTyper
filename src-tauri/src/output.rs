@@ -243,25 +243,77 @@ mod linux_output {
             // Enable EV_KEY events
             let ret = unsafe { libc::ioctl(fd, UI_SET_EVBIT, EV_KEY as i32) };
             if ret < 0 {
-                return Err(format!("Failed to set EV_KEY bit: {}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "Failed to set EV_KEY bit: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
 
             // Enable all keys we need
             let keys = [
-                KEY_LEFTCTRL, KEY_LEFTSHIFT, KEY_V, KEY_SPACE, KEY_ENTER, KEY_BACKSPACE, KEY_TAB,
-                KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9, KEY_0,
-                KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U, KEY_I, KEY_O, KEY_P,
-                KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L,
-                KEY_Z, KEY_X, KEY_C, KEY_B, KEY_N, KEY_M,
-                KEY_MINUS, KEY_EQUAL, KEY_LEFTBRACE, KEY_RIGHTBRACE,
-                KEY_SEMICOLON, KEY_APOSTROPHE, KEY_GRAVE, KEY_BACKSLASH,
-                KEY_COMMA, KEY_DOT, KEY_SLASH,
+                KEY_LEFTCTRL,
+                KEY_LEFTSHIFT,
+                KEY_V,
+                KEY_SPACE,
+                KEY_ENTER,
+                KEY_BACKSPACE,
+                KEY_TAB,
+                KEY_1,
+                KEY_2,
+                KEY_3,
+                KEY_4,
+                KEY_5,
+                KEY_6,
+                KEY_7,
+                KEY_8,
+                KEY_9,
+                KEY_0,
+                KEY_Q,
+                KEY_W,
+                KEY_E,
+                KEY_R,
+                KEY_T,
+                KEY_Y,
+                KEY_U,
+                KEY_I,
+                KEY_O,
+                KEY_P,
+                KEY_A,
+                KEY_S,
+                KEY_D,
+                KEY_F,
+                KEY_G,
+                KEY_H,
+                KEY_J,
+                KEY_K,
+                KEY_L,
+                KEY_Z,
+                KEY_X,
+                KEY_C,
+                KEY_B,
+                KEY_N,
+                KEY_M,
+                KEY_MINUS,
+                KEY_EQUAL,
+                KEY_LEFTBRACE,
+                KEY_RIGHTBRACE,
+                KEY_SEMICOLON,
+                KEY_APOSTROPHE,
+                KEY_GRAVE,
+                KEY_BACKSLASH,
+                KEY_COMMA,
+                KEY_DOT,
+                KEY_SLASH,
             ];
 
             for key in keys {
                 let ret = unsafe { libc::ioctl(fd, UI_SET_KEYBIT, key as i32) };
                 if ret < 0 {
-                    return Err(format!("Failed to set key bit {}: {}", key, std::io::Error::last_os_error()));
+                    return Err(format!(
+                        "Failed to set key bit {}: {}",
+                        key,
+                        std::io::Error::last_os_error()
+                    ));
                 }
             }
 
@@ -282,12 +334,18 @@ mod linux_output {
 
             let ret = unsafe { libc::ioctl(fd, UI_DEV_SETUP, &setup as *const UinputSetup) };
             if ret < 0 {
-                return Err(format!("Failed to setup device: {}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "Failed to setup device: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
 
             let ret = unsafe { libc::ioctl(fd, UI_DEV_CREATE, 0) };
             if ret < 0 {
-                return Err(format!("Failed to create device: {}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "Failed to create device: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
 
             // Wait for device to be recognized
@@ -310,12 +368,13 @@ mod linux_output {
             let ptr = &event as *const InputEvent as *const u8;
             let size = std::mem::size_of::<InputEvent>();
 
-            let written = unsafe {
-                libc::write(self.fd, ptr as *const libc::c_void, size)
-            };
+            let written = unsafe { libc::write(self.fd, ptr as *const libc::c_void, size) };
 
             if written as usize != size {
-                return Err(format!("Failed to write event: wrote {} of {} bytes", written, size));
+                return Err(format!(
+                    "Failed to write event: wrote {} of {} bytes",
+                    written, size
+                ));
             }
 
             Ok(())
@@ -404,8 +463,8 @@ impl TextOutput {
     pub fn new(key_delay_ms: u64) -> Result<Self, String> {
         println!("[OUTPUT] Initializing text output...");
 
-        let clipboard = Clipboard::new()
-            .map_err(|e| format!("Failed to create clipboard: {}", e))?;
+        let clipboard =
+            Clipboard::new().map_err(|e| format!("Failed to create clipboard: {}", e))?;
 
         println!("[OUTPUT] ✅ Clipboard initialized");
 
@@ -444,6 +503,7 @@ impl TextOutput {
     }
 
     #[cfg(target_os = "linux")]
+    #[allow(dead_code)] // Kept as alternative to clipboard+paste
     fn type_with_ydotool(&self, text: &str) -> Result<(), String> {
         println!("[OUTPUT] Using ydotool type for Wayland...");
 
@@ -451,7 +511,12 @@ impl TextOutput {
         let output = std::process::Command::new("ydotool")
             .args(["type", "--key-delay", "8", "--", text])
             .output()
-            .map_err(|e| format!("Failed to run ydotool: {}. Install with: sudo apt install ydotool", e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to run ydotool: {}. Install with: sudo apt install ydotool",
+                    e
+                )
+            })?;
 
         if output.status.success() {
             println!("[OUTPUT] ✅ ydotool typed text successfully");
@@ -471,40 +536,191 @@ impl TextOutput {
         let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
 
         if session_type == "wayland" {
-            // Try wtype first (works on wlroots-based compositors like Sway)
-            println!("[OUTPUT] Trying wtype for Wayland paste...");
-            let wtype_result = std::process::Command::new("wtype")
-                .args(["-M", "ctrl", "v", "-m", "ctrl"])
-                .output();
+            // Detect if the focused window is a terminal
+            let is_terminal = Self::is_terminal_focused();
 
-            if let Ok(output) = wtype_result {
-                if output.status.success() {
-                    println!("[OUTPUT] ✅ wtype Ctrl+V sent successfully");
-                    return Ok(());
-                }
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                println!("[OUTPUT] ⚠️ wtype failed: {}, trying ydotool...", stderr.trim());
+            // Try wtype first (better Wayland integration), then fall back to ydotool
+            if Self::try_wtype_paste(is_terminal)? {
+                return Ok(());
             }
 
-            // Fallback to ydotool (works on GNOME Wayland)
-            println!("[OUTPUT] Using ydotool for Wayland paste...");
-            let output = std::process::Command::new("ydotool")
-                .args(["key", "ctrl+v"])
-                .output()
-                .map_err(|e| format!("Failed to run ydotool: {}. Install with: sudo apt install ydotool", e))?;
-
-            if output.status.success() {
-                println!("[OUTPUT] ✅ ydotool Ctrl+V sent successfully");
-                Ok(())
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(format!("ydotool failed: {}", stderr))
-            }
+            // Fallback to ydotool
+            Self::try_ydotool_paste(is_terminal)
         } else {
             // Use uinput for X11
             println!("[OUTPUT] Using uinput for X11 paste...");
             let device = linux_output::UInputDevice::new()?;
             device.ctrl_v()
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_terminal_focused() -> bool {
+        // Method 1: Try our KaraokeTyper GNOME extension first (most reliable on GNOME 46+)
+        if let Some(is_terminal) = Self::check_terminal_via_extension() {
+            return is_terminal;
+        }
+
+        // Method 2: Fallback to GNOME Shell Eval (blocked on GNOME 46+ but works on older versions)
+        if let Some(is_terminal) = Self::check_terminal_via_gnome_eval() {
+            return is_terminal;
+        }
+
+        // Default: assume not a terminal (use Ctrl+V)
+        println!("[OUTPUT] Could not detect window type, using Ctrl+V");
+        false
+    }
+
+    #[cfg(target_os = "linux")]
+    fn check_terminal_via_extension() -> Option<bool> {
+        // Call our KaraokeTyper GNOME extension via D-Bus
+        let result = std::process::Command::new("gdbus")
+            .args([
+                "call",
+                "--session",
+                "--dest",
+                "org.karaoketyper.FocusedWindow",
+                "--object-path",
+                "/org/karaoketyper/FocusedWindow",
+                "--method",
+                "org.karaoketyper.FocusedWindow.IsTerminal",
+            ])
+            .output();
+
+        if let Ok(output) = result {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // D-Bus returns "(true,)" or "(false,)"
+                if stdout.contains("true") {
+                    println!("[OUTPUT] 🖥️ Extension detected: terminal focused");
+                    return Some(true);
+                } else if stdout.contains("false") {
+                    println!("[OUTPUT] 📝 Extension detected: not a terminal");
+                    return Some(false);
+                }
+            }
+        }
+
+        // Extension not available or error
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn check_terminal_via_gnome_eval() -> Option<bool> {
+        // Fallback: Try GNOME Shell.Eval (blocked on GNOME 46+ for security)
+        let result = std::process::Command::new("gdbus")
+            .args([
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Shell",
+                "--object-path",
+                "/org/gnome/Shell",
+                "--method",
+                "org.gnome.Shell.Eval",
+                "global.display.focus_window ? global.display.focus_window.get_wm_class() : ''",
+            ])
+            .output();
+
+        if let Ok(output) = result {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+            // Check if we got a valid response (not empty or error)
+            if stdout.contains("(true,") {
+                // Common terminal emulator WM classes
+                let terminals = [
+                    "gnome-terminal",
+                    "konsole",
+                    "xterm",
+                    "alacritty",
+                    "kitty",
+                    "tilix",
+                    "terminator",
+                    "urxvt",
+                    "st",
+                    "foot",
+                    "wezterm",
+                    "terminal",
+                    "term",
+                    "blackbox",
+                    "ptyxis",
+                ];
+
+                for term in terminals {
+                    if stdout.contains(term) {
+                        println!("[OUTPUT] 🖥️ GNOME Eval detected terminal: {}", term);
+                        return Some(true);
+                    }
+                }
+
+                // Got a response but it's not a terminal
+                return Some(false);
+            }
+        }
+
+        // GNOME Eval not available or blocked
+        None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn try_wtype_paste(is_terminal: bool) -> Result<bool, String> {
+        // Check if wtype is available
+        if std::process::Command::new("which")
+            .arg("wtype")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            let shortcut = if is_terminal {
+                println!("[OUTPUT] Using wtype for terminal paste (Ctrl+Shift+V)...");
+                vec!["-M", "ctrl", "-M", "shift", "-k", "v"]
+            } else {
+                println!("[OUTPUT] Using wtype for paste (Ctrl+V)...");
+                vec!["-M", "ctrl", "-k", "v"]
+            };
+
+            let output = std::process::Command::new("wtype")
+                .args(&shortcut)
+                .output()
+                .map_err(|e| format!("Failed to run wtype: {}", e))?;
+
+            if output.status.success() {
+                println!("[OUTPUT] ✅ wtype paste sent successfully");
+                return Ok(true);
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                println!("[OUTPUT] ⚠️ wtype failed: {}, trying ydotool...", stderr);
+            }
+        }
+
+        Ok(false)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn try_ydotool_paste(is_terminal: bool) -> Result<(), String> {
+        let shortcut = if is_terminal {
+            println!("[OUTPUT] Using ydotool for terminal paste (Ctrl+Shift+V)...");
+            "ctrl+shift+v"
+        } else {
+            println!("[OUTPUT] Using ydotool for paste (Ctrl+V)...");
+            "ctrl+v"
+        };
+
+        let output = std::process::Command::new("ydotool")
+            .args(["key", shortcut])
+            .output()
+            .map_err(|e| {
+                format!(
+                    "Failed to run ydotool: {}. Install with: sudo apt install ydotool",
+                    e
+                )
+            })?;
+
+        if output.status.success() {
+            println!("[OUTPUT] ✅ ydotool paste sent successfully");
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("ydotool failed: {}", stderr))
         }
     }
 
@@ -522,13 +738,16 @@ impl TextOutput {
         #[cfg(not(target_os = "macos"))]
         let modifier = Key::Control;
 
-        enigo.key(modifier, enigo::Direction::Press)
+        enigo
+            .key(modifier, enigo::Direction::Press)
             .map_err(|e| format!("Failed to press modifier: {}", e))?;
         thread::sleep(Duration::from_millis(10));
-        enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+        enigo
+            .key(Key::Unicode('v'), enigo::Direction::Click)
             .map_err(|e| format!("Failed to press V: {}", e))?;
         thread::sleep(Duration::from_millis(10));
-        enigo.key(modifier, enigo::Direction::Release)
+        enigo
+            .key(modifier, enigo::Direction::Release)
             .map_err(|e| format!("Failed to release modifier: {}", e))?;
 
         Ok(())
@@ -553,7 +772,8 @@ impl TextOutput {
             use enigo::{Enigo, Keyboard, Settings};
             let mut enigo = Enigo::new(&Settings::default())
                 .map_err(|e| format!("Failed to create enigo: {}", e))?;
-            enigo.text(text)
+            enigo
+                .text(text)
                 .map_err(|e| format!("Failed to type text: {}", e))?;
         }
 

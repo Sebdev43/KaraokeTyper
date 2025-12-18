@@ -3,31 +3,27 @@ mod config;
 mod keyboard_listener;
 mod model_downloader;
 mod output;
-mod stt;
+mod stt_canary;
 
-// Linux-specific modules (fallbacks and integrations)
-#[cfg(target_os = "linux")]
-mod dbus_service;
-
-#[cfg(target_os = "linux")]
-mod gnome_shortcut;
-
+// Linux-specific modules
 #[cfg(target_os = "linux")]
 mod evdev_listener;
 
-// CLI-based audio capture (uses parec) - fallback for when cpal doesn't work
 #[cfg(target_os = "linux")]
 mod audio_cli;
+
+#[cfg(target_os = "linux")]
+mod wireplumber_config;
 
 use audio::AudioCapture;
 use config::AppConfig;
 use output::TextOutput;
-use stt::STTEngine;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use stt_canary::CanarySttEngine;
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::image::Image;
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 struct StreamHandle {
     _stream: cpal::Stream,
@@ -37,13 +33,16 @@ unsafe impl Send for StreamHandle {}
 unsafe impl Sync for StreamHandle {}
 
 pub(crate) struct AppState {
+    #[allow(dead_code)] // Used on non-Linux platforms
     audio_capture: Arc<Mutex<Option<AudioCapture>>>,
+    #[allow(dead_code)] // Used on non-Linux platforms
     audio_stream: Arc<Mutex<Option<StreamHandle>>>,
     #[cfg(target_os = "linux")]
     audio_cli: Arc<Mutex<Option<audio_cli::AudioCaptureCli>>>,
-    stt_engine: Arc<Mutex<Option<STTEngine>>>,
+    stt_engine: Arc<Mutex<Option<CanarySttEngine>>>,
     config: Arc<Mutex<AppConfig>>,
     recording_ready: Arc<std::sync::atomic::AtomicBool>,
+    pub recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
 }
 
 impl Default for AppState {
@@ -56,14 +55,13 @@ impl Default for AppState {
             stt_engine: Arc::new(Mutex::new(None)),
             config: Arc::new(Mutex::new(AppConfig::load().unwrap_or_default())),
             recording_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            recording_start_time: Arc::new(Mutex::new(None)),
         }
     }
 }
 
 /// Debug helper to save audio data as WAV file
 fn save_debug_wav(audio_data: &[f32], path: &std::path::PathBuf) -> Result<(), String> {
-    use std::io::Write;
-
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 16000,
@@ -71,16 +69,18 @@ fn save_debug_wav(audio_data: &[f32], path: &std::path::PathBuf) -> Result<(), S
         sample_format: hound::SampleFormat::Int,
     };
 
-    let mut writer = hound::WavWriter::create(path, spec)
-        .map_err(|e| format!("Failed to create WAV: {}", e))?;
+    let mut writer =
+        hound::WavWriter::create(path, spec).map_err(|e| format!("Failed to create WAV: {}", e))?;
 
     for &sample in audio_data {
         let sample_i16 = (sample * 32767.0).clamp(-32768.0, 32767.0) as i16;
-        writer.write_sample(sample_i16)
+        writer
+            .write_sample(sample_i16)
             .map_err(|e| format!("Failed to write sample: {}", e))?;
     }
 
-    writer.finalize()
+    writer
+        .finalize()
         .map_err(|e| format!("Failed to finalize WAV: {}", e))?;
 
     Ok(())
@@ -89,10 +89,13 @@ fn save_debug_wav(audio_data: &[f32], path: &std::path::PathBuf) -> Result<(), S
 #[tauri::command]
 async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     app_handle
-        .emit("status-changed", StatusEvent {
-            status: "initializing".to_string(),
-            message: "Loading Whisper model...".to_string(),
-        })
+        .emit(
+            "status-changed",
+            StatusEvent {
+                status: "initializing".to_string(),
+                message: "Loading Canary-1B model...".to_string(),
+            },
+        )
         .ok();
 
     // Get selected model from config
@@ -101,27 +104,36 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
         (config.model.clone(), config.language.clone())
     };
 
-    let model_filename = format!("ggml-{}.bin", model_name);
-    let model_path = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?
-        .join("models")
-        .join(&model_filename);
+    println!(
+        "[STT] Loading Canary model: {} (language: {})",
+        model_name, language
+    );
 
-    if !model_path.exists() {
-        return Err(format!("Whisper model '{}' not found at: {:?}\nAvailable models: base, tiny, small, medium, large", model_name, model_path));
-    }
+    // Create and initialize Canary STT engine
+    let engine = CanarySttEngine::new(&model_name, &language);
+    engine.initialize().map_err(|e| {
+        let error_msg = format!("{}", e);
 
-    println!("[STT] Loading Whisper model: {} ({})", model_name, model_path.display());
-    let engine = STTEngine::new(model_path, language)?;
+        // Provide helpful error messages based on error type
+        if error_msg.contains("Python not found") {
+            "Python 3.8+ not found. Please install Python:\n  Linux: sudo apt install python3\n  macOS: brew install python3\n  Windows: Download from python.org".to_string()
+        } else if error_msg.contains("NeMo not installed") {
+            "NVIDIA NeMo not installed. Run:\n  pip install nemo_toolkit[asr]\n\nThis will download ~2GB of dependencies.".to_string()
+        } else {
+            error_msg
+        }
+    })?;
+
     *state.stt_engine.lock().unwrap() = Some(engine);
 
     app_handle
-        .emit("status-changed", StatusEvent {
-            status: "idle".to_string(),
-            message: "Ready! Press Ctrl+Space to dictate".to_string(),
-        })
+        .emit(
+            "status-changed",
+            StatusEvent {
+                status: "idle".to_string(),
+                message: "Ready! Press Ctrl+Space to dictate".to_string(),
+            },
+        )
         .ok();
 
     Ok(())
@@ -133,45 +145,55 @@ async fn start_recording(app_handle: AppHandle, state: State<'_, AppState>) -> R
 }
 
 /// Helper function for start_recording - can be called from other modules
-pub(crate) async fn do_start_recording(app_handle: AppHandle, state: &State<'_, AppState>) -> Result<(), String> {
+pub(crate) async fn do_start_recording(
+    app_handle: AppHandle,
+    state: &State<'_, AppState>,
+) -> Result<(), String> {
     use std::sync::atomic::Ordering;
 
-    // Mark recording as not ready yet
-    state.recording_ready.store(false, Ordering::SeqCst);
+    let t0 = state
+        .recording_start_time
+        .lock()
+        .unwrap()
+        .unwrap_or_else(std::time::Instant::now);
+    println!(
+        "[TIMING] T+{}ms: do_start_recording() entered",
+        t0.elapsed().as_millis()
+    );
 
     app_handle
-        .emit("status-changed", StatusEvent {
-            status: "recording".to_string(),
-            message: "Recording... Release Ctrl+Space to stop".to_string(),
-        })
+        .emit(
+            "status-changed",
+            StatusEvent {
+                status: "recording".to_string(),
+                message: "Recording... Release Ctrl+Space to stop".to_string(),
+            },
+        )
         .ok();
 
-    // Load config to get selected audio device (by name for robustness, fallback to index)
-    let config = config::AppConfig::load()?;
-    println!("[RECORDING] Config: index={}, name={:?}", config.audio_device_index, config.audio_device_name);
-
-    // On Linux: use parec (CLI) instead of cpal because cpal callbacks don't work with PipeWire
+    // On Linux: use audio_cli (parec) which works better with PipeWire
     #[cfg(target_os = "linux")]
     {
-        // Use parec for audio capture (reliable on Linux with PipeWire)
-        // Pass device name directly to parec for explicit device selection
+        let config = config::AppConfig::load()?;
         let capture = audio_cli::AudioCaptureCli::new();
         capture.start_recording(config.audio_device_name.as_deref())?;
         *state.audio_cli.lock().unwrap() = Some(capture);
-
-        // Mark recording as ready
         state.recording_ready.store(true, Ordering::SeqCst);
-        println!("[RECORDING] ✅ parec audio capture started");
-        return Ok(());
+        println!(
+            "[TIMING] T+{}ms: audio_cli started",
+            t0.elapsed().as_millis()
+        );
+        Ok(())
     }
 
-    // On Windows/macOS: use cpal (cross-platform)
+    // On Windows/macOS: use cpal
     #[cfg(not(target_os = "linux"))]
     {
+        let config = config::AppConfig::load()?;
         let capture = AudioCapture::new(16000);
         let stream = capture.start_recording_with_device_name(
             config.audio_device_index,
-            config.audio_device_name.as_deref()
+            config.audio_device_name.as_deref(),
         )?;
 
         *state.audio_capture.lock().unwrap() = Some(capture);
@@ -185,13 +207,30 @@ pub(crate) async fn do_start_recording(app_handle: AppHandle, state: &State<'_, 
 }
 
 #[tauri::command]
-async fn stop_recording(app_handle: AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+async fn stop_recording(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     do_stop_recording(app_handle, &state).await
 }
 
 /// Helper function for stop_recording - can be called from other modules
-pub(crate) async fn do_stop_recording(app_handle: AppHandle, state: &State<'_, AppState>) -> Result<String, String> {
+pub(crate) async fn do_stop_recording(
+    app_handle: AppHandle,
+    state: &State<'_, AppState>,
+) -> Result<String, String> {
     use std::sync::atomic::Ordering;
+
+    // Get t0 from AppState for timing
+    let t0 = state
+        .recording_start_time
+        .lock()
+        .unwrap()
+        .unwrap_or_else(std::time::Instant::now);
+    println!(
+        "[TIMING] T+{}ms: do_stop_recording() entered",
+        t0.elapsed().as_millis()
+    );
 
     // Wait for recording to be ready (max 500ms)
     let mut waited = 0;
@@ -199,6 +238,11 @@ pub(crate) async fn do_stop_recording(app_handle: AppHandle, state: &State<'_, A
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         waited += 10;
     }
+    println!(
+        "[TIMING] T+{}ms: waited {}ms for recording_ready",
+        t0.elapsed().as_millis(),
+        waited
+    );
 
     if !state.recording_ready.load(Ordering::SeqCst) {
         println!("[RECORDING] ⚠️ Recording never became ready, proceeding anyway");
@@ -208,11 +252,19 @@ pub(crate) async fn do_stop_recording(app_handle: AppHandle, state: &State<'_, A
     state.recording_ready.store(false, Ordering::SeqCst);
 
     app_handle
-        .emit("status-changed", StatusEvent {
-            status: "processing".to_string(),
-            message: "Processing speech...".to_string(),
-        })
+        .emit(
+            "status-changed",
+            StatusEvent {
+                status: "processing".to_string(),
+                message: "Processing speech...".to_string(),
+            },
+        )
         .ok();
+
+    println!(
+        "[TIMING] T+{}ms: stopping audio capture...",
+        t0.elapsed().as_millis()
+    );
 
     // On Linux: use audio_cli (parec)
     #[cfg(target_os = "linux")]
@@ -236,14 +288,26 @@ pub(crate) async fn do_stop_recording(app_handle: AppHandle, state: &State<'_, A
         data
     };
 
-    // DEBUG: Save audio to file for inspection
-    let debug_path = std::path::PathBuf::from("/tmp/karaoketyper_debug.wav");
+    println!(
+        "[TIMING] T+{}ms: audio capture stopped, got {} samples ({:.2}s)",
+        t0.elapsed().as_millis(),
+        audio_data.len(),
+        audio_data.len() as f32 / 16000.0
+    );
+
+    // DEBUG: Save audio to file for inspection (cross-platform temp dir)
+    let debug_path = std::env::temp_dir().join("karaoketyper_debug.wav");
     if let Err(e) = save_debug_wav(&audio_data, &debug_path) {
         println!("[DEBUG] Failed to save debug WAV: {}", e);
     } else {
-        println!("[DEBUG] 🎵 Audio saved to: {} ({} samples, {:.2}s)",
-                 debug_path.display(), audio_data.len(), audio_data.len() as f32 / 16000.0);
+        println!(
+            "[DEBUG] 🎵 Audio saved to: {} ({} samples, {:.2}s)",
+            debug_path.display(),
+            audio_data.len(),
+            audio_data.len() as f32 / 16000.0
+        );
     }
+    println!("[TIMING] T+{}ms: debug WAV saved", t0.elapsed().as_millis());
 
     // Show first 20 samples for debugging
     if audio_data.len() >= 20 {
@@ -252,31 +316,52 @@ pub(crate) async fn do_stop_recording(app_handle: AppHandle, state: &State<'_, A
 
     // Check for silence
     let non_zero = audio_data.iter().filter(|&&x| x.abs() > 0.001).count();
-    println!("[DEBUG] Non-silent samples: {}/{} ({:.1}%)",
-             non_zero, audio_data.len(), 100.0 * non_zero as f32 / audio_data.len().max(1) as f32);
+    println!(
+        "[DEBUG] Non-silent samples: {}/{} ({:.1}%)",
+        non_zero,
+        audio_data.len(),
+        100.0 * non_zero as f32 / audio_data.len().max(1) as f32
+    );
 
     if audio_data.is_empty() {
         app_handle
-            .emit("status-changed", StatusEvent {
-                status: "idle".to_string(),
-                message: "No audio captured".to_string(),
-            })
+            .emit(
+                "status-changed",
+                StatusEvent {
+                    status: "idle".to_string(),
+                    message: "No audio captured".to_string(),
+                },
+            )
             .ok();
         return Err("No audio data captured".to_string());
     }
 
-    let stt_engine = state.stt_engine.lock().unwrap();
-    let engine = stt_engine
-        .as_ref()
-        .ok_or("STT engine not initialized")?;
+    println!(
+        "[TIMING] T+{}ms: starting transcription...",
+        t0.elapsed().as_millis()
+    );
 
-    let transcription = engine.transcribe(&audio_data)?;
+    let stt_engine = state.stt_engine.lock().unwrap();
+    let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
+
+    let transcription = engine
+        .transcribe(&audio_data)
+        .map_err(|e| format!("Canary transcription error: {}", e))?;
+
+    println!(
+        "[TIMING] T+{}ms: transcription complete: '{}'",
+        t0.elapsed().as_millis(),
+        transcription
+    );
 
     app_handle
-        .emit("status-changed", StatusEvent {
-            status: "idle".to_string(),
-            message: "Ready! Press Ctrl+Space to dictate".to_string(),
-        })
+        .emit(
+            "status-changed",
+            StatusEvent {
+                status: "idle".to_string(),
+                message: "Ready! Press Ctrl+Space to dictate".to_string(),
+            },
+        )
         .ok();
 
     Ok(transcription)
@@ -289,7 +374,7 @@ async fn type_text(text: String) -> Result<(), String> {
 
 /// Helper function for type_text - can be called from other modules
 pub(crate) async fn do_type_text(text: String) -> Result<(), String> {
-    let mut output = TextOutput::new(100)?;  // 100ms delay for key release
+    let mut output = TextOutput::new(100)?; // 100ms delay for key release
     output.type_text(&text)?;
     Ok(())
 }
@@ -400,7 +485,10 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
 
     println!("[DEVICES] Listed {} audio devices:", devices.len());
     for dev in &devices {
-        println!("[DEVICES]   [{}] {} -> {}", dev.index, dev.name, dev.raw_name);
+        println!(
+            "[DEVICES]   [{}] {} -> {}",
+            dev.index, dev.name, dev.raw_name
+        );
     }
 
     Ok(devices)
@@ -429,6 +517,7 @@ fn format_pipewire_device_name(raw_name: &str, description: &str) -> String {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)] // Kept for future Bluetooth device name resolution
 fn get_bluetooth_device_name(source_name: &str) -> Option<String> {
     use std::process::Command;
 
@@ -459,6 +548,7 @@ fn get_bluetooth_device_name(source_name: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)] // Kept for future Bluetooth audio support
 fn get_bluetooth_cards() -> Result<Vec<AudioDevice>, String> {
     use std::process::Command;
 
@@ -493,6 +583,7 @@ fn get_bluetooth_cards() -> Result<Vec<AudioDevice>, String> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)] // Kept for future Bluetooth audio support
 fn get_bluetooth_card_description(card_name: &str) -> Option<String> {
     use std::process::Command;
 
@@ -519,6 +610,7 @@ fn get_bluetooth_card_description(card_name: &str) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)] // Kept for future USB device parsing
 fn parse_usb_device_name(source_name: &str) -> String {
     // Extract vendor/product info from alsa_input.usb-VENDOR_PRODUCT
     if source_name.contains("046d") {
@@ -530,7 +622,7 @@ fn parse_usb_device_name(source_name: &str) -> String {
 
 #[cfg(not(target_os = "linux"))]
 fn get_audio_devices_generic() -> Result<Vec<AudioDevice>, String> {
-    use cpal::traits::{HostTrait, DeviceTrait};
+    use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
     let input_devices = host.input_devices().map_err(|e| e.to_string())?;
 
@@ -538,7 +630,7 @@ fn get_audio_devices_generic() -> Result<Vec<AudioDevice>, String> {
         .enumerate()
         .filter_map(|(index, device)| {
             device.name().ok().map(|raw_name| AudioDevice {
-                name: raw_name.clone(),  // On non-Linux, just use raw name as display
+                name: raw_name.clone(), // On non-Linux, just use raw name as display
                 raw_name,
                 index,
             })
@@ -554,9 +646,9 @@ fn get_audio_devices_generic() -> Result<Vec<AudioDevice>, String> {
 
 #[derive(Clone, serde::Serialize)]
 struct AudioDevice {
-    name: String,          // Display name for UI
-    raw_name: String,      // Actual cpal device name for audio.rs
-    index: usize,          // Index in cpal device list
+    name: String,     // Display name for UI
+    raw_name: String, // Actual cpal device name for audio.rs
+    index: usize,     // Index in cpal device list
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -627,16 +719,6 @@ fn update_global_shortcut(
         })
         .map_err(|e| format!("Failed to register new shortcut: {}", e))?;
 
-    // Update GNOME shortcut on Linux
-    #[cfg(target_os = "linux")]
-    {
-        println!("[SHORTCUT] Updating GNOME shortcut to: {}", new_shortcut);
-        if let Err(e) = gnome_shortcut::register_gnome_shortcut(new_shortcut) {
-            eprintln!("[SHORTCUT] Failed to update GNOME shortcut: {}", e);
-            // Don't fail the whole operation if GNOME shortcut fails
-        }
-    }
-
     Ok(())
 }
 
@@ -647,7 +729,10 @@ async fn transcribe_audio(
     state: State<'_, AppState>,
     audio_data: Vec<f32>,
 ) -> Result<String, String> {
-    println!("[TRANSCRIBE] Received {} samples from frontend", audio_data.len());
+    println!(
+        "[TRANSCRIBE] Received {} samples from frontend",
+        audio_data.len()
+    );
 
     if audio_data.is_empty() {
         return Err("No audio data received".to_string());
@@ -658,12 +743,12 @@ async fn transcribe_audio(
 
     // Get STT engine
     let stt_engine = state.stt_engine.lock().unwrap();
-    let engine = stt_engine
-        .as_ref()
-        .ok_or("STT engine not initialized")?;
+    let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
 
     // Transcribe the audio
-    let transcription = engine.transcribe(&audio_data)?;
+    let transcription = engine
+        .transcribe(&audio_data)
+        .map_err(|e| format!("Canary transcription error: {}", e))?;
 
     println!("[TRANSCRIBE] Result: '{}'", transcription);
     Ok(transcription)
@@ -689,7 +774,10 @@ async fn install_evdev_permissions(app_handle: AppHandle) -> Result<String, Stri
         .join("install-permissions.sh");
 
     if !script_path.exists() {
-        return Err(format!("Installation script not found at: {}", script_path.display()));
+        return Err(format!(
+            "Installation script not found at: {}",
+            script_path.display()
+        ));
     }
 
     println!("[EVDEV INSTALL] Running script: {}", script_path.display());
@@ -706,7 +794,10 @@ async fn install_evdev_permissions(app_handle: AppHandle) -> Result<String, Stri
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 println!("[EVDEV INSTALL] Success: {}", stdout);
-                Ok("evdev permissions installed successfully! Please restart the application.".to_string())
+                Ok(
+                    "evdev permissions installed successfully! Please restart the application."
+                        .to_string(),
+                )
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
                 eprintln!("[EVDEV INSTALL] Failed: {}", stderr);
@@ -743,10 +834,7 @@ fn check_uinput_available() -> bool {
     {
         use std::fs::OpenOptions;
         // Try to open /dev/uinput for writing
-        OpenOptions::new()
-            .write(true)
-            .open("/dev/uinput")
-            .is_ok()
+        OpenOptions::new().write(true).open("/dev/uinput").is_ok()
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -762,13 +850,252 @@ fn log_from_frontend(message: String) {
     println!("[FRONTEND] {}", message);
 }
 
-/// Get list of installed Whisper models with their metadata
+/// Check if Python 3.8+ is installed
 #[tauri::command]
-async fn get_installed_models(app_handle: AppHandle) -> Result<Vec<model_downloader::ModelInfo>, String> {
-    model_downloader::check_installed_models(&app_handle)
+fn check_python_available() -> bool {
+    use std::process::Command;
+
+    // Try python3 first, then python
+    for python_cmd in &["python3", "python"] {
+        if let Ok(output) = Command::new(python_cmd).args(["--version"]).output() {
+            if output.status.success() {
+                let version = String::from_utf8_lossy(&output.stdout);
+                println!(
+                    "[PYTHON CHECK] {} --version: {}",
+                    python_cmd,
+                    version.trim()
+                );
+                // Check version >= 3.8
+                if version.contains("3.8")
+                    || version.contains("3.9")
+                    || version.contains("3.10")
+                    || version.contains("3.11")
+                    || version.contains("3.12")
+                    || version.contains("3.13")
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
-/// Download a Whisper model with progress events
+/// Check if NeMo toolkit is installed (checks venv first, then system Python)
+#[tauri::command]
+fn check_nemo_installed() -> bool {
+    use std::process::Command;
+
+    // First check the venv
+    let venv_python = get_venv_python();
+    if venv_python.exists() {
+        if let Ok(output) = Command::new(&venv_python)
+            .args(["-c", "import nemo; print(nemo.__version__)"])
+            .output()
+        {
+            if output.status.success() {
+                let version = String::from_utf8_lossy(&output.stdout);
+                println!("[NEMO CHECK] NeMo version (venv): {}", version.trim());
+                return true;
+            }
+        }
+    }
+
+    // Fallback: check system Python
+    for python_cmd in &["python3", "python"] {
+        if let Ok(output) = Command::new(python_cmd)
+            .args(["-c", "import nemo; print(nemo.__version__)"])
+            .output()
+        {
+            if output.status.success() {
+                let version = String::from_utf8_lossy(&output.stdout);
+                println!("[NEMO CHECK] NeMo version (system): {}", version.trim());
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Get the path to the app's Python venv
+pub fn get_venv_path() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("karaoketyper")
+        .join("venv")
+}
+
+/// Get the path to the venv's Python executable
+pub fn get_venv_python() -> std::path::PathBuf {
+    let venv = get_venv_path();
+    #[cfg(target_os = "windows")]
+    return venv.join("Scripts").join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    venv.join("bin").join("python")
+}
+
+/// Check if venv exists and has NeMo installed
+#[tauri::command]
+#[allow(dead_code)] // Tauri command, may be called from frontend
+fn check_venv_nemo() -> bool {
+    let venv_python = get_venv_python();
+    if !venv_python.exists() {
+        return false;
+    }
+
+    use std::process::Command;
+    if let Ok(output) = Command::new(&venv_python)
+        .args(["-c", "import nemo; print(nemo.__version__)"])
+        .output()
+    {
+        if output.status.success() {
+            let version = String::from_utf8_lossy(&output.stdout);
+            println!("[VENV CHECK] NeMo version: {}", version.trim());
+            return true;
+        }
+    }
+    false
+}
+
+/// Install Python dependencies (NeMo toolkit) in a virtual environment
+#[tauri::command]
+async fn install_python_dependencies(app_handle: AppHandle) -> Result<String, String> {
+    use std::process::Command;
+    use tauri::Emitter;
+
+    println!("[PYTHON INSTALL] Starting NeMo installation with venv...");
+
+    let venv_path = get_venv_path();
+    let venv_python = get_venv_python();
+
+    #[cfg(target_os = "windows")]
+    let venv_pip = venv_path.join("Scripts").join("pip.exe");
+    #[cfg(not(target_os = "windows"))]
+    let venv_pip = venv_path.join("bin").join("pip");
+
+    // Find system Python command
+    let python_cmd = if Command::new("python3")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        "python3"
+    } else {
+        "python"
+    };
+
+    // Step 1: Create venv if it doesn't exist
+    if !venv_python.exists() {
+        println!("[PYTHON INSTALL] Creating venv at: {}", venv_path.display());
+
+        app_handle
+            .emit(
+                "python-install-progress",
+                serde_json::json!({
+                    "status": "installing",
+                    "message": "Creating Python virtual environment..."
+                }),
+            )
+            .ok();
+
+        // Ensure parent directory exists
+        if let Some(parent) = venv_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+
+        let venv_output = Command::new(python_cmd)
+            .args(["-m", "venv", venv_path.to_str().unwrap()])
+            .output()
+            .map_err(|e| format!("Failed to create venv: {}", e))?;
+
+        if !venv_output.status.success() {
+            let stderr = String::from_utf8_lossy(&venv_output.stderr);
+            return Err(format!("Failed to create venv: {}", stderr));
+        }
+
+        println!("[PYTHON INSTALL] ✅ Venv created");
+    }
+
+    // Step 2: Upgrade pip in venv
+    app_handle
+        .emit(
+            "python-install-progress",
+            serde_json::json!({
+                "status": "installing",
+                "message": "Upgrading pip..."
+            }),
+        )
+        .ok();
+
+    let _ = Command::new(&venv_python)
+        .args(["-m", "pip", "install", "--upgrade", "pip"])
+        .output();
+
+    // Step 3: Install NeMo toolkit
+    app_handle
+        .emit(
+            "python-install-progress",
+            serde_json::json!({
+                "status": "installing",
+                "message": "Installing NeMo toolkit (~2GB download, please wait)..."
+            }),
+        )
+        .ok();
+
+    println!("[PYTHON INSTALL] Installing nemo_toolkit[asr] in venv...");
+
+    let install_output = Command::new(&venv_pip)
+        .args(["install", "nemo_toolkit[asr]", "soundfile"])
+        .output()
+        .map_err(|e| format!("Failed to run pip: {}", e))?;
+
+    if install_output.status.success() {
+        app_handle
+            .emit(
+                "python-install-progress",
+                serde_json::json!({
+                    "status": "success",
+                    "message": "NeMo installed successfully!"
+                }),
+            )
+            .ok();
+
+        println!("[PYTHON INSTALL] ✅ NeMo installed successfully in venv");
+        println!("[PYTHON INSTALL] Venv Python: {}", venv_python.display());
+
+        Ok("NeMo toolkit installed successfully! Restart the app to use Canary-1B.".to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&install_output.stderr);
+        let stdout = String::from_utf8_lossy(&install_output.stdout);
+        let error_msg = format!(
+            "pip install failed:\nstderr: {}\nstdout: {}",
+            stderr, stdout
+        );
+
+        app_handle
+            .emit(
+                "python-install-progress",
+                serde_json::json!({
+                    "status": "error",
+                    "message": &error_msg
+                }),
+            )
+            .ok();
+
+        eprintln!("[PYTHON INSTALL] ❌ {}", error_msg);
+        Err(error_msg)
+    }
+}
+
+/// Get list of installed Canary models with their metadata
+#[tauri::command]
+async fn get_installed_models() -> Result<Vec<model_downloader::ModelInfo>, String> {
+    model_downloader::check_installed_models()
+}
+
+/// Download a Canary model with progress events
 #[tauri::command]
 async fn download_model(app_handle: AppHandle, model_name: String) -> Result<(), String> {
     model_downloader::download_model(app_handle, model_name).await
@@ -786,14 +1113,19 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
     #[cfg(target_os = "linux")]
     {
         let evdev_ok = check_evdev_permissions();
-        println!("[SETUP] evdev permissions: {}", if evdev_ok { "OK" } else { "needed" });
+        println!(
+            "[SETUP] evdev permissions: {}",
+            if evdev_ok { "OK" } else { "needed" }
+        );
 
         if !evdev_ok {
             println!("[SETUP] Installing evdev permissions...");
             match install_evdev_permissions(app_handle.clone()).await {
                 Ok(_) => {
                     println!("[SETUP] ✅ evdev permissions installed");
-                    return Ok("evdev permissions installed! Please restart the application.".to_string());
+                    return Ok(
+                        "evdev permissions installed! Please restart the application.".to_string(),
+                    );
                 }
                 Err(e) => {
                     return Err(format!("evdev installation failed: {}", e));
@@ -810,6 +1142,317 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
     }
 
     Ok("All dependencies ready ✅".to_string())
+}
+
+// ========== WirePlumber Latency Fix Commands (Linux only) ==========
+
+/// Check if WirePlumber latency fix is installed
+#[tauri::command]
+fn check_wireplumber_latency_fix() -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let installed = wireplumber_config::is_config_installed();
+        let running = wireplumber_config::is_wireplumber_running();
+        Ok(serde_json::json!({
+            "installed": installed,
+            "wireplumber_running": running,
+            "status": wireplumber_config::get_status()
+        }))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(serde_json::json!({
+            "installed": false,
+            "wireplumber_running": false,
+            "status": "Not applicable on this platform"
+        }))
+    }
+}
+
+/// Install WirePlumber latency fix configuration
+#[tauri::command]
+fn install_wireplumber_latency_fix() -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        wireplumber_config::install_config()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("WirePlumber is only available on Linux".to_string())
+    }
+}
+
+/// Remove WirePlumber latency fix configuration
+#[tauri::command]
+fn remove_wireplumber_latency_fix() -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        wireplumber_config::remove_config()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("WirePlumber is only available on Linux".to_string())
+    }
+}
+
+/// Restart WirePlumber service to apply changes
+#[tauri::command]
+fn restart_wireplumber() -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        wireplumber_config::restart_wireplumber()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("WirePlumber is only available on Linux".to_string())
+    }
+}
+
+// ========== GNOME Focused Window Extension Commands (Linux only) ==========
+
+/// Get the extension installation path
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+fn get_gnome_extension_path() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("gnome-shell")
+        .join("extensions")
+        .join("focused-window-dbus@karaoketyper")
+}
+
+/// Check if the GNOME focused window extension is installed
+#[tauri::command]
+fn check_focused_window_extension() -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+
+        let extension_path = get_gnome_extension_path();
+        let is_installed = extension_path.join("extension.js").exists();
+
+        // Check if extension is enabled via gnome-extensions command
+        let is_enabled = if is_installed {
+            Command::new("gnome-extensions")
+                .args(["info", "focused-window-dbus@karaoketyper"])
+                .output()
+                .map(|o| {
+                    let stdout = String::from_utf8_lossy(&o.stdout);
+                    stdout.contains("State: ACTIVE") || stdout.contains("State: ENABLED")
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        // Check if GNOME Shell is running (Wayland session)
+        let is_gnome = std::env::var("XDG_CURRENT_DESKTOP")
+            .map(|d| d.to_lowercase().contains("gnome"))
+            .unwrap_or(false);
+
+        let is_wayland = std::env::var("XDG_SESSION_TYPE")
+            .map(|s| s == "wayland")
+            .unwrap_or(false);
+
+        Ok(serde_json::json!({
+            "installed": is_installed,
+            "enabled": is_enabled,
+            "is_gnome": is_gnome,
+            "is_wayland": is_wayland,
+            "path": extension_path.to_string_lossy(),
+            "needs_restart": is_installed && !is_enabled
+        }))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(serde_json::json!({
+            "installed": false,
+            "enabled": false,
+            "is_gnome": false,
+            "is_wayland": false,
+            "path": "",
+            "needs_restart": false
+        }))
+    }
+}
+
+/// Install the GNOME focused window extension
+#[tauri::command]
+fn install_focused_window_extension(app_handle: AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs;
+        use std::io::Write;
+
+        // Get the bundled extension files from resources
+        let resource_path = app_handle
+            .path()
+            .resource_dir()
+            .map_err(|e| format!("Failed to get resource dir: {}", e))?
+            .join("focused-window-dbus");
+
+        // In development, try to find the files in src-tauri/resources
+        let source_path = if resource_path.exists() {
+            resource_path
+        } else {
+            let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join("focused-window-dbus");
+            if dev_path.exists() {
+                dev_path
+            } else {
+                return Err(format!(
+                    "Extension files not found. Checked:\n  - {}\n  - {}",
+                    resource_path.display(),
+                    dev_path.display()
+                ));
+            }
+        };
+
+        // Read extension files
+        let extension_js = fs::read_to_string(source_path.join("extension.js"))
+            .map_err(|e| format!("Failed to read extension.js: {}", e))?;
+        let metadata_json = fs::read_to_string(source_path.join("metadata.json"))
+            .map_err(|e| format!("Failed to read metadata.json: {}", e))?;
+
+        // Create a temporary zip file for gnome-extensions install
+        let temp_dir = std::env::temp_dir();
+        let zip_path = temp_dir.join("focused-window-dbus@karaoketyper.zip");
+
+        // Create zip file manually (simple zip without compression)
+        let zip_file = fs::File::create(&zip_path)
+            .map_err(|e| format!("Failed to create zip: {}", e))?;
+        let mut zip = zip::ZipWriter::new(zip_file);
+
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+
+        zip.start_file("extension.js", options)
+            .map_err(|e| format!("Failed to add extension.js to zip: {}", e))?;
+        zip.write_all(extension_js.as_bytes())
+            .map_err(|e| format!("Failed to write extension.js: {}", e))?;
+
+        zip.start_file("metadata.json", options)
+            .map_err(|e| format!("Failed to add metadata.json to zip: {}", e))?;
+        zip.write_all(metadata_json.as_bytes())
+            .map_err(|e| format!("Failed to write metadata.json: {}", e))?;
+
+        zip.finish().map_err(|e| format!("Failed to finish zip: {}", e))?;
+
+        println!("[GNOME EXT] Created zip at: {}", zip_path.display());
+
+        // Use gnome-extensions install command (handles everything automatically)
+        let install_result = std::process::Command::new("gnome-extensions")
+            .args(["install", "--force", &zip_path.to_string_lossy()])
+            .output()
+            .map_err(|e| format!("Failed to run gnome-extensions install: {}", e))?;
+
+        // Clean up temp zip
+        let _ = fs::remove_file(&zip_path);
+
+        if !install_result.status.success() {
+            let stderr = String::from_utf8_lossy(&install_result.stderr);
+            return Err(format!("gnome-extensions install failed: {}", stderr));
+        }
+
+        println!("[GNOME EXT] ✅ Extension installed via gnome-extensions");
+
+        // Enable the extension via CLI
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let enable_result = std::process::Command::new("gnome-extensions")
+            .args(["enable", "focused-window-dbus@karaoketyper"])
+            .output();
+
+        let cli_enabled = matches!(&enable_result, Ok(output) if output.status.success());
+
+        // Also add to gsettings enabled-extensions (append, don't overwrite)
+        let ext_uuid = "focused-window-dbus@karaoketyper";
+
+        // Get current enabled extensions
+        let current = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.shell", "enabled-extensions"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_else(|| "@as []".to_string());
+
+        // Check if already in list
+        if !current.contains(ext_uuid) {
+            // Parse and append
+            let trimmed = current.trim();
+            let new_list = if trimmed == "@as []" || trimmed == "[]" {
+                format!("['{}']", ext_uuid)
+            } else {
+                // Remove trailing ] and append our extension
+                let without_bracket = trimmed.trim_end_matches(']');
+                format!("{}, '{}']", without_bracket, ext_uuid)
+            };
+
+            println!("[GNOME EXT] Setting enabled-extensions to: {}", new_list);
+            let _ = std::process::Command::new("gsettings")
+                .args(["set", "org.gnome.shell", "enabled-extensions", &new_list])
+                .output();
+        }
+
+        if cli_enabled {
+            println!("[GNOME EXT] ✅ Extension enabled");
+            Ok("Extension installée et activée !".to_string())
+        } else {
+            Ok(
+                "Extension installée !\n\n\
+                 Déconnectez-vous et reconnectez-vous pour l'activer."
+                    .to_string(),
+            )
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = app_handle;
+        Err("GNOME extensions are only available on Linux".to_string())
+    }
+}
+
+/// Remove the GNOME focused window extension
+#[tauri::command]
+fn remove_focused_window_extension() -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::fs;
+
+        let extension_path = get_gnome_extension_path();
+
+        if !extension_path.exists() {
+            return Ok("Extension was not installed".to_string());
+        }
+
+        // Try to disable first
+        let _ = std::process::Command::new("gnome-extensions")
+            .args(["disable", "focused-window-dbus@karaoketyper"])
+            .output();
+
+        // Remove the extension directory
+        fs::remove_dir_all(&extension_path)
+            .map_err(|e| format!("Failed to remove extension: {}", e))?;
+
+        println!(
+            "[GNOME EXT] ✅ Extension removed: {}",
+            extension_path.display()
+        );
+
+        Ok("Extension removed!\n\nLog out and back in to complete the removal.".to_string())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("GNOME extensions are only available on Linux".to_string())
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1001,7 +1644,17 @@ pub fn run() {
             transcribe_audio,
             log_from_frontend,
             get_installed_models,
-            download_model
+            download_model,
+            check_python_available,
+            check_nemo_installed,
+            install_python_dependencies,
+            check_wireplumber_latency_fix,
+            install_wireplumber_latency_fix,
+            remove_wireplumber_latency_fix,
+            restart_wireplumber,
+            check_focused_window_extension,
+            install_focused_window_extension,
+            remove_focused_window_extension
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

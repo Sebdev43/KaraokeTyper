@@ -1,0 +1,1 @@
+screen -dmS tauri-dev -L -Logfile /tmp/tauri-dev.log bash -c 'npm run tauri dev ; exec bash' 

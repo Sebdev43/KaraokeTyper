@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
+import { platform } from "@tauri-apps/plugin-os";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Brain,
@@ -10,6 +11,7 @@ import {
   Keyboard,
   Mic,
   Minus,
+  Monitor,
   RefreshCw,
   Settings,
   Square,
@@ -60,6 +62,7 @@ interface DownloadProgress {
   downloaded_mb: number;
   total_mb: number;
   percent: number;
+  status: string;
 }
 
 function SettingsWindow() {
@@ -73,11 +76,28 @@ function SettingsWindow() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [permissionsInstalled, setPermissionsInstalled] = useState<boolean>(false);
   const [uinputAvailable, setUinputAvailable] = useState<boolean>(false);
+  const [pythonAvailable, setPythonAvailable] = useState<boolean>(false);
+  const [nemoInstalled, setNemoInstalled] = useState<boolean>(false);
   const [isInstallingSystem, setIsInstallingSystem] = useState(false);
+  const [isInstallingPython, setIsInstallingPython] = useState(false);
+  const [wireplumberInstalled, setWireplumberInstalled] = useState<boolean>(false);
+  const [isInstallingWireplumber, setIsInstallingWireplumber] = useState(false);
+  const [gnomeExtInstalled, setGnomeExtInstalled] = useState<boolean>(false);
+  const [gnomeExtEnabled, setGnomeExtEnabled] = useState<boolean>(false);
+  const [isGnomeWayland, setIsGnomeWayland] = useState<boolean>(false);
+  const [isInstallingGnomeExt, setIsInstallingGnomeExt] = useState(false);
   const [installedModels, setInstalledModels] = useState<ModelInfo[]>([]);
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
+  const [currentPlatform, setCurrentPlatform] = useState<string>("linux");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Detect platform on mount
+  useEffect(() => {
+    platform()
+      .then(setCurrentPlatform)
+      .catch(() => setCurrentPlatform("linux"));
+  }, []);
 
   const loadAudioDevices = useCallback(async () => {
     try {
@@ -118,12 +138,55 @@ function SettingsWindow() {
     }
   }, []);
 
+  const checkPython = useCallback(async () => {
+    try {
+      const available = await invoke<boolean>("check_python_available");
+      setPythonAvailable(available);
+    } catch (error) {
+      console.error("Failed to check python:", error);
+    }
+  }, []);
+
+  const checkNemo = useCallback(async () => {
+    try {
+      const installed = await invoke<boolean>("check_nemo_installed");
+      setNemoInstalled(installed);
+    } catch (error) {
+      console.error("Failed to check nemo:", error);
+    }
+  }, []);
+
   const loadInstalledModels = useCallback(async () => {
     try {
       const models = await invoke<ModelInfo[]>("get_installed_models");
       setInstalledModels(models);
     } catch (error) {
       console.error("Failed to load installed models:", error);
+    }
+  }, []);
+
+  const checkWireplumber = useCallback(async () => {
+    try {
+      const result = await invoke<{ installed: boolean }>("check_wireplumber_latency_fix");
+      setWireplumberInstalled(result.installed);
+    } catch (error) {
+      console.error("Failed to check wireplumber:", error);
+    }
+  }, []);
+
+  const checkGnomeExtension = useCallback(async () => {
+    try {
+      const result = await invoke<{
+        installed: boolean;
+        enabled: boolean;
+        is_gnome: boolean;
+        is_wayland: boolean;
+      }>("check_focused_window_extension");
+      setGnomeExtInstalled(result.installed);
+      setGnomeExtEnabled(result.enabled);
+      setIsGnomeWayland(result.is_gnome && result.is_wayland);
+    } catch (error) {
+      console.error("Failed to check GNOME extension:", error);
     }
   }, []);
 
@@ -160,8 +223,22 @@ function SettingsWindow() {
     void loadSettings();
     void checkPermissions();
     void checkUinput();
+    void checkPython();
+    void checkNemo();
     void loadInstalledModels();
-  }, [loadAudioDevices, loadSettings, checkPermissions, checkUinput, loadInstalledModels]);
+    void checkWireplumber();
+    void checkGnomeExtension();
+  }, [
+    loadAudioDevices,
+    loadSettings,
+    checkPermissions,
+    checkUinput,
+    checkPython,
+    checkNemo,
+    loadInstalledModels,
+    checkWireplumber,
+    checkGnomeExtension,
+  ]);
 
   useEffect(() => {
     const unlisten = listen<DownloadProgress>("model-download-progress", (event) => {
@@ -280,6 +357,134 @@ function SettingsWindow() {
     }
   };
 
+  const handleInstallPython = async () => {
+    if (!pythonAvailable) {
+      await message(
+        "Python 3.8+ n'est pas installé.\n\nInstallez Python d'abord:\n• Linux: sudo apt install python3 python3-pip\n• macOS: brew install python3\n• Windows: Télécharger depuis python.org",
+        { title: "Python requis", kind: "warning" },
+      );
+      return;
+    }
+
+    const confirmed = await confirm(
+      "Installer NeMo toolkit pour Canary-1B ?\n\nCela va télécharger ~2GB de dépendances.\nL'installation peut prendre plusieurs minutes.",
+      { title: "Installation NeMo", kind: "info" },
+    );
+
+    if (!confirmed) return;
+
+    setIsInstallingPython(true);
+
+    try {
+      const result = await invoke<string>("install_python_dependencies");
+      await message(result, { title: "Succès", kind: "info" });
+      await checkNemo();
+    } catch (error) {
+      await message(`Échec de l'installation : ${error}`, {
+        title: "Erreur",
+        kind: "error",
+      });
+    } finally {
+      setIsInstallingPython(false);
+    }
+  };
+
+  const handleInstallWireplumber = async () => {
+    const confirmed = await confirm(
+      "Installer le fix de latence audio WirePlumber ?\n\nCela va :\n• Désactiver la suspension des nœuds audio\n• Éliminer le délai de ~2s au début des enregistrements\n\nNote: Nécessite un redémarrage de WirePlumber.",
+      { title: "Fix Latence Audio", kind: "info" },
+    );
+
+    if (!confirmed) return;
+
+    setIsInstallingWireplumber(true);
+
+    try {
+      const result = await invoke<string>("install_wireplumber_latency_fix");
+      await message(result, { title: "Succès", kind: "info" });
+      await checkWireplumber();
+    } catch (error) {
+      await message(`Échec de l'installation : ${error}`, {
+        title: "Erreur",
+        kind: "error",
+      });
+    } finally {
+      setIsInstallingWireplumber(false);
+    }
+  };
+
+  const handleRemoveWireplumber = async () => {
+    const confirmed = await confirm("Supprimer le fix de latence audio WirePlumber ?", {
+      title: "Supprimer Configuration",
+      kind: "warning",
+    });
+
+    if (!confirmed) return;
+
+    setIsInstallingWireplumber(true);
+
+    try {
+      const result = await invoke<string>("remove_wireplumber_latency_fix");
+      await message(result, { title: "Succès", kind: "info" });
+      await checkWireplumber();
+    } catch (error) {
+      await message(`Échec de la suppression : ${error}`, {
+        title: "Erreur",
+        kind: "error",
+      });
+    } finally {
+      setIsInstallingWireplumber(false);
+    }
+  };
+
+  const handleInstallGnomeExtension = async () => {
+    const confirmed = await confirm(
+      "Installer l'extension GNOME pour la détection de terminal ?\n\nCela permet de coller automatiquement avec Ctrl+Shift+V dans les terminaux.\n\nNote: Nécessite de se déconnecter/reconnecter pour activer.",
+      { title: "Extension Terminal", kind: "info" },
+    );
+
+    if (!confirmed) return;
+
+    setIsInstallingGnomeExt(true);
+
+    try {
+      const result = await invoke<string>("install_focused_window_extension");
+      await message(result, { title: "Succès", kind: "info" });
+      await checkGnomeExtension();
+    } catch (error) {
+      await message(`Échec de l'installation : ${error}`, {
+        title: "Erreur",
+        kind: "error",
+      });
+    } finally {
+      setIsInstallingGnomeExt(false);
+    }
+  };
+
+  const handleRemoveGnomeExtension = async () => {
+    const confirmed = await confirm("Supprimer l'extension de détection de terminal ?", {
+      title: "Supprimer Extension",
+      kind: "warning",
+    });
+
+    if (!confirmed) return;
+
+    setIsInstallingGnomeExt(true);
+
+    try {
+      const result = await invoke<string>("remove_focused_window_extension");
+      await message(result, { title: "Succès", kind: "info" });
+      await checkGnomeExtension();
+    } catch (error) {
+      await message(`Échec de la suppression : ${error}`, {
+        title: "Erreur",
+        kind: "error",
+      });
+    } finally {
+      setIsInstallingGnomeExt(false);
+    }
+  };
+
   const currentWindow = getCurrentWindow();
 
   const handleMinimize = async (e: React.MouseEvent) => {
@@ -317,18 +522,20 @@ function SettingsWindow() {
     }
   };
 
-  const allDepsInstalled = permissionsInstalled && uinputAvailable;
+  const systemDepsInstalled = permissionsInstalled && uinputAvailable;
+  const pythonDepsInstalled = pythonAvailable && nemoInstalled;
 
   return (
     <div className="flex flex-col h-screen bg-background">
-      {/* Custom Titlebar */}
+      {/* Fixed Titlebar */}
       <div
-        className="flex items-center justify-between h-10 px-3 bg-card border-b border-border select-none"
+        className="flex-none flex items-center justify-between h-10 px-3 bg-card border-b border-border select-none"
         data-tauri-drag-region
       >
-        <span className="text-sm font-medium text-foreground" data-tauri-drag-region>
-          KaraokeTyper Settings
-        </span>
+        <div className="flex items-center gap-2" data-tauri-drag-region>
+          <Settings className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium text-foreground">Settings</span>
+        </div>
         <div className="flex gap-1" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
           <Button
             variant="ghost"
@@ -355,14 +562,6 @@ function SettingsWindow() {
             <X className="h-4 w-4" />
           </Button>
         </div>
-      </div>
-
-      {/* Header */}
-      <div className="px-6 py-4 border-b border-border">
-        <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
-          <Mic className="h-6 w-6 text-primary" />
-          KaraokeTyper Settings
-        </h1>
       </div>
 
       {/* Content */}
@@ -509,7 +708,7 @@ function SettingsWindow() {
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Download Whisper models for offline speech recognition
+                Download Canary models for offline speech recognition
               </p>
 
               {installedModels.map((modelInfo) => (
@@ -525,20 +724,16 @@ function SettingsWindow() {
                           Installed
                         </Badge>
                       )}
-                      {modelInfo.name === "medium" && (
+                      {modelInfo.name === "canary-1b-flash" && (
                         <Badge variant="secondary" className="text-xs">
-                          Recommended for French
+                          Recommended
                         </Badge>
                       )}
                     </div>
                     <div className="text-sm text-muted-foreground mt-1">
                       Size: {modelInfo.size_mb} MB
-                      {modelInfo.name === "tiny" && " • Fastest, lowest accuracy"}
-                      {modelInfo.name === "base" && " • Good balance"}
-                      {modelInfo.name === "small" && " • Better accuracy"}
-                      {modelInfo.name === "medium" && " • High accuracy"}
-                      {modelInfo.name === "large" && " • Best accuracy, very slow"}
-                      {modelInfo.name === "large-v3" && " • Latest, 10-20% better than large"}
+                      {modelInfo.name === "canary-1b-flash" && " • Fast, good accuracy"}
+                      {modelInfo.name === "canary-1b" && " • Best accuracy, slower"}
                     </div>
 
                     {downloadingModel === modelInfo.name && (
@@ -572,45 +767,210 @@ function SettingsWindow() {
                 System Setup
               </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="space-y-6">
+              {/* System Dependencies (Linux-specific) */}
+              {currentPlatform === "linux" && (
+                <div className="space-y-3">
+                  <Label>System Permissions</Label>
+                  <p className="text-sm text-muted-foreground">
+                    {systemDepsInstalled
+                      ? "System permissions configured"
+                      : "Configure evdev/uinput permissions"}
+                  </p>
+
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center gap-2">
+                      <Badge variant={permissionsInstalled ? "default" : "secondary"}>
+                        {permissionsInstalled ? "✓" : "○"}
+                      </Badge>
+                      <span className="text-sm">Push-to-talk (evdev)</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={uinputAvailable ? "default" : "secondary"}>
+                        {uinputAvailable ? "✓" : "○"}
+                      </Badge>
+                      <span className="text-sm">Text output (uinput)</span>
+                    </div>
+                  </div>
+
+                  <Button
+                    onClick={handleInstallSystem}
+                    disabled={isInstallingSystem || systemDepsInstalled}
+                    variant={systemDepsInstalled ? "outline" : "default"}
+                    size="sm"
+                  >
+                    {isInstallingSystem
+                      ? "Installing..."
+                      : systemDepsInstalled
+                        ? "Configured ✓"
+                        : "Setup Permissions"}
+                  </Button>
+                </div>
+              )}
+
+              {currentPlatform === "linux" && <Separator />}
+
+              {/* Python/NeMo Dependencies */}
               <div className="space-y-3">
-                <Label>System Dependencies</Label>
+                <Label>Speech Recognition (Canary-1B)</Label>
                 <p className="text-sm text-muted-foreground">
-                  {allDepsInstalled
-                    ? "All dependencies installed"
-                    : "Install required system components automatically"}
+                  {pythonDepsInstalled
+                    ? "NeMo toolkit ready for Canary-1B"
+                    : "Install Python dependencies for speech recognition"}
                 </p>
 
                 <div className="flex flex-col gap-2">
                   <div className="flex items-center gap-2">
-                    <Badge variant={permissionsInstalled ? "default" : "secondary"}>
-                      {permissionsInstalled ? "✓" : "○"}
+                    <Badge variant={pythonAvailable ? "default" : "secondary"}>
+                      {pythonAvailable ? "✓" : "○"}
                     </Badge>
-                    <span className="text-sm">Push-to-talk (evdev)</span>
+                    <span className="text-sm">Python 3.8+</span>
+                    {!pythonAvailable && (
+                      <span className="text-xs text-muted-foreground">(install manually)</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge variant={uinputAvailable ? "default" : "secondary"}>
-                      {uinputAvailable ? "✓" : "○"}
+                    <Badge variant={nemoInstalled ? "default" : "secondary"}>
+                      {nemoInstalled ? "✓" : "○"}
                     </Badge>
-                    <span className="text-sm">Text output (uinput)</span>
+                    <span className="text-sm">NeMo toolkit (~2GB)</span>
                   </div>
                 </div>
 
                 <Button
-                  onClick={handleInstallSystem}
-                  disabled={isInstallingSystem || allDepsInstalled}
-                  variant={allDepsInstalled ? "outline" : "default"}
-                  className="mt-2"
+                  onClick={handleInstallPython}
+                  disabled={isInstallingPython || pythonDepsInstalled}
+                  variant={pythonDepsInstalled ? "outline" : "default"}
+                  size="sm"
                 >
-                  {isInstallingSystem
-                    ? "Installing..."
-                    : allDepsInstalled
-                      ? "All Installed ✓"
-                      : "Setup System"}
+                  {isInstallingPython
+                    ? "Installing NeMo..."
+                    : pythonDepsInstalled
+                      ? "Installed ✓"
+                      : pythonAvailable
+                        ? "Install NeMo"
+                        : "Install Python first"}
                 </Button>
               </div>
+
+              {currentPlatform === "linux" && <Separator />}
+
+              {/* WirePlumber Latency Fix (Linux only) */}
+              {currentPlatform === "linux" && (
+                <div className="space-y-3">
+                  <Label>Audio Latency Fix</Label>
+                  <p className="text-sm text-muted-foreground">
+                    {wireplumberInstalled
+                      ? "WirePlumber configured - no audio delay"
+                      : "Fix ~2s delay at recording start (WirePlumber)"}
+                  </p>
+
+                  <div className="flex items-center gap-2">
+                    <Badge variant={wireplumberInstalled ? "default" : "secondary"}>
+                      {wireplumberInstalled ? "✓" : "○"}
+                    </Badge>
+                    <span className="text-sm">
+                      {wireplumberInstalled
+                        ? "Node suspension disabled"
+                        : "Audio nodes suspend when idle"}
+                    </span>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleInstallWireplumber}
+                      disabled={isInstallingWireplumber || wireplumberInstalled}
+                      variant={wireplumberInstalled ? "outline" : "default"}
+                      size="sm"
+                    >
+                      {isInstallingWireplumber
+                        ? "Installing..."
+                        : wireplumberInstalled
+                          ? "Installed ✓"
+                          : "Install Fix"}
+                    </Button>
+                    {wireplumberInstalled && (
+                      <Button
+                        onClick={handleRemoveWireplumber}
+                        disabled={isInstallingWireplumber}
+                        variant="destructive"
+                        size="sm"
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
+
+          {/* GNOME Terminal Detection Extension (Linux/Wayland only) */}
+          {isGnomeWayland && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Monitor className="h-5 w-5 text-primary" />
+                  Terminal Detection
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  GNOME Shell extension for automatic terminal detection. When active, uses
+                  Ctrl+Shift+V in terminals and Ctrl+V elsewhere.
+                </p>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Badge variant={gnomeExtInstalled && gnomeExtEnabled ? "default" : "secondary"}>
+                      {gnomeExtInstalled && gnomeExtEnabled
+                        ? "Active"
+                        : gnomeExtInstalled
+                          ? "Installed (disabled)"
+                          : "Not installed"}
+                    </Badge>
+                    <span className="text-sm">
+                      {gnomeExtInstalled && gnomeExtEnabled
+                        ? "Auto-detect active"
+                        : "Using fallback detection"}
+                    </span>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleInstallGnomeExtension}
+                      disabled={isInstallingGnomeExt || gnomeExtInstalled}
+                      variant={gnomeExtInstalled ? "outline" : "default"}
+                      size="sm"
+                    >
+                      {isInstallingGnomeExt
+                        ? "Installing..."
+                        : gnomeExtInstalled
+                          ? "Installed ✓"
+                          : "Install Extension"}
+                    </Button>
+                    {gnomeExtInstalled && (
+                      <Button
+                        onClick={handleRemoveGnomeExtension}
+                        disabled={isInstallingGnomeExt}
+                        variant="destructive"
+                        size="sm"
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </div>
+                </div>
+
+                {gnomeExtInstalled && !gnomeExtEnabled && (
+                  <p className="text-sm text-yellow-500">
+                    Extension installed but not enabled. Enable it in GNOME Extensions app or run:
+                    gnome-extensions enable focused-window-dbus@karaoketyper
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {/* About */}
           <Card>
@@ -622,15 +982,21 @@ function SettingsWindow() {
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">KaraokeTyper v0.1.0</p>
-              <p className="text-sm text-muted-foreground">Offline voice dictation for Linux</p>
+              <p className="text-sm text-muted-foreground">
+                Offline voice dictation for{" "}
+                {currentPlatform === "macos"
+                  ? "macOS"
+                  : currentPlatform === "windows"
+                    ? "Windows"
+                    : "Linux"}
+              </p>
             </CardContent>
           </Card>
         </div>
       </ScrollArea>
 
-      {/* Footer */}
-      <Separator />
-      <div className="flex items-center justify-end gap-4 px-6 py-4">
+      {/* Fixed Footer */}
+      <div className="flex-none flex items-center justify-end gap-4 px-6 py-4 border-t border-border">
         {saveStatus && (
           <span
             className={cn(

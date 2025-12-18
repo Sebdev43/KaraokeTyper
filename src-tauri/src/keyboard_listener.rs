@@ -1,15 +1,21 @@
-use rdev::{listen, Event, EventType, Key};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::mpsc;
+// On Linux, only basic imports (evdev is used instead of rdev)
+#[cfg(target_os = "linux")]
+use tauri::AppHandle;
 
-/// Cross-platform keyboard listener using rdev
-/// Works on Linux (X11/Wayland*), Windows, and macOS
-///
-/// *Note: On Wayland, rdev may have limitations. For full Wayland support,
-/// consider using evdev as a fallback (Linux-only, requires input group permissions)
-#[allow(dead_code)] // Used on Windows/macOS, Linux uses evdev_listener
+// On Windows/macOS: full rdev-based implementation
+#[cfg(not(target_os = "linux"))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(target_os = "linux"))]
+use std::sync::Arc;
+#[cfg(not(target_os = "linux"))]
+use tauri::{AppHandle, Emitter, Manager};
+#[cfg(not(target_os = "linux"))]
+use tokio::sync::mpsc;
+#[cfg(not(target_os = "linux"))]
+use rdev::{listen, Event, EventType, Key};
+
+/// Hotkey events for push-to-talk (used on Windows/macOS only)
+#[cfg(not(target_os = "linux"))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HotkeyEvent {
     PushToTalkPressed,
@@ -17,10 +23,30 @@ pub enum HotkeyEvent {
 }
 
 /// Start the cross-platform keyboard listener for push-to-talk
-#[allow(dead_code)] // Used on Windows/macOS, Linux uses evdev_listener
+/// On Linux: Uses evdev for best Wayland compatibility
+/// On Windows/macOS: Uses rdev
 pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String> {
     println!("[KEYBOARD] Starting cross-platform keyboard listener...");
     println!("[KEYBOARD] Platform: {}", std::env::consts::OS);
+
+    // On Linux, use evdev for better Wayland support
+    #[cfg(target_os = "linux")]
+    {
+        println!("[KEYBOARD] Linux detected - using evdev for reliable Wayland support");
+        crate::evdev_listener::start_evdev_listener(app_handle).await
+    }
+
+    // On Windows/macOS, use rdev
+    #[cfg(not(target_os = "linux"))]
+    {
+        start_rdev_listener(app_handle).await
+    }
+}
+
+/// rdev-based keyboard listener for Windows/macOS
+#[cfg(not(target_os = "linux"))]
+async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
+    println!("[KEYBOARD] Using rdev for keyboard capture");
 
     // Channel for communicating hotkey events to async context
     let (tx, mut rx) = mpsc::unbounded_channel::<HotkeyEvent>();
@@ -49,17 +75,6 @@ pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String
         // Start listening - this blocks
         if let Err(e) = listen(callback) {
             eprintln!("[KEYBOARD] Error in rdev listener: {:?}", e);
-
-            // On Linux Wayland, rdev might fail. Log helpful message.
-            #[cfg(target_os = "linux")]
-            {
-                eprintln!("[KEYBOARD] ⚠️  If on Wayland, you may need to:");
-                eprintln!(
-                    "[KEYBOARD]    1. Add user to 'input' group: sudo usermod -aG input $USER"
-                );
-                eprintln!("[KEYBOARD]    2. Log out and log back in");
-                eprintln!("[KEYBOARD]    3. Or use X11 session instead of Wayland");
-            }
         }
     });
 
@@ -127,8 +142,8 @@ pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String
     Ok(())
 }
 
-/// Handle key press events
-#[allow(dead_code)] // Used on Windows/macOS
+/// Handle key press events (Windows/macOS only)
+#[cfg(not(target_os = "linux"))]
 fn handle_key_press(
     key: Key,
     ctrl_pressed: &Arc<AtomicBool>,
@@ -153,8 +168,8 @@ fn handle_key_press(
     }
 }
 
-/// Handle key release events
-#[allow(dead_code)] // Used on Windows/macOS
+/// Handle key release events (Windows/macOS only)
+#[cfg(not(target_os = "linux"))]
 fn handle_key_release(
     key: Key,
     ctrl_pressed: &Arc<AtomicBool>,

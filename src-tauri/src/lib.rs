@@ -1569,41 +1569,26 @@ pub fn run() {
                 }
             }
 
-            // Start keyboard listener for push-to-talk
+            // Start keyboard listener for push-to-talk (cross-platform)
+            // - Linux: uses evdev for best Wayland support
+            // - Windows/macOS: uses rdev
             println!("[KEYBOARD] Starting push-to-talk listener...");
             let app_handle_keyboard = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
-                // On Linux: Use evdev directly (works on both X11 and Wayland)
-                // rdev doesn't work properly on Wayland
-                #[cfg(target_os = "linux")]
-                {
-                    println!("[KEYBOARD] Linux detected - using evdev for reliable keyboard capture");
-                    match evdev_listener::start_evdev_listener(app_handle_keyboard).await {
-                        Ok(_) => {
-                            println!("[KEYBOARD] ✅ evdev listener active");
-                        }
-                        Err(e) => {
-                            eprintln!("[KEYBOARD] ❌ evdev listener failed: {}", e);
-                            eprintln!("[KEYBOARD] Push-to-talk will not work.");
+                match keyboard_listener::start_keyboard_listener(app_handle_keyboard).await {
+                    Ok(_) => {
+                        println!("[KEYBOARD] ✅ Keyboard listener active");
+                    }
+                    Err(e) => {
+                        eprintln!("[KEYBOARD] ❌ Keyboard listener failed: {}", e);
+                        eprintln!("[KEYBOARD] Push-to-talk will not work.");
+
+                        #[cfg(target_os = "linux")]
+                        {
                             eprintln!("[KEYBOARD] Add user to 'input' group:");
                             eprintln!("[KEYBOARD]   sudo usermod -aG input $USER");
                             eprintln!("[KEYBOARD]   Then log out and back in.");
-                        }
-                    }
-                }
-
-                // On Windows/macOS: Use rdev (cross-platform)
-                #[cfg(not(target_os = "linux"))]
-                {
-                    println!("[KEYBOARD] Using rdev for cross-platform keyboard capture");
-                    match keyboard_listener::start_keyboard_listener(app_handle_keyboard).await {
-                        Ok(_) => {
-                            println!("[KEYBOARD] ✅ rdev listener active");
-                        }
-                        Err(e) => {
-                            eprintln!("[KEYBOARD] ❌ Keyboard listener failed: {}", e);
-                            eprintln!("[KEYBOARD] Push-to-talk will not work.");
                         }
                     }
                 }

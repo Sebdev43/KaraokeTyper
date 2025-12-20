@@ -71,18 +71,19 @@ impl AudioCaptureCli {
         *recording_process.lock().unwrap() = Some(child);
 
         // Spawn thread to read audio data
-        // Use small buffer (1024 bytes = 512 samples = 32ms) for low latency
+        // Use larger buffer for more reliable capture
         std::thread::spawn(move || {
-            let mut reader = std::io::BufReader::with_capacity(1024, stdout);
-            let mut buf = [0u8; 1024]; // 512 samples at 16-bit = 32ms
+            let mut reader = std::io::BufReader::with_capacity(4096, stdout);
+            let mut buf = [0u8; 4096]; // 2048 samples at 16-bit = 128ms chunks
 
+            // Read until EOF (when parec is killed, pipe closes)
+            // Don't check is_recording here - read ALL remaining data from pipe
             loop {
-                if !*is_recording.lock().unwrap() {
-                    break;
-                }
-
                 match reader.read(&mut buf) {
-                    Ok(0) => break, // EOF
+                    Ok(0) => {
+                        // EOF - pipe closed (parec killed)
+                        break;
+                    }
                     Ok(n) => {
                         // Convert S16LE bytes to f32 samples
                         let mut buffer = audio_buffer.lock().unwrap();
@@ -117,8 +118,8 @@ impl AudioCaptureCli {
             let _ = child.wait();
         }
 
-        // Give the reader thread time to finish (reduced for low latency)
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Give the reader thread time to drain remaining data from pipe
+        std::thread::sleep(std::time::Duration::from_millis(150));
 
         let buffer = self.audio_buffer.lock().unwrap().clone();
         let elapsed = self

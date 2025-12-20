@@ -6,7 +6,9 @@ import { platform } from "@tauri-apps/plugin-os";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Brain,
+  Cpu,
   Download,
+  Gpu,
   Info,
   Keyboard,
   Mic,
@@ -16,6 +18,7 @@ import {
   Settings,
   Square,
   X,
+  Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -48,13 +51,17 @@ interface AppConfig {
   model: string;
   key_delay_ms: number;
   language: string;
+  stt_provider: string | null;
+  model_path: string | null;
 }
 
 interface ModelInfo {
   name: string;
+  display_name: string;
   size_mb: number;
   url: string;
   installed: boolean;
+  description: string;
 }
 
 interface DownloadProgress {
@@ -65,11 +72,68 @@ interface DownloadProgress {
   status: string;
 }
 
+interface GpuInfo {
+  vendor: string;
+  name: string;
+  vram_mb: number | null;
+  driver_version: string | null;
+}
+
+interface GpuDetectionResult {
+  success: boolean;
+  gpus: GpuInfo[];
+  recommended_backend: string;
+  install_commands: string[];
+  has_nvidia: boolean;
+  has_amd: boolean;
+  has_apple: boolean;
+  has_intel: boolean;
+}
+
+// Normalize ONNX Runtime provider names to short names
+function normalizeBackend(backend: string): "cuda" | "rocm" | "coreml" | "cpu" {
+  const b = backend.toLowerCase();
+  if (b.includes("cuda")) return "cuda";
+  if (b.includes("migraphx") || b.includes("rocm")) return "rocm";
+  if (b.includes("coreml")) return "coreml";
+  return "cpu";
+}
+
+// Get display name for backend
+function getBackendDisplayName(backend: string): string {
+  const normalized = normalizeBackend(backend);
+  switch (normalized) {
+    case "cuda":
+      return "NVIDIA CUDA";
+    case "rocm":
+      return "AMD ROCm";
+    case "coreml":
+      return "Apple CoreML";
+    default:
+      return "CPU (Universal)";
+  }
+}
+
+// Get short name for button labels
+function getBackendShortName(backend: string): string {
+  const normalized = normalizeBackend(backend);
+  switch (normalized) {
+    case "cuda":
+      return "NVIDIA";
+    case "rocm":
+      return "AMD";
+    case "coreml":
+      return "Apple";
+    default:
+      return "CPU";
+  }
+}
+
 function SettingsWindow() {
   const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<number>(0);
   const [shortcut, setShortcut] = useState("Ctrl+Space");
-  const [model, setModel] = useState("base");
+  const [model, setModel] = useState("sherpa-onnx-whisper-tiny");
   const [language, setLanguage] = useState("fr");
   const [isCapturing, setIsCapturing] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string>("");
@@ -77,9 +141,7 @@ function SettingsWindow() {
   const [permissionsInstalled, setPermissionsInstalled] = useState<boolean>(false);
   const [uinputAvailable, setUinputAvailable] = useState<boolean>(false);
   const [pythonAvailable, setPythonAvailable] = useState<boolean>(false);
-  const [nemoInstalled, setNemoInstalled] = useState<boolean>(false);
   const [isInstallingSystem, setIsInstallingSystem] = useState(false);
-  const [isInstallingPython, setIsInstallingPython] = useState(false);
   const [wireplumberInstalled, setWireplumberInstalled] = useState<boolean>(false);
   const [isInstallingWireplumber, setIsInstallingWireplumber] = useState(false);
   const [gnomeExtInstalled, setGnomeExtInstalled] = useState<boolean>(false);
@@ -92,11 +154,20 @@ function SettingsWindow() {
   const [currentPlatform, setCurrentPlatform] = useState<string>("linux");
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // GPU & STT Backend state
+  const [gpuInfo, setGpuInfo] = useState<GpuDetectionResult | null>(null);
+  const [isDetectingGpu, setIsDetectingGpu] = useState(false);
+  const [sherpaInstalled, setSherpaInstalled] = useState(false);
+  const [isInstallingStt, setIsInstallingStt] = useState(false);
+  const [sttInstallProgress, setSttInstallProgress] = useState<string>("");
+
   // Detect platform on mount
   useEffect(() => {
-    platform()
-      .then(setCurrentPlatform)
-      .catch(() => setCurrentPlatform("linux"));
+    try {
+      setCurrentPlatform(platform());
+    } catch {
+      setCurrentPlatform("linux");
+    }
   }, []);
 
   const loadAudioDevices = useCallback(async () => {
@@ -147,15 +218,6 @@ function SettingsWindow() {
     }
   }, []);
 
-  const checkNemo = useCallback(async () => {
-    try {
-      const installed = await invoke<boolean>("check_nemo_installed");
-      setNemoInstalled(installed);
-    } catch (error) {
-      console.error("Failed to check nemo:", error);
-    }
-  }, []);
-
   const loadInstalledModels = useCallback(async () => {
     try {
       const models = await invoke<ModelInfo[]>("get_installed_models");
@@ -187,6 +249,28 @@ function SettingsWindow() {
       setIsGnomeWayland(result.is_gnome && result.is_wayland);
     } catch (error) {
       console.error("Failed to check GNOME extension:", error);
+    }
+  }, []);
+
+  const detectGpu = useCallback(async () => {
+    setIsDetectingGpu(true);
+    try {
+      const result = await invoke<GpuDetectionResult>("detect_gpu");
+      setGpuInfo(result);
+    } catch (error) {
+      console.error("Failed to detect GPU:", error);
+      setGpuInfo(null);
+    } finally {
+      setIsDetectingGpu(false);
+    }
+  }, []);
+
+  const checkSherpaOnnx = useCallback(async () => {
+    try {
+      const installed = await invoke<boolean>("check_sherpa_onnx_installed");
+      setSherpaInstalled(installed);
+    } catch (error) {
+      console.error("Failed to check sherpa-onnx:", error);
     }
   }, []);
 
@@ -224,31 +308,47 @@ function SettingsWindow() {
     void checkPermissions();
     void checkUinput();
     void checkPython();
-    void checkNemo();
     void loadInstalledModels();
     void checkWireplumber();
     void checkGnomeExtension();
+    void detectGpu();
+    void checkSherpaOnnx();
   }, [
     loadAudioDevices,
     loadSettings,
     checkPermissions,
     checkUinput,
     checkPython,
-    checkNemo,
     loadInstalledModels,
     checkWireplumber,
     checkGnomeExtension,
+    detectGpu,
+    checkSherpaOnnx,
   ]);
 
   useEffect(() => {
-    const unlisten = listen<DownloadProgress>("model-download-progress", (event) => {
+    const unlistenProgress = listen<DownloadProgress>("model-download-progress", (event) => {
       setDownloadProgress(event.payload.percent);
     });
 
+    const unlistenComplete = listen("model-download-complete", () => {
+      // Refresh models list when download completes
+      void loadInstalledModels();
+    });
+
+    const unlistenSttProgress = listen<{ status: string; message: string }>(
+      "stt-install-progress",
+      (event) => {
+        setSttInstallProgress(event.payload.message);
+      },
+    );
+
     return () => {
-      void unlisten.then((fn) => fn());
+      void unlistenProgress.then((fn) => fn());
+      void unlistenComplete.then((fn) => fn());
+      void unlistenSttProgress.then((fn) => fn());
     };
-  }, []);
+  }, [loadInstalledModels]);
 
   const handleShortcutCapture = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -306,6 +406,10 @@ function SettingsWindow() {
       const selectedDeviceName =
         audioDevices.find((d) => d.index === selectedDevice)?.raw_name || null;
 
+      // Get model path for the selected model
+      const selectedModel = installedModels.find((m) => m.name === model);
+      const modelPath = selectedModel?.installed ? selectedModel.url : null;
+
       const config: AppConfig = {
         shortcut,
         audio_device_index: selectedDevice,
@@ -313,6 +417,8 @@ function SettingsWindow() {
         model,
         key_delay_ms: 8,
         language,
+        stt_provider: null, // Auto-detect
+        model_path: modelPath,
       };
 
       await invoke("save_settings", { newConfig: config });
@@ -357,35 +463,42 @@ function SettingsWindow() {
     }
   };
 
-  const handleInstallPython = async () => {
+  const handleInstallSttBackend = async () => {
     if (!pythonAvailable) {
       await message(
-        "Python 3.8+ n'est pas installé.\n\nInstallez Python d'abord:\n• Linux: sudo apt install python3 python3-pip\n• macOS: brew install python3\n• Windows: Télécharger depuis python.org",
+        "Python 3.8+ n'est pas installé.\n\nInstallez Python d'abord:\n• Linux: sudo apt install python3 python3-pip python3-venv\n• macOS: brew install python3\n• Windows: Télécharger depuis python.org",
         { title: "Python requis", kind: "warning" },
       );
       return;
     }
 
+    const backend = gpuInfo?.recommended_backend || "CPUExecutionProvider";
+    const backendName = getBackendDisplayName(backend);
+
     const confirmed = await confirm(
-      "Installer NeMo toolkit pour Canary-1B ?\n\nCela va télécharger ~2GB de dépendances.\nL'installation peut prendre plusieurs minutes.",
-      { title: "Installation NeMo", kind: "info" },
+      `Installer sherpa-onnx avec ${backendName} ?\n\nCela va installer:\n• sherpa-onnx (reconnaissance vocale)\n• ONNX Runtime optimisé pour ${backendName}\n\nL'installation peut prendre plusieurs minutes.`,
+      { title: "Installation STT", kind: "info" },
     );
 
     if (!confirmed) return;
 
-    setIsInstallingPython(true);
+    setIsInstallingStt(true);
+    setSttInstallProgress("Préparation de l'installation...");
 
     try {
-      const result = await invoke<string>("install_python_dependencies");
+      const result = await invoke<string>("install_stt_dependencies", {
+        backend,
+      });
       await message(result, { title: "Succès", kind: "info" });
-      await checkNemo();
+      await checkSherpaOnnx();
     } catch (error) {
       await message(`Échec de l'installation : ${error}`, {
         title: "Erreur",
         kind: "error",
       });
     } finally {
-      setIsInstallingPython(false);
+      setIsInstallingStt(false);
+      setSttInstallProgress("");
     }
   };
 
@@ -523,13 +636,12 @@ function SettingsWindow() {
   };
 
   const systemDepsInstalled = permissionsInstalled && uinputAvailable;
-  const pythonDepsInstalled = pythonAvailable && nemoInstalled;
 
   return (
-    <div className="flex flex-col h-screen bg-background">
+    <div className="flex flex-col h-screen overflow-hidden bg-background">
       {/* Fixed Titlebar */}
       <div
-        className="flex-none flex items-center justify-between h-10 px-3 bg-card border-b border-border select-none"
+        className="shrink-0 flex items-center justify-between h-10 px-3 bg-card border-b border-border select-none"
         data-tauri-drag-region
       >
         <div className="flex items-center gap-2" data-tauri-drag-region>
@@ -565,7 +677,7 @@ function SettingsWindow() {
       </div>
 
       {/* Content */}
-      <ScrollArea className="flex-1">
+      <ScrollArea className="flex-1 min-h-0">
         <div className="p-6 space-y-6">
           {/* Audio Input */}
           <Card>
@@ -637,6 +749,142 @@ function SettingsWindow() {
             </CardContent>
           </Card>
 
+          {/* GPU & STT Backend */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Gpu className="h-5 w-5 text-primary" />
+                GPU & STT Backend
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* GPU Detection */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <Label>Detected Hardware</Label>
+                  <Button variant="ghost" size="sm" onClick={detectGpu} disabled={isDetectingGpu}>
+                    <RefreshCw className={cn("h-4 w-4", isDetectingGpu && "animate-spin")} />
+                  </Button>
+                </div>
+
+                {isDetectingGpu ? (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    Detecting GPU...
+                  </div>
+                ) : gpuInfo?.gpus && gpuInfo.gpus.length > 0 ? (
+                  <div className="space-y-2">
+                    {gpuInfo.gpus.map((gpu) => (
+                      <div
+                        key={`${gpu.vendor}-${gpu.name}`}
+                        className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30"
+                      >
+                        {gpu.vendor === "NVIDIA" ? (
+                          <Zap className="h-5 w-5 text-green-500" />
+                        ) : gpu.vendor === "AMD" ? (
+                          <Zap className="h-5 w-5 text-red-500" />
+                        ) : gpu.vendor === "Apple" ? (
+                          <Zap className="h-5 w-5 text-gray-400" />
+                        ) : (
+                          <Cpu className="h-5 w-5 text-blue-500" />
+                        )}
+                        <div className="flex-1">
+                          <div className="font-medium">{gpu.name}</div>
+                          <div className="text-xs text-muted-foreground">
+                            {gpu.vendor}
+                            {gpu.vram_mb && ` • ${gpu.vram_mb} MB VRAM`}
+                            {gpu.driver_version && ` • Driver: ${gpu.driver_version}`}
+                          </div>
+                        </div>
+                        <Badge
+                          variant={
+                            gpu.vendor === "NVIDIA"
+                              ? "default"
+                              : gpu.vendor === "AMD"
+                                ? "secondary"
+                                : "outline"
+                          }
+                        >
+                          {gpu.vendor === "NVIDIA"
+                            ? "CUDA"
+                            : gpu.vendor === "AMD"
+                              ? "ROCm"
+                              : gpu.vendor === "Apple"
+                                ? "CoreML"
+                                : "CPU"}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 p-3 rounded-lg border border-border bg-muted/30">
+                    <Cpu className="h-5 w-5 text-blue-500" />
+                    <div>
+                      <div className="font-medium">CPU Only</div>
+                      <div className="text-xs text-muted-foreground">No dedicated GPU detected</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <Separator />
+
+              {/* Recommended Backend */}
+              <div className="space-y-3">
+                <Label>Recommended Backend</Label>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-sm">
+                    {getBackendDisplayName(gpuInfo?.recommended_backend || "")}
+                  </Badge>
+                  {gpuInfo?.recommended_backend &&
+                    normalizeBackend(gpuInfo.recommended_backend) !== "cpu" && (
+                      <span className="text-xs text-green-500">GPU acceleration available</span>
+                    )}
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* STT Installation Status */}
+              <div className="space-y-3">
+                <Label>Speech Recognition Engine (sherpa-onnx)</Label>
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <Badge variant={sherpaInstalled ? "default" : "secondary"}>
+                      {sherpaInstalled ? "✓" : "○"}
+                    </Badge>
+                    <span className="text-sm">
+                      {sherpaInstalled ? "sherpa-onnx installed" : "sherpa-onnx not installed"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={pythonAvailable ? "default" : "secondary"}>
+                      {pythonAvailable ? "✓" : "○"}
+                    </Badge>
+                    <span className="text-sm">Python 3.8+</span>
+                  </div>
+                </div>
+
+                {sttInstallProgress && (
+                  <p className="text-sm text-muted-foreground">{sttInstallProgress}</p>
+                )}
+
+                <Button
+                  onClick={handleInstallSttBackend}
+                  disabled={isInstallingStt || sherpaInstalled}
+                  variant={sherpaInstalled ? "outline" : "default"}
+                  size="sm"
+                >
+                  {isInstallingStt
+                    ? "Installing..."
+                    : sherpaInstalled
+                      ? "Installed ✓"
+                      : `Install for ${getBackendShortName(gpuInfo?.recommended_backend || "")}`}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
           {/* Speech Recognition */}
           <Card>
             <CardHeader className="pb-3">
@@ -659,7 +907,7 @@ function SettingsWindow() {
                         value={modelInfo.name}
                         disabled={!modelInfo.installed}
                       >
-                        {modelInfo.name} - {modelInfo.size_mb} MB
+                        {modelInfo.display_name} - {modelInfo.size_mb} MB
                         {!modelInfo.installed && " (Non installé)"}
                       </SelectItem>
                     ))}
@@ -708,7 +956,7 @@ function SettingsWindow() {
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Download Canary models for offline speech recognition
+                Download speech recognition models (sherpa-onnx)
               </p>
 
               {installedModels.map((modelInfo) => (
@@ -718,22 +966,20 @@ function SettingsWindow() {
                 >
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="font-medium">{modelInfo.name}</span>
+                      <span className="font-medium">{modelInfo.display_name}</span>
                       {modelInfo.installed && (
                         <Badge variant="default" className="text-xs">
                           Installed
                         </Badge>
                       )}
-                      {modelInfo.name === "canary-1b-flash" && (
+                      {modelInfo.name === "sherpa-onnx-whisper-tiny" && (
                         <Badge variant="secondary" className="text-xs">
                           Recommended
                         </Badge>
                       )}
                     </div>
                     <div className="text-sm text-muted-foreground mt-1">
-                      Size: {modelInfo.size_mb} MB
-                      {modelInfo.name === "canary-1b-flash" && " • Fast, good accuracy"}
-                      {modelInfo.name === "canary-1b" && " • Best accuracy, slower"}
+                      {modelInfo.description}
                     </div>
 
                     {downloadingModel === modelInfo.name && (
@@ -807,51 +1053,6 @@ function SettingsWindow() {
                   </Button>
                 </div>
               )}
-
-              {currentPlatform === "linux" && <Separator />}
-
-              {/* Python/NeMo Dependencies */}
-              <div className="space-y-3">
-                <Label>Speech Recognition (Canary-1B)</Label>
-                <p className="text-sm text-muted-foreground">
-                  {pythonDepsInstalled
-                    ? "NeMo toolkit ready for Canary-1B"
-                    : "Install Python dependencies for speech recognition"}
-                </p>
-
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-center gap-2">
-                    <Badge variant={pythonAvailable ? "default" : "secondary"}>
-                      {pythonAvailable ? "✓" : "○"}
-                    </Badge>
-                    <span className="text-sm">Python 3.8+</span>
-                    {!pythonAvailable && (
-                      <span className="text-xs text-muted-foreground">(install manually)</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={nemoInstalled ? "default" : "secondary"}>
-                      {nemoInstalled ? "✓" : "○"}
-                    </Badge>
-                    <span className="text-sm">NeMo toolkit (~2GB)</span>
-                  </div>
-                </div>
-
-                <Button
-                  onClick={handleInstallPython}
-                  disabled={isInstallingPython || pythonDepsInstalled}
-                  variant={pythonDepsInstalled ? "outline" : "default"}
-                  size="sm"
-                >
-                  {isInstallingPython
-                    ? "Installing NeMo..."
-                    : pythonDepsInstalled
-                      ? "Installed ✓"
-                      : pythonAvailable
-                        ? "Install NeMo"
-                        : "Install Python first"}
-                </Button>
-              </div>
 
               {currentPlatform === "linux" && <Separator />}
 

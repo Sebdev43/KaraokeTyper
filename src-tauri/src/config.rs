@@ -7,10 +7,14 @@ pub struct AppConfig {
     pub shortcut: String,
     pub audio_device_index: usize,
     #[serde(default)]
-    pub audio_device_name: Option<String>, // Device name for robust matching across OS/versions
-    pub model: String, // Canary model: canary-1b-flash, canary-1b, canary-1b-v2
+    pub audio_device_name: Option<String>,
+    pub model: String,
     pub key_delay_ms: u64,
-    pub language: String, // Language code: fr, en, es, de, etc.
+    pub language: String,
+    #[serde(default)]
+    pub stt_provider: Option<String>,
+    #[serde(default)]
+    pub model_path: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -18,10 +22,12 @@ impl Default for AppConfig {
         Self {
             shortcut: "CommandOrControl+Space".to_string(),
             audio_device_index: 0,
-            audio_device_name: None,              // Will use default device
-            model: "canary-1b-flash".to_string(), // NVIDIA Canary-1B Flash (fast, accurate)
+            audio_device_name: None,
+            model: "sherpa-onnx-whisper-tiny".to_string(),
             key_delay_ms: 8,
-            language: "fr".to_string(), // Default to French
+            language: "fr".to_string(),
+            stt_provider: None,
+            model_path: None,
         }
     }
 }

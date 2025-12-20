@@ -1,6 +1,8 @@
 /**
  * Focused Window D-Bus Extension for KaraokeTyper
  *
+ * GNOME 45+ compatible (ESM class-based extension)
+ *
  * Exposes the focused window's WM_CLASS via D-Bus so that
  * KaraokeTyper can detect if a terminal is focused and use
  * the correct paste shortcut (Ctrl+Shift+V vs Ctrl+V).
@@ -8,10 +10,11 @@
  * D-Bus Interface: org.karaoketyper.FocusedWindow
  * Object Path: /org/karaoketyper/FocusedWindow
  * Method: GetFocusedWindow() -> (s wm_class, s title)
+ * Method: IsTerminal() -> (b is_terminal)
  */
 
 import Gio from 'gi://Gio';
-import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+import { Extension } from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const DBUS_INTERFACE = `
 <node>
@@ -58,6 +61,7 @@ const TERMINAL_CLASSES = [
     'terminal',
     'blackbox',
     'ptyxis',
+    'ghostty',
 ];
 
 class FocusedWindowDBus {
@@ -109,18 +113,19 @@ class FocusedWindowDBus {
     }
 }
 
-let dbusService = null;
-
-export function enable() {
-    dbusService = new FocusedWindowDBus();
-    dbusService.export();
-    console.log('[KaraokeTyper] Focused Window D-Bus service enabled');
-}
-
-export function disable() {
-    if (dbusService) {
-        dbusService.unexport();
-        dbusService = null;
+// GNOME 45+ Extension class
+export default class FocusedWindowExtension extends Extension {
+    enable() {
+        this._dbusService = new FocusedWindowDBus();
+        this._dbusService.export();
+        console.log('[KaraokeTyper] Focused Window D-Bus service enabled');
     }
-    console.log('[KaraokeTyper] Focused Window D-Bus service disabled');
+
+    disable() {
+        if (this._dbusService) {
+            this._dbusService.unexport();
+            this._dbusService = null;
+        }
+        console.log('[KaraokeTyper] Focused Window D-Bus service disabled');
+    }
 }

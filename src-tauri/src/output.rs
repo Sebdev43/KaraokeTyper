@@ -475,6 +475,8 @@ impl TextOutput {
     }
 
     pub fn type_text(&mut self, text: &str) -> Result<(), String> {
+        let t0 = std::time::Instant::now();
+
         if text.is_empty() {
             println!("[OUTPUT] Text is empty, skipping");
             return Ok(());
@@ -484,9 +486,11 @@ impl TextOutput {
 
         // ALWAYS use clipboard + paste - this respects keyboard layout (AZERTY, QWERTZ, etc.)
         // ydotool type uses raw scancodes which breaks non-QWERTY layouts
+        let t1 = std::time::Instant::now();
         self.clipboard
             .set_text(text)
             .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
+        println!("[OUTPUT_TIMING] Clipboard set_text: {}ms", t1.elapsed().as_millis());
 
         println!("[OUTPUT] ✅ Text copied to clipboard");
 
@@ -495,8 +499,11 @@ impl TextOutput {
             thread::sleep(Duration::from_millis(self.key_delay_ms));
         }
 
+        let t2 = std::time::Instant::now();
         self.simulate_paste()?;
+        println!("[OUTPUT_TIMING] simulate_paste: {}ms", t2.elapsed().as_millis());
 
+        println!("[OUTPUT_TIMING] Total type_text: {}ms", t0.elapsed().as_millis());
         println!("[OUTPUT] ✅ Text pasted successfully");
 
         Ok(())

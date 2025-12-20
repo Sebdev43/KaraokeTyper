@@ -3,7 +3,7 @@ mod config;
 mod keyboard_listener;
 mod model_downloader;
 mod output;
-mod stt_canary;
+mod stt_parakeet;
 
 // Linux-specific modules
 #[cfg(target_os = "linux")]
@@ -19,11 +19,38 @@ use audio::AudioCapture;
 use config::AppConfig;
 use output::TextOutput;
 use std::sync::{Arc, Mutex};
-use stt_canary::CanarySttEngine;
+use stt_parakeet::ParakeetSttEngine;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+
+/// STT engine wrapper (now only Parakeet/sherpa-onnx)
+pub struct SttEngine {
+    engine: ParakeetSttEngine,
+}
+
+impl SttEngine {
+    pub fn new(config: &AppConfig) -> Result<Self, String> {
+        let model_path = config.model_path.as_deref();
+        let provider = config.stt_provider.as_deref();
+        let engine = ParakeetSttEngine::new(model_path, &config.language, provider);
+
+        if model_path.is_some() {
+            engine.initialize().map_err(|e| e.to_string())?;
+        }
+
+        Ok(SttEngine { engine })
+    }
+
+    pub fn transcribe(&self, audio_data: &[f32]) -> Result<String, String> {
+        self.engine.transcribe(audio_data).map_err(|e| e.to_string())
+    }
+
+    pub fn backend_name(&self) -> &'static str {
+        "sherpa-onnx Parakeet"
+    }
+}
 
 struct StreamHandle {
     _stream: cpal::Stream,
@@ -39,7 +66,7 @@ pub(crate) struct AppState {
     audio_stream: Arc<Mutex<Option<StreamHandle>>>,
     #[cfg(target_os = "linux")]
     audio_cli: Arc<Mutex<Option<audio_cli::AudioCaptureCli>>>,
-    stt_engine: Arc<Mutex<Option<CanarySttEngine>>>,
+    stt_engine: Arc<Mutex<Option<SttEngine>>>,
     config: Arc<Mutex<AppConfig>>,
     recording_ready: Arc<std::sync::atomic::AtomicBool>,
     pub recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
@@ -88,42 +115,41 @@ fn save_debug_wav(audio_data: &[f32], path: &std::path::PathBuf) -> Result<(), S
 
 #[tauri::command]
 async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let config = {
+        let config = state.config.lock().unwrap();
+        config.clone()
+    };
+
     app_handle
         .emit(
             "status-changed",
             StatusEvent {
                 status: "initializing".to_string(),
-                message: "Loading Canary-1B model...".to_string(),
+                message: "Loading sherpa-onnx Parakeet model...".to_string(),
             },
         )
         .ok();
 
-    // Get selected model from config
-    let (model_name, language) = {
-        let config = state.config.lock().unwrap();
-        (config.model.clone(), config.language.clone())
-    };
-
     println!(
-        "[STT] Loading Canary model: {} (language: {})",
-        model_name, language
+        "[STT] Loading sherpa-onnx Parakeet model: {} (language: {})",
+        config.model, config.language
     );
 
-    // Create and initialize Canary STT engine
-    let engine = CanarySttEngine::new(&model_name, &language);
-    engine.initialize().map_err(|e| {
-        let error_msg = format!("{}", e);
+    let engine = SttEngine::new(&config).map_err(|e| {
+        let error_msg = e.to_string();
 
-        // Provide helpful error messages based on error type
         if error_msg.contains("Python not found") {
             "Python 3.8+ not found. Please install Python:\n  Linux: sudo apt install python3\n  macOS: brew install python3\n  Windows: Download from python.org".to_string()
-        } else if error_msg.contains("NeMo not installed") {
-            "NVIDIA NeMo not installed. Run:\n  pip install nemo_toolkit[asr]\n\nThis will download ~2GB of dependencies.".to_string()
+        } else if error_msg.contains("sherpa") || error_msg.contains("onnx") {
+            "sherpa-onnx not installed. Install from Settings → GPU & STT Backend.".to_string()
+        } else if error_msg.contains("No model path") {
+            "No model downloaded. Download a model from Settings → STT Models.".to_string()
         } else {
             error_msg
         }
     })?;
 
+    println!("[STT] ✓ {} engine initialized", engine.backend_name());
     *state.stt_engine.lock().unwrap() = Some(engine);
 
     app_handle
@@ -346,7 +372,7 @@ pub(crate) async fn do_stop_recording(
 
     let transcription = engine
         .transcribe(&audio_data)
-        .map_err(|e| format!("Canary transcription error: {}", e))?;
+        .map_err(|e| format!("Transcription error: {}", e))?;
 
     println!(
         "[TIMING] T+{}ms: transcription complete: '{}'",
@@ -516,110 +542,6 @@ fn format_pipewire_device_name(raw_name: &str, description: &str) -> String {
     format!("🎵 {}", description)
 }
 
-#[cfg(target_os = "linux")]
-#[allow(dead_code)] // Kept for future Bluetooth device name resolution
-fn get_bluetooth_device_name(source_name: &str) -> Option<String> {
-    use std::process::Command;
-
-    // Extract MAC address from bluez_input.XX_XX_XX_XX_XX_XX
-    let mac_part = source_name.split('.').nth(1)?;
-    let mac_address = mac_part.split('.').next()?.replace('_', ":");
-
-    // Query device description
-    let output = Command::new("pactl")
-        .args(["list", "sources"])
-        .output()
-        .ok()?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Find the device description
-    for line in stdout.lines() {
-        if line.contains(&mac_address) {
-            // Look for Description line
-            if line.contains("Description:") {
-                let desc = line.split("Description:").nth(1)?.trim();
-                return Some(format!("{} 🎧", desc));
-            }
-        }
-    }
-
-    Some(format!("Bluetooth Headset ({})", &mac_address[..8]))
-}
-
-#[cfg(target_os = "linux")]
-#[allow(dead_code)] // Kept for future Bluetooth audio support
-fn get_bluetooth_cards() -> Result<Vec<AudioDevice>, String> {
-    use std::process::Command;
-
-    let output = Command::new("pactl")
-        .args(["list", "cards", "short"])
-        .output()
-        .map_err(|e| format!("Failed to get cards: {}", e))?;
-
-    let mut devices = Vec::new();
-
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        for (index, line) in stdout.lines().enumerate() {
-            if line.contains("bluez_card") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let card_name = parts[1];
-                    if let Some(name) = get_bluetooth_card_description(card_name) {
-                        devices.push(AudioDevice {
-                            name: format!("{} 🎧 (Switch to HSP for mic)", name),
-                            raw_name: card_name.to_string(),
-                            index: 100 + index, // Offset to avoid conflicts
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(devices)
-}
-
-#[cfg(target_os = "linux")]
-#[allow(dead_code)] // Kept for future Bluetooth audio support
-fn get_bluetooth_card_description(card_name: &str) -> Option<String> {
-    use std::process::Command;
-
-    let output = Command::new("pactl")
-        .args(["list", "cards"])
-        .output()
-        .ok()?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut in_target_card = false;
-
-    for line in stdout.lines() {
-        if line.contains(&format!("Name: {}", card_name)) {
-            in_target_card = true;
-        } else if in_target_card && line.contains("device.description") {
-            let desc = line.split('=').nth(1)?.trim().trim_matches('"');
-            return Some(desc.to_string());
-        } else if in_target_card && line.trim().starts_with("Name:") {
-            break;
-        }
-    }
-
-    None
-}
-
-#[cfg(target_os = "linux")]
-#[allow(dead_code)] // Kept for future USB device parsing
-fn parse_usb_device_name(source_name: &str) -> String {
-    // Extract vendor/product info from alsa_input.usb-VENDOR_PRODUCT
-    if source_name.contains("046d") {
-        "Logitech Webcam".to_string()
-    } else {
-        "USB Microphone".to_string()
-    }
-}
-
 #[cfg(not(target_os = "linux"))]
 fn get_audio_devices_generic() -> Result<Vec<AudioDevice>, String> {
     use cpal::traits::{DeviceTrait, HostTrait};
@@ -748,7 +670,7 @@ async fn transcribe_audio(
     // Transcribe the audio
     let transcription = engine
         .transcribe(&audio_data)
-        .map_err(|e| format!("Canary transcription error: {}", e))?;
+        .map_err(|e| format!("Transcription error: {}", e))?;
 
     println!("[TRANSCRIBE] Result: '{}'", transcription);
     Ok(transcription)
@@ -881,21 +803,20 @@ fn check_python_available() -> bool {
     false
 }
 
-/// Check if NeMo toolkit is installed (checks venv first, then system Python)
+/// Check if sherpa-onnx is installed (for Parakeet STT)
 #[tauri::command]
-fn check_nemo_installed() -> bool {
+fn check_sherpa_onnx_installed() -> bool {
     use std::process::Command;
 
-    // First check the venv
     let venv_python = get_venv_python();
     if venv_python.exists() {
         if let Ok(output) = Command::new(&venv_python)
-            .args(["-c", "import nemo; print(nemo.__version__)"])
+            .args(["-c", "import sherpa_onnx; print(sherpa_onnx.__version__)"])
             .output()
         {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout);
-                println!("[NEMO CHECK] NeMo version (venv): {}", version.trim());
+                println!("[SHERPA CHECK] sherpa-onnx version (venv): {}", version.trim());
                 return true;
             }
         }
@@ -904,12 +825,12 @@ fn check_nemo_installed() -> bool {
     // Fallback: check system Python
     for python_cmd in &["python3", "python"] {
         if let Ok(output) = Command::new(python_cmd)
-            .args(["-c", "import nemo; print(nemo.__version__)"])
+            .args(["-c", "import sherpa_onnx; print(sherpa_onnx.__version__)"])
             .output()
         {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout);
-                println!("[NEMO CHECK] NeMo version (system): {}", version.trim());
+                println!("[SHERPA CHECK] sherpa-onnx version (system): {}", version.trim());
                 return true;
             }
         }
@@ -917,53 +838,91 @@ fn check_nemo_installed() -> bool {
     false
 }
 
-/// Get the path to the app's Python venv
-pub fn get_venv_path() -> std::path::PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("karaoketyper")
-        .join("venv")
-}
-
-/// Get the path to the venv's Python executable
-pub fn get_venv_python() -> std::path::PathBuf {
-    let venv = get_venv_path();
-    #[cfg(target_os = "windows")]
-    return venv.join("Scripts").join("python.exe");
-    #[cfg(not(target_os = "windows"))]
-    venv.join("bin").join("python")
-}
-
-/// Check if venv exists and has NeMo installed
+/// Detect GPU hardware and recommend STT backend
 #[tauri::command]
-#[allow(dead_code)] // Tauri command, may be called from frontend
-fn check_venv_nemo() -> bool {
-    let venv_python = get_venv_python();
-    if !venv_python.exists() {
-        return false;
-    }
-
+async fn detect_gpu() -> Result<serde_json::Value, String> {
     use std::process::Command;
-    if let Ok(output) = Command::new(&venv_python)
-        .args(["-c", "import nemo; print(nemo.__version__)"])
-        .output()
-    {
-        if output.status.success() {
-            let version = String::from_utf8_lossy(&output.stdout);
-            println!("[VENV CHECK] NeMo version: {}", version.trim());
-            return true;
-        }
+
+    // Get path to gpu_detector.py
+    let detector_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("python")
+        .join("gpu_detector.py");
+
+    if !detector_path.exists() {
+        return Err(format!("GPU detector not found: {}", detector_path.display()));
     }
-    false
+
+    // Try venv python first, fallback to system
+    let python_cmd = {
+        let venv_python = get_venv_python();
+        if venv_python.exists() {
+            venv_python.to_string_lossy().to_string()
+        } else {
+            "python3".to_string()
+        }
+    };
+
+    let output = Command::new(&python_cmd)
+        .args([detector_path.to_str().unwrap(), "detect"])
+        .output()
+        .map_err(|e| format!("Failed to run GPU detector: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("GPU detection failed: {}", stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse GPU detection result: {}", e))?;
+
+    println!("[GPU DETECT] Result: {}", serde_json::to_string_pretty(&result).unwrap_or_default());
+
+    Ok(result)
 }
 
-/// Install Python dependencies (NeMo toolkit) in a virtual environment
+/// Get installation commands for a specific backend
 #[tauri::command]
-async fn install_python_dependencies(app_handle: AppHandle) -> Result<String, String> {
+async fn get_stt_install_commands(backend: String) -> Result<serde_json::Value, String> {
+    use std::process::Command;
+
+    let detector_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("python")
+        .join("gpu_detector.py");
+
+    let python_cmd = {
+        let venv_python = get_venv_python();
+        if venv_python.exists() {
+            venv_python.to_string_lossy().to_string()
+        } else {
+            "python3".to_string()
+        }
+    };
+
+    let output = Command::new(&python_cmd)
+        .args([detector_path.to_str().unwrap(), "install-commands", &backend])
+        .output()
+        .map_err(|e| format!("Failed to get install commands: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to get install commands: {}", stderr));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("Failed to parse install commands: {}", e))?;
+
+    Ok(result)
+}
+
+/// Install STT dependencies based on detected GPU (sherpa-onnx + appropriate runtime)
+#[tauri::command]
+async fn install_stt_dependencies(app_handle: AppHandle, backend: String) -> Result<String, String> {
     use std::process::Command;
     use tauri::Emitter;
 
-    println!("[PYTHON INSTALL] Starting NeMo installation with venv...");
+    println!("[STT INSTALL] Starting installation for backend: {}", backend);
 
     let venv_path = get_venv_path();
     let venv_python = get_venv_python();
@@ -985,21 +944,22 @@ async fn install_python_dependencies(app_handle: AppHandle) -> Result<String, St
         "python"
     };
 
-    // Step 1: Create venv if it doesn't exist
+    // Step 1: Create venv if needed
     if !venv_python.exists() {
-        println!("[PYTHON INSTALL] Creating venv at: {}", venv_path.display());
+        println!("[STT INSTALL] Creating venv at: {}", venv_path.display());
 
         app_handle
             .emit(
-                "python-install-progress",
+                "stt-install-progress",
                 serde_json::json!({
                     "status": "installing",
+                    "step": 1,
+                    "total_steps": 4,
                     "message": "Creating Python virtual environment..."
                 }),
             )
             .ok();
 
-        // Ensure parent directory exists
         if let Some(parent) = venv_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create directory: {}", e))?;
@@ -1014,16 +974,16 @@ async fn install_python_dependencies(app_handle: AppHandle) -> Result<String, St
             let stderr = String::from_utf8_lossy(&venv_output.stderr);
             return Err(format!("Failed to create venv: {}", stderr));
         }
-
-        println!("[PYTHON INSTALL] ✅ Venv created");
     }
 
-    // Step 2: Upgrade pip in venv
+    // Step 2: Upgrade pip
     app_handle
         .emit(
-            "python-install-progress",
+            "stt-install-progress",
             serde_json::json!({
                 "status": "installing",
+                "step": 2,
+                "total_steps": 4,
                 "message": "Upgrading pip..."
             }),
         )
@@ -1033,69 +993,197 @@ async fn install_python_dependencies(app_handle: AppHandle) -> Result<String, St
         .args(["-m", "pip", "install", "--upgrade", "pip"])
         .output();
 
-    // Step 3: Install NeMo toolkit
+    // Step 3: Install base packages
     app_handle
         .emit(
-            "python-install-progress",
+            "stt-install-progress",
             serde_json::json!({
                 "status": "installing",
-                "message": "Installing NeMo toolkit (~2GB download, please wait)..."
+                "step": 3,
+                "total_steps": 4,
+                "message": "Installing base dependencies..."
             }),
         )
         .ok();
 
-    println!("[PYTHON INSTALL] Installing nemo_toolkit[asr] in venv...");
+    let base_packages = ["numpy", "soundfile", "huggingface_hub"];
+    for pkg in &base_packages {
+        let _ = Command::new(&venv_pip)
+            .args(["install", pkg])
+            .output();
+    }
 
-    let install_output = Command::new(&venv_pip)
-        .args(["install", "nemo_toolkit[asr]", "soundfile"])
+    // Step 4: Install backend-specific packages
+    let onnx_package = match backend.as_str() {
+        "CUDAExecutionProvider" => {
+            app_handle
+                .emit(
+                    "stt-install-progress",
+                    serde_json::json!({
+                        "status": "installing",
+                        "step": 4,
+                        "total_steps": 4,
+                        "message": "Installing ONNX Runtime GPU (CUDA)..."
+                    }),
+                )
+                .ok();
+            "onnxruntime-gpu"
+        }
+        "MIGraphXExecutionProvider" | "ROCMExecutionProvider" => {
+            app_handle
+                .emit(
+                    "stt-install-progress",
+                    serde_json::json!({
+                        "status": "installing",
+                        "step": 4,
+                        "total_steps": 4,
+                        "message": "Installing ONNX Runtime ROCm (AMD)..."
+                    }),
+                )
+                .ok();
+            // Note: onnxruntime-rocm might need special index
+            "onnxruntime"  // Fallback to CPU for now, ROCm needs manual setup
+        }
+        "CoreMLExecutionProvider" => {
+            app_handle
+                .emit(
+                    "stt-install-progress",
+                    serde_json::json!({
+                        "status": "installing",
+                        "step": 4,
+                        "total_steps": 4,
+                        "message": "Installing ONNX Runtime (Apple Silicon)..."
+                    }),
+                )
+                .ok();
+            "onnxruntime"  // CoreML is included in base onnxruntime on macOS
+        }
+        _ => {
+            app_handle
+                .emit(
+                    "stt-install-progress",
+                    serde_json::json!({
+                        "status": "installing",
+                        "step": 4,
+                        "total_steps": 4,
+                        "message": "Installing ONNX Runtime (CPU)..."
+                    }),
+                )
+                .ok();
+            "onnxruntime"
+        }
+    };
+
+    // Install ONNX Runtime
+    let onnx_output = Command::new(&venv_pip)
+        .args(["install", onnx_package])
         .output()
-        .map_err(|e| format!("Failed to run pip: {}", e))?;
+        .map_err(|e| format!("Failed to install {}: {}", onnx_package, e))?;
 
-    if install_output.status.success() {
+    if !onnx_output.status.success() {
+        let stderr = String::from_utf8_lossy(&onnx_output.stderr);
+        println!("[STT INSTALL] Warning: {} install issue: {}", onnx_package, stderr);
+    }
+
+    // Install sherpa-onnx
+    app_handle
+        .emit(
+            "stt-install-progress",
+            serde_json::json!({
+                "status": "installing",
+                "step": 4,
+                "total_steps": 4,
+                "message": "Installing sherpa-onnx..."
+            }),
+        )
+        .ok();
+
+    let sherpa_output = Command::new(&venv_pip)
+        .args(["install", "sherpa-onnx"])
+        .output()
+        .map_err(|e| format!("Failed to install sherpa-onnx: {}", e))?;
+
+    if sherpa_output.status.success() {
         app_handle
             .emit(
-                "python-install-progress",
+                "stt-install-progress",
                 serde_json::json!({
                     "status": "success",
-                    "message": "NeMo installed successfully!"
+                    "message": "STT dependencies installed successfully!"
                 }),
             )
             .ok();
 
-        println!("[PYTHON INSTALL] ✅ NeMo installed successfully in venv");
-        println!("[PYTHON INSTALL] Venv Python: {}", venv_python.display());
-
-        Ok("NeMo toolkit installed successfully! Restart the app to use Canary-1B.".to_string())
+        println!("[STT INSTALL] ✅ Installation complete for backend: {}", backend);
+        Ok(format!("STT dependencies installed for {}! Restart to use.", backend))
     } else {
-        let stderr = String::from_utf8_lossy(&install_output.stderr);
-        let stdout = String::from_utf8_lossy(&install_output.stdout);
-        let error_msg = format!(
-            "pip install failed:\nstderr: {}\nstdout: {}",
-            stderr, stdout
-        );
+        let stderr = String::from_utf8_lossy(&sherpa_output.stderr);
+        let stdout = String::from_utf8_lossy(&sherpa_output.stdout);
 
         app_handle
             .emit(
-                "python-install-progress",
+                "stt-install-progress",
                 serde_json::json!({
                     "status": "error",
-                    "message": &error_msg
+                    "message": format!("Installation failed: {}", stderr)
                 }),
             )
             .ok();
 
-        eprintln!("[PYTHON INSTALL] ❌ {}", error_msg);
-        Err(error_msg)
+        Err(format!("sherpa-onnx installation failed:\nstderr: {}\nstdout: {}", stderr, stdout))
     }
 }
 
-/// Get list of installed Canary models with their metadata
+/// Get system information for Settings UI
+#[tauri::command]
+async fn get_system_info() -> Result<serde_json::Value, String> {
+    let os_name = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+
+    #[cfg(target_os = "linux")]
+    let display_server = std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".to_string());
+    #[cfg(not(target_os = "linux"))]
+    let display_server = "native".to_string();
+
+    #[cfg(target_os = "linux")]
+    let desktop_env = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".to_string());
+    #[cfg(not(target_os = "linux"))]
+    let desktop_env = "native".to_string();
+
+    Ok(serde_json::json!({
+        "os": os_name,
+        "arch": arch,
+        "display_server": display_server,
+        "desktop_environment": desktop_env,
+        "venv_path": get_venv_path().to_string_lossy(),
+        "venv_exists": get_venv_python().exists()
+    }))
+}
+
+/// Get the path to the app's Python venv
+pub fn get_venv_path() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("karaoketyper")
+        .join("venv")
+}
+
+/// Get the path to the venv's Python executable
+pub fn get_venv_python() -> std::path::PathBuf {
+    let venv = get_venv_path();
+    #[cfg(target_os = "windows")]
+    return venv.join("Scripts").join("python.exe");
+    #[cfg(not(target_os = "windows"))]
+    venv.join("bin").join("python")
+}
+
+/// Get list of installed models with their metadata
 #[tauri::command]
 async fn get_installed_models() -> Result<Vec<model_downloader::ModelInfo>, String> {
     model_downloader::check_installed_models()
 }
 
-/// Download a Canary model with progress events
+/// Download a model with progress events
 #[tauri::command]
 async fn download_model(app_handle: AppHandle, model_name: String) -> Result<(), String> {
     model_downloader::download_model(app_handle, model_name).await
@@ -1148,16 +1236,20 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
 
 /// Check if WirePlumber latency fix is installed
 #[tauri::command]
-fn check_wireplumber_latency_fix() -> Result<serde_json::Value, String> {
+async fn check_wireplumber_latency_fix() -> Result<serde_json::Value, String> {
     #[cfg(target_os = "linux")]
     {
-        let installed = wireplumber_config::is_config_installed();
-        let running = wireplumber_config::is_wireplumber_running();
-        Ok(serde_json::json!({
-            "installed": installed,
-            "wireplumber_running": running,
-            "status": wireplumber_config::get_status()
-        }))
+        tokio::task::spawn_blocking(|| {
+            let installed = wireplumber_config::is_config_installed();
+            let running = wireplumber_config::is_wireplumber_running();
+            serde_json::json!({
+                "installed": installed,
+                "wireplumber_running": running,
+                "status": wireplumber_config::get_status()
+            })
+        })
+        .await
+        .map_err(|e| format!("Task failed: {}", e))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1172,10 +1264,12 @@ fn check_wireplumber_latency_fix() -> Result<serde_json::Value, String> {
 
 /// Install WirePlumber latency fix configuration
 #[tauri::command]
-fn install_wireplumber_latency_fix() -> Result<String, String> {
+async fn install_wireplumber_latency_fix() -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
-        wireplumber_config::install_config()
+        tokio::task::spawn_blocking(wireplumber_config::install_config)
+            .await
+            .map_err(|e| format!("Task failed: {}", e))?
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1186,10 +1280,12 @@ fn install_wireplumber_latency_fix() -> Result<String, String> {
 
 /// Remove WirePlumber latency fix configuration
 #[tauri::command]
-fn remove_wireplumber_latency_fix() -> Result<String, String> {
+async fn remove_wireplumber_latency_fix() -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
-        wireplumber_config::remove_config()
+        tokio::task::spawn_blocking(wireplumber_config::remove_config)
+            .await
+            .map_err(|e| format!("Task failed: {}", e))?
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1200,10 +1296,12 @@ fn remove_wireplumber_latency_fix() -> Result<String, String> {
 
 /// Restart WirePlumber service to apply changes
 #[tauri::command]
-fn restart_wireplumber() -> Result<String, String> {
+async fn restart_wireplumber() -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
-        wireplumber_config::restart_wireplumber()
+        tokio::task::spawn_blocking(wireplumber_config::restart_wireplumber)
+            .await
+            .map_err(|e| format!("Task failed: {}", e))?
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1227,45 +1325,47 @@ fn get_gnome_extension_path() -> std::path::PathBuf {
 
 /// Check if the GNOME focused window extension is installed
 #[tauri::command]
-fn check_focused_window_extension() -> Result<serde_json::Value, String> {
+async fn check_focused_window_extension() -> Result<serde_json::Value, String> {
     #[cfg(target_os = "linux")]
     {
-        use std::process::Command;
+        tokio::task::spawn_blocking(|| {
+            use std::process::Command;
 
-        let extension_path = get_gnome_extension_path();
-        let is_installed = extension_path.join("extension.js").exists();
+            let extension_path = get_gnome_extension_path();
+            let is_installed = extension_path.join("extension.js").exists();
 
-        // Check if extension is enabled via gnome-extensions command
-        let is_enabled = if is_installed {
-            Command::new("gnome-extensions")
-                .args(["info", "focused-window-dbus@karaoketyper"])
-                .output()
-                .map(|o| {
-                    let stdout = String::from_utf8_lossy(&o.stdout);
-                    stdout.contains("State: ACTIVE") || stdout.contains("State: ENABLED")
-                })
-                .unwrap_or(false)
-        } else {
-            false
-        };
+            let is_enabled = if is_installed {
+                Command::new("gnome-extensions")
+                    .args(["info", "focused-window-dbus@karaoketyper"])
+                    .output()
+                    .map(|o| {
+                        let stdout = String::from_utf8_lossy(&o.stdout);
+                        stdout.contains("State: ACTIVE") || stdout.contains("State: ENABLED")
+                    })
+                    .unwrap_or(false)
+            } else {
+                false
+            };
 
-        // Check if GNOME Shell is running (Wayland session)
-        let is_gnome = std::env::var("XDG_CURRENT_DESKTOP")
-            .map(|d| d.to_lowercase().contains("gnome"))
-            .unwrap_or(false);
+            let is_gnome = std::env::var("XDG_CURRENT_DESKTOP")
+                .map(|d| d.to_lowercase().contains("gnome"))
+                .unwrap_or(false);
 
-        let is_wayland = std::env::var("XDG_SESSION_TYPE")
-            .map(|s| s == "wayland")
-            .unwrap_or(false);
+            let is_wayland = std::env::var("XDG_SESSION_TYPE")
+                .map(|s| s == "wayland")
+                .unwrap_or(false);
 
-        Ok(serde_json::json!({
-            "installed": is_installed,
-            "enabled": is_enabled,
-            "is_gnome": is_gnome,
-            "is_wayland": is_wayland,
-            "path": extension_path.to_string_lossy(),
-            "needs_restart": is_installed && !is_enabled
-        }))
+            serde_json::json!({
+                "installed": is_installed,
+                "enabled": is_enabled,
+                "is_gnome": is_gnome,
+                "is_wayland": is_wayland,
+                "path": extension_path.to_string_lossy(),
+                "needs_restart": is_installed && !is_enabled
+            })
+        })
+        .await
+        .map_err(|e| format!("Task failed: {}", e))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1283,133 +1383,124 @@ fn check_focused_window_extension() -> Result<serde_json::Value, String> {
 
 /// Install the GNOME focused window extension
 #[tauri::command]
-fn install_focused_window_extension(app_handle: AppHandle) -> Result<String, String> {
+async fn install_focused_window_extension(app_handle: AppHandle) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
         use std::fs;
         use std::io::Write;
 
-        // Get the bundled extension files from resources
+        // Get resource paths first (requires app_handle, but is fast)
         let resource_path = app_handle
             .path()
             .resource_dir()
             .map_err(|e| format!("Failed to get resource dir: {}", e))?
             .join("focused-window-dbus");
 
-        // In development, try to find the files in src-tauri/resources
+        let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("focused-window-dbus");
+
         let source_path = if resource_path.exists() {
-            resource_path
+            resource_path.clone()
+        } else if dev_path.exists() {
+            dev_path.clone()
         } else {
-            let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("resources")
-                .join("focused-window-dbus");
-            if dev_path.exists() {
-                dev_path
-            } else {
-                return Err(format!(
-                    "Extension files not found. Checked:\n  - {}\n  - {}",
-                    resource_path.display(),
-                    dev_path.display()
-                ));
-            }
+            return Err(format!(
+                "Extension files not found. Checked:\n  - {}\n  - {}",
+                resource_path.display(),
+                dev_path.display()
+            ));
         };
 
-        // Read extension files
-        let extension_js = fs::read_to_string(source_path.join("extension.js"))
-            .map_err(|e| format!("Failed to read extension.js: {}", e))?;
-        let metadata_json = fs::read_to_string(source_path.join("metadata.json"))
-            .map_err(|e| format!("Failed to read metadata.json: {}", e))?;
+        // Now do blocking work in spawn_blocking
+        tokio::task::spawn_blocking(move || {
+            let extension_js = fs::read_to_string(source_path.join("extension.js"))
+                .map_err(|e| format!("Failed to read extension.js: {}", e))?;
+            let metadata_json = fs::read_to_string(source_path.join("metadata.json"))
+                .map_err(|e| format!("Failed to read metadata.json: {}", e))?;
 
-        // Create a temporary zip file for gnome-extensions install
-        let temp_dir = std::env::temp_dir();
-        let zip_path = temp_dir.join("focused-window-dbus@karaoketyper.zip");
+            let temp_dir = std::env::temp_dir();
+            let zip_path = temp_dir.join("focused-window-dbus@karaoketyper.zip");
 
-        // Create zip file manually (simple zip without compression)
-        let zip_file = fs::File::create(&zip_path)
-            .map_err(|e| format!("Failed to create zip: {}", e))?;
-        let mut zip = zip::ZipWriter::new(zip_file);
+            let zip_file = fs::File::create(&zip_path)
+                .map_err(|e| format!("Failed to create zip: {}", e))?;
+            let mut zip = zip::ZipWriter::new(zip_file);
 
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
 
-        zip.start_file("extension.js", options)
-            .map_err(|e| format!("Failed to add extension.js to zip: {}", e))?;
-        zip.write_all(extension_js.as_bytes())
-            .map_err(|e| format!("Failed to write extension.js: {}", e))?;
+            zip.start_file("extension.js", options)
+                .map_err(|e| format!("Failed to add extension.js to zip: {}", e))?;
+            zip.write_all(extension_js.as_bytes())
+                .map_err(|e| format!("Failed to write extension.js: {}", e))?;
 
-        zip.start_file("metadata.json", options)
-            .map_err(|e| format!("Failed to add metadata.json to zip: {}", e))?;
-        zip.write_all(metadata_json.as_bytes())
-            .map_err(|e| format!("Failed to write metadata.json: {}", e))?;
+            zip.start_file("metadata.json", options)
+                .map_err(|e| format!("Failed to add metadata.json to zip: {}", e))?;
+            zip.write_all(metadata_json.as_bytes())
+                .map_err(|e| format!("Failed to write metadata.json: {}", e))?;
 
-        zip.finish().map_err(|e| format!("Failed to finish zip: {}", e))?;
+            zip.finish().map_err(|e| format!("Failed to finish zip: {}", e))?;
 
-        println!("[GNOME EXT] Created zip at: {}", zip_path.display());
+            println!("[GNOME EXT] Created zip at: {}", zip_path.display());
 
-        // Use gnome-extensions install command (handles everything automatically)
-        let install_result = std::process::Command::new("gnome-extensions")
-            .args(["install", "--force", &zip_path.to_string_lossy()])
-            .output()
-            .map_err(|e| format!("Failed to run gnome-extensions install: {}", e))?;
+            let install_result = std::process::Command::new("gnome-extensions")
+                .args(["install", "--force", &zip_path.to_string_lossy()])
+                .output()
+                .map_err(|e| format!("Failed to run gnome-extensions install: {}", e))?;
 
-        // Clean up temp zip
-        let _ = fs::remove_file(&zip_path);
+            let _ = fs::remove_file(&zip_path);
 
-        if !install_result.status.success() {
-            let stderr = String::from_utf8_lossy(&install_result.stderr);
-            return Err(format!("gnome-extensions install failed: {}", stderr));
-        }
+            if !install_result.status.success() {
+                let stderr = String::from_utf8_lossy(&install_result.stderr);
+                return Err(format!("gnome-extensions install failed: {}", stderr));
+            }
 
-        println!("[GNOME EXT] ✅ Extension installed via gnome-extensions");
+            println!("[GNOME EXT] ✅ Extension installed via gnome-extensions");
 
-        // Enable the extension via CLI
-        std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(500));
 
-        let enable_result = std::process::Command::new("gnome-extensions")
-            .args(["enable", "focused-window-dbus@karaoketyper"])
-            .output();
-
-        let cli_enabled = matches!(&enable_result, Ok(output) if output.status.success());
-
-        // Also add to gsettings enabled-extensions (append, don't overwrite)
-        let ext_uuid = "focused-window-dbus@karaoketyper";
-
-        // Get current enabled extensions
-        let current = std::process::Command::new("gsettings")
-            .args(["get", "org.gnome.shell", "enabled-extensions"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .unwrap_or_else(|| "@as []".to_string());
-
-        // Check if already in list
-        if !current.contains(ext_uuid) {
-            // Parse and append
-            let trimmed = current.trim();
-            let new_list = if trimmed == "@as []" || trimmed == "[]" {
-                format!("['{}']", ext_uuid)
-            } else {
-                // Remove trailing ] and append our extension
-                let without_bracket = trimmed.trim_end_matches(']');
-                format!("{}, '{}']", without_bracket, ext_uuid)
-            };
-
-            println!("[GNOME EXT] Setting enabled-extensions to: {}", new_list);
-            let _ = std::process::Command::new("gsettings")
-                .args(["set", "org.gnome.shell", "enabled-extensions", &new_list])
+            let enable_result = std::process::Command::new("gnome-extensions")
+                .args(["enable", "focused-window-dbus@karaoketyper"])
                 .output();
-        }
 
-        if cli_enabled {
-            println!("[GNOME EXT] ✅ Extension enabled");
-            Ok("Extension installée et activée !".to_string())
-        } else {
-            Ok(
-                "Extension installée !\n\n\
-                 Déconnectez-vous et reconnectez-vous pour l'activer."
-                    .to_string(),
-            )
-        }
+            let cli_enabled = matches!(&enable_result, Ok(output) if output.status.success());
+
+            let ext_uuid = "focused-window-dbus@karaoketyper";
+            let current = std::process::Command::new("gsettings")
+                .args(["get", "org.gnome.shell", "enabled-extensions"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .unwrap_or_else(|| "@as []".to_string());
+
+            if !current.contains(ext_uuid) {
+                let trimmed = current.trim();
+                let new_list = if trimmed == "@as []" || trimmed == "[]" {
+                    format!("['{}']", ext_uuid)
+                } else {
+                    let without_bracket = trimmed.trim_end_matches(']');
+                    format!("{}, '{}']", without_bracket, ext_uuid)
+                };
+
+                println!("[GNOME EXT] Setting enabled-extensions to: {}", new_list);
+                let _ = std::process::Command::new("gsettings")
+                    .args(["set", "org.gnome.shell", "enabled-extensions", &new_list])
+                    .output();
+            }
+
+            if cli_enabled {
+                println!("[GNOME EXT] ✅ Extension enabled");
+                Ok("Extension installée et activée !".to_string())
+            } else {
+                Ok(
+                    "Extension installée !\n\n\
+                     Déconnectez-vous et reconnectez-vous pour l'activer."
+                        .to_string(),
+                )
+            }
+        })
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1421,32 +1512,34 @@ fn install_focused_window_extension(app_handle: AppHandle) -> Result<String, Str
 
 /// Remove the GNOME focused window extension
 #[tauri::command]
-fn remove_focused_window_extension() -> Result<String, String> {
+async fn remove_focused_window_extension() -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
-        use std::fs;
+        tokio::task::spawn_blocking(|| {
+            use std::fs;
 
-        let extension_path = get_gnome_extension_path();
+            let extension_path = get_gnome_extension_path();
 
-        if !extension_path.exists() {
-            return Ok("Extension was not installed".to_string());
-        }
+            if !extension_path.exists() {
+                return Ok("Extension was not installed".to_string());
+            }
 
-        // Try to disable first
-        let _ = std::process::Command::new("gnome-extensions")
-            .args(["disable", "focused-window-dbus@karaoketyper"])
-            .output();
+            let _ = std::process::Command::new("gnome-extensions")
+                .args(["disable", "focused-window-dbus@karaoketyper"])
+                .output();
 
-        // Remove the extension directory
-        fs::remove_dir_all(&extension_path)
-            .map_err(|e| format!("Failed to remove extension: {}", e))?;
+            fs::remove_dir_all(&extension_path)
+                .map_err(|e| format!("Failed to remove extension: {}", e))?;
 
-        println!(
-            "[GNOME EXT] ✅ Extension removed: {}",
-            extension_path.display()
-        );
+            println!(
+                "[GNOME EXT] ✅ Extension removed: {}",
+                extension_path.display()
+            );
 
-        Ok("Extension removed!\n\nLog out and back in to complete the removal.".to_string())
+            Ok("Extension removed!\n\nLog out and back in to complete the removal.".to_string())
+        })
+        .await
+        .map_err(|e| format!("Task failed: {}", e))?
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1466,13 +1559,16 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             // Initialize STT engine at startup
-            println!("[STARTUP] Initializing Whisper STT engine...");
+            println!("[STARTUP] Initializing STT engine...");
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<AppState>();
                 match init_stt(app_handle.clone(), state).await {
                     Ok(_) => println!("[STARTUP] ✅ STT engine initialized successfully"),
-                    Err(e) => eprintln!("[STARTUP] ❌ Failed to initialize STT: {}", e),
+                    Err(e) => {
+                        eprintln!("[STARTUP] ⚠️  STT initialization skipped: {}", e);
+                        eprintln!("[STARTUP] Open Settings to configure STT backend");
+                    }
                 }
             });
 
@@ -1594,6 +1690,9 @@ pub fn run() {
                 }
             });
 
+            // NOTE: STT engine is initialized in the spawn block at lines 1887-1900
+            // (single initialization point using init_stt function)
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1631,8 +1730,11 @@ pub fn run() {
             get_installed_models,
             download_model,
             check_python_available,
-            check_nemo_installed,
-            install_python_dependencies,
+            check_sherpa_onnx_installed,
+            detect_gpu,
+            get_stt_install_commands,
+            install_stt_dependencies,
+            get_system_info,
             check_wireplumber_latency_fix,
             install_wireplumber_latency_fix,
             remove_wireplumber_latency_fix,

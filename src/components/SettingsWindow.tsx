@@ -12,12 +12,9 @@ import {
   Info,
   Keyboard,
   Mic,
-  Minus,
   Monitor,
   RefreshCw,
   Settings,
-  Square,
-  X,
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -629,7 +626,7 @@ function SettingsWindow() {
 
   const currentWindow = getCurrentWindow();
 
-  const handleMinimize = async (e: React.MouseEvent) => {
+  const _handleMinimize = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     try {
@@ -639,7 +636,7 @@ function SettingsWindow() {
     }
   };
 
-  const handleMaximize = async (e: React.MouseEvent) => {
+  const _handleMaximize = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     try {
@@ -654,7 +651,7 @@ function SettingsWindow() {
     }
   };
 
-  const handleClose = async (e: React.MouseEvent) => {
+  const _handleClose = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     try {
@@ -668,43 +665,6 @@ function SettingsWindow() {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-background">
-      {/* Fixed Titlebar */}
-      <div
-        className="shrink-0 flex items-center justify-between h-10 px-3 bg-card border-b border-border select-none"
-        data-tauri-drag-region
-      >
-        <div className="flex items-center gap-2" data-tauri-drag-region>
-          <Settings className="h-4 w-4 text-primary" />
-          <span className="text-sm font-medium text-foreground">Settings</span>
-        </div>
-        <div className="flex gap-1" style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 hover:bg-muted"
-            onClick={handleMinimize}
-          >
-            <Minus className="h-4 w-4" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 hover:bg-muted"
-            onClick={handleMaximize}
-          >
-            <Square className="h-3 w-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 hover:bg-destructive hover:text-destructive-foreground"
-            onClick={handleClose}
-          >
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-      </div>
-
       {/* Content */}
       <ScrollArea className="flex-1 min-h-0">
         <div className="p-6 space-y-6">

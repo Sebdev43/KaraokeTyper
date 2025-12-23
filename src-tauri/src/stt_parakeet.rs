@@ -106,10 +106,13 @@ pub struct ParakeetSttEngine {
 /// Map model names to HuggingFace repo IDs
 fn get_repo_id_for_model(model_name: &str) -> Option<&'static str> {
     match model_name {
-        "sherpa-onnx-whisper-tiny" => Some("csukuangfj/sherpa-onnx-whisper-tiny.en"),
+        // Whisper multilingual models (99 languages including French)
+        "sherpa-onnx-whisper-tiny" => Some("csukuangfj/sherpa-onnx-whisper-tiny"),
         "sherpa-onnx-whisper-base" => Some("csukuangfj/sherpa-onnx-whisper-base"),
         "sherpa-onnx-whisper-small" => Some("csukuangfj/sherpa-onnx-whisper-small"),
         "sherpa-onnx-whisper-medium" => Some("csukuangfj/sherpa-onnx-whisper-medium"),
+        "sherpa-onnx-whisper-large-v3" => Some("csukuangfj/sherpa-onnx-whisper-large-v3"),
+        // Asian language models (Chinese/Japanese/Korean - NO FRENCH)
         "sherpa-onnx-sense-voice" => {
             Some("csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
         }

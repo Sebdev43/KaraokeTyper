@@ -105,12 +105,13 @@ class ParakeetService:
             # Models are from csukuangfj (sherpa-onnx maintainer)
             # See: https://huggingface.co/csukuangfj
             model_repos = {
-                "parakeet-tdt-0.6b": "k2-fsa/sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en",
-                "parakeet-tdt-1.1b": "nvidia/parakeet-tdt-1.1b",
-                # sherpa-onnx pre-converted Whisper models (csukuangfj)
-                "sherpa-onnx-whisper-tiny": "csukuangfj/sherpa-onnx-whisper-tiny.en",
+                # Whisper multilingual models (99 languages including French)
+                "sherpa-onnx-whisper-tiny": "csukuangfj/sherpa-onnx-whisper-tiny",
                 "sherpa-onnx-whisper-base": "csukuangfj/sherpa-onnx-whisper-base",
-                # Other sherpa-onnx models
+                "sherpa-onnx-whisper-small": "csukuangfj/sherpa-onnx-whisper-small",
+                "sherpa-onnx-whisper-medium": "csukuangfj/sherpa-onnx-whisper-medium",
+                "sherpa-onnx-whisper-large-v3": "csukuangfj/sherpa-onnx-whisper-large-v3",
+                # Asian language models (Chinese/Japanese/Korean/Cantonese - NO FRENCH)
                 "sherpa-onnx-paraformer": "csukuangfj/sherpa-onnx-paraformer-zh-2023-03-28",
                 "sherpa-onnx-sense-voice": "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
             }
@@ -119,10 +120,11 @@ class ParakeetService:
             model_sizes = {
                 "sherpa-onnx-whisper-tiny": 75,
                 "sherpa-onnx-whisper-base": 150,
+                "sherpa-onnx-whisper-small": 400,
+                "sherpa-onnx-whisper-medium": 1000,
+                "sherpa-onnx-whisper-large-v3": 3000,
                 "sherpa-onnx-sense-voice": 500,
                 "sherpa-onnx-paraformer": 300,
-                "parakeet-tdt-0.6b": 600,
-                "parakeet-tdt-1.1b": 1100,
             }
 
             repo_id = model_repos.get(model_name, f"k2-fsa/sherpa-onnx-{model_name}")
@@ -368,6 +370,7 @@ print(path)
                 whisper_encoder = None
                 whisper_decoder = None
                 paraformer_model = None
+                sense_voice_model = None
 
                 log_stderr(f"Scanning model files in: {model_dir}")
                 for f in model_dir.rglob("*.onnx"):
@@ -392,6 +395,25 @@ print(path)
                         if tokens_file:
                             break
 
+                # Detect model type by directory name (more reliable than file names)
+                model_dir_str = str(model_dir).lower()
+                is_sense_voice = "sense-voice" in model_dir_str or "sensevoice" in model_dir_str
+                is_paraformer = "paraformer" in model_dir_str
+
+                if is_sense_voice:
+                    # SenseVoice uses model.onnx (non-int8 version)
+                    for f in model_dir.rglob("*.onnx"):
+                        if "int8" not in f.name.lower():
+                            sense_voice_model = str(f)
+                            break
+
+                if is_paraformer:
+                    # Paraformer uses single model.onnx file
+                    for f in model_dir.rglob("*.onnx"):
+                        if "int8" not in f.name.lower():
+                            paraformer_model = str(f)
+                            break
+
                 # Check if it's a Whisper model (has encoder.onnx and decoder.onnx)
                 if whisper_encoder and whisper_decoder:
                     log_stderr(f"Loading Whisper model...")
@@ -408,6 +430,19 @@ print(path)
                         task="transcribe",
                         num_threads=num_threads,
                         provider=provider_config or "cpu",
+                    )
+                elif sense_voice_model and tokens_file:
+                    log_stderr(f"Loading SenseVoice model: {sense_voice_model}")
+                    log_stderr(f"  Model: {sense_voice_model}")
+                    log_stderr(f"  Tokens: {tokens_file}")
+                    log_stderr(f"  Language: {language}")
+                    self.recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                        model=sense_voice_model,
+                        tokens=tokens_file,
+                        language=language,
+                        num_threads=num_threads,
+                        provider=provider_config or "cpu",
+                        use_itn=True,  # Enable inverse text normalization (for better output)
                     )
                 elif paraformer_model and tokens_file:
                     log_stderr(f"Loading Paraformer model: {paraformer_model}")

@@ -25,37 +25,46 @@ pub struct DownloadProgress {
 /// Get available Parakeet models (sherpa-onnx)
 fn get_parakeet_models() -> Vec<ModelInfo> {
     vec![
+        // Whisper multilingual models - Support 99 languages including French
         ModelInfo {
             name: "sherpa-onnx-whisper-tiny".to_string(),
-            display_name: "Whisper Tiny".to_string(),
+            display_name: "Whisper Tiny (Multilingual)".to_string(),
             size_mb: 75,
-            url: "csukuangfj/sherpa-onnx-whisper-tiny.en".to_string(),
+            url: "csukuangfj/sherpa-onnx-whisper-tiny".to_string(),
             installed: false,
-            description: "Very fast, 75MB, English only".to_string(),
+            description: "75 MB • 99 langues (FR, EN, ES, DE...) • Rapide mais basique".to_string(),
         },
         ModelInfo {
             name: "sherpa-onnx-whisper-base".to_string(),
-            display_name: "Whisper Base".to_string(),
+            display_name: "Whisper Base (Multilingual)".to_string(),
             size_mb: 150,
             url: "csukuangfj/sherpa-onnx-whisper-base".to_string(),
             installed: false,
-            description: "Fast, 150MB, multilingual".to_string(),
+            description: "150 MB • 99 langues (FR, EN, ES, DE...) • Bon compromis vitesse/qualité".to_string(),
         },
         ModelInfo {
-            name: "sherpa-onnx-sense-voice".to_string(),
-            display_name: "SenseVoice".to_string(),
-            size_mb: 500,
-            url: "csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17".to_string(),
+            name: "sherpa-onnx-whisper-small".to_string(),
+            display_name: "Whisper Small (Multilingual) ⭐ Recommandé".to_string(),
+            size_mb: 400,
+            url: "csukuangfj/sherpa-onnx-whisper-small".to_string(),
             installed: false,
-            description: "Accurate, 500MB, multilingual (zh, en, ja, ko)".to_string(),
+            description: "400 MB • 99 langues (FR, EN, ES, DE...) • Meilleure précision pour le français".to_string(),
         },
         ModelInfo {
-            name: "sherpa-onnx-paraformer".to_string(),
-            display_name: "Paraformer".to_string(),
-            size_mb: 300,
-            url: "csukuangfj/sherpa-onnx-paraformer-zh-2023-03-28".to_string(),
+            name: "sherpa-onnx-whisper-medium".to_string(),
+            display_name: "Whisper Medium (Multilingual)".to_string(),
+            size_mb: 1000,
+            url: "csukuangfj/sherpa-onnx-whisper-medium".to_string(),
             installed: false,
-            description: "Fast, 300MB, Chinese + English".to_string(),
+            description: "1 GB • 99 langues (FR, EN, ES, DE...) • Excellente qualité, plus lent".to_string(),
+        },
+        ModelInfo {
+            name: "sherpa-onnx-whisper-large-v3".to_string(),
+            display_name: "Whisper Large-v3 (Multilingual)".to_string(),
+            size_mb: 3000,
+            url: "csukuangfj/sherpa-onnx-whisper-large-v3".to_string(),
+            installed: false,
+            description: "3 GB • 99 langues (FR, EN, ES, DE...) • Meilleure précision maximale, très lent".to_string(),
         },
     ]
 }

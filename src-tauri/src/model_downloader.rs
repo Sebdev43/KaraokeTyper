@@ -156,7 +156,10 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
 
     let python_script = if cfg!(debug_assertions) {
         let cwd = std::env::current_dir().unwrap();
-        let path1 = cwd.join("src-tauri").join("python").join("parakeet_service.py");
+        let path1 = cwd
+            .join("src-tauri")
+            .join("python")
+            .join("parakeet_service.py");
         let path2 = cwd.join("python").join("parakeet_service.py");
         let path3 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("python")

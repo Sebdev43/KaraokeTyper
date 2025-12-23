@@ -1,4 +1,5 @@
 mod audio;
+mod autostart;
 mod config;
 mod keyboard_listener;
 mod model_downloader;
@@ -44,7 +45,9 @@ impl SttEngine {
     }
 
     pub fn transcribe(&self, audio_data: &[f32]) -> Result<String, String> {
-        self.engine.transcribe(audio_data).map_err(|e| e.to_string())
+        self.engine
+            .transcribe(audio_data)
+            .map_err(|e| e.to_string())
     }
 
     pub fn backend_name(&self) -> &'static str {
@@ -816,7 +819,10 @@ fn check_sherpa_onnx_installed() -> bool {
         {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout);
-                println!("[SHERPA CHECK] sherpa-onnx version (venv): {}", version.trim());
+                println!(
+                    "[SHERPA CHECK] sherpa-onnx version (venv): {}",
+                    version.trim()
+                );
                 return true;
             }
         }
@@ -830,7 +836,10 @@ fn check_sherpa_onnx_installed() -> bool {
         {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout);
-                println!("[SHERPA CHECK] sherpa-onnx version (system): {}", version.trim());
+                println!(
+                    "[SHERPA CHECK] sherpa-onnx version (system): {}",
+                    version.trim()
+                );
                 return true;
             }
         }
@@ -849,7 +858,10 @@ async fn detect_gpu() -> Result<serde_json::Value, String> {
         .join("gpu_detector.py");
 
     if !detector_path.exists() {
-        return Err(format!("GPU detector not found: {}", detector_path.display()));
+        return Err(format!(
+            "GPU detector not found: {}",
+            detector_path.display()
+        ));
     }
 
     // Try venv python first, fallback to system
@@ -876,7 +888,10 @@ async fn detect_gpu() -> Result<serde_json::Value, String> {
     let result: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse GPU detection result: {}", e))?;
 
-    println!("[GPU DETECT] Result: {}", serde_json::to_string_pretty(&result).unwrap_or_default());
+    println!(
+        "[GPU DETECT] Result: {}",
+        serde_json::to_string_pretty(&result).unwrap_or_default()
+    );
 
     Ok(result)
 }
@@ -900,7 +915,11 @@ async fn get_stt_install_commands(backend: String) -> Result<serde_json::Value, 
     };
 
     let output = Command::new(&python_cmd)
-        .args([detector_path.to_str().unwrap(), "install-commands", &backend])
+        .args([
+            detector_path.to_str().unwrap(),
+            "install-commands",
+            &backend,
+        ])
         .output()
         .map_err(|e| format!("Failed to get install commands: {}", e))?;
 
@@ -918,11 +937,17 @@ async fn get_stt_install_commands(backend: String) -> Result<serde_json::Value, 
 
 /// Install STT dependencies based on detected GPU (sherpa-onnx + appropriate runtime)
 #[tauri::command]
-async fn install_stt_dependencies(app_handle: AppHandle, backend: String) -> Result<String, String> {
+async fn install_stt_dependencies(
+    app_handle: AppHandle,
+    backend: String,
+) -> Result<String, String> {
     use std::process::Command;
     use tauri::Emitter;
 
-    println!("[STT INSTALL] Starting installation for backend: {}", backend);
+    println!(
+        "[STT INSTALL] Starting installation for backend: {}",
+        backend
+    );
 
     let venv_path = get_venv_path();
     let venv_python = get_venv_python();
@@ -1008,9 +1033,7 @@ async fn install_stt_dependencies(app_handle: AppHandle, backend: String) -> Res
 
     let base_packages = ["numpy", "soundfile", "huggingface_hub"];
     for pkg in &base_packages {
-        let _ = Command::new(&venv_pip)
-            .args(["install", pkg])
-            .output();
+        let _ = Command::new(&venv_pip).args(["install", pkg]).output();
     }
 
     // Step 4: Install backend-specific packages
@@ -1042,7 +1065,7 @@ async fn install_stt_dependencies(app_handle: AppHandle, backend: String) -> Res
                 )
                 .ok();
             // Note: onnxruntime-rocm might need special index
-            "onnxruntime"  // Fallback to CPU for now, ROCm needs manual setup
+            "onnxruntime" // Fallback to CPU for now, ROCm needs manual setup
         }
         "CoreMLExecutionProvider" => {
             app_handle
@@ -1056,7 +1079,7 @@ async fn install_stt_dependencies(app_handle: AppHandle, backend: String) -> Res
                     }),
                 )
                 .ok();
-            "onnxruntime"  // CoreML is included in base onnxruntime on macOS
+            "onnxruntime" // CoreML is included in base onnxruntime on macOS
         }
         _ => {
             app_handle
@@ -1082,7 +1105,10 @@ async fn install_stt_dependencies(app_handle: AppHandle, backend: String) -> Res
 
     if !onnx_output.status.success() {
         let stderr = String::from_utf8_lossy(&onnx_output.stderr);
-        println!("[STT INSTALL] Warning: {} install issue: {}", onnx_package, stderr);
+        println!(
+            "[STT INSTALL] Warning: {} install issue: {}",
+            onnx_package, stderr
+        );
     }
 
     // Install sherpa-onnx
@@ -1114,8 +1140,14 @@ async fn install_stt_dependencies(app_handle: AppHandle, backend: String) -> Res
             )
             .ok();
 
-        println!("[STT INSTALL] ✅ Installation complete for backend: {}", backend);
-        Ok(format!("STT dependencies installed for {}! Restart to use.", backend))
+        println!(
+            "[STT INSTALL] ✅ Installation complete for backend: {}",
+            backend
+        );
+        Ok(format!(
+            "STT dependencies installed for {}! Restart to use.",
+            backend
+        ))
     } else {
         let stderr = String::from_utf8_lossy(&sherpa_output.stderr);
         let stdout = String::from_utf8_lossy(&sherpa_output.stdout);
@@ -1130,7 +1162,10 @@ async fn install_stt_dependencies(app_handle: AppHandle, backend: String) -> Res
             )
             .ok();
 
-        Err(format!("sherpa-onnx installation failed:\nstderr: {}\nstdout: {}", stderr, stdout))
+        Err(format!(
+            "sherpa-onnx installation failed:\nstderr: {}\nstdout: {}",
+            stderr, stdout
+        ))
     }
 }
 
@@ -1141,12 +1176,14 @@ async fn get_system_info() -> Result<serde_json::Value, String> {
     let arch = std::env::consts::ARCH;
 
     #[cfg(target_os = "linux")]
-    let display_server = std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".to_string());
+    let display_server =
+        std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".to_string());
     #[cfg(not(target_os = "linux"))]
     let display_server = "native".to_string();
 
     #[cfg(target_os = "linux")]
-    let desktop_env = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".to_string());
+    let desktop_env =
+        std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "unknown".to_string());
     #[cfg(not(target_os = "linux"))]
     let desktop_env = "native".to_string();
 
@@ -1490,7 +1527,22 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
 
             if cli_enabled {
                 println!("[GNOME EXT] ✅ Extension enabled");
-                Ok("Extension installée et activée !".to_string())
+
+                println!("[GNOME EXT] Initiating automatic logout...");
+                let logout_result = std::process::Command::new("gnome-session-quit")
+                    .args(["--logout", "--no-prompt"])
+                    .spawn();
+
+                match logout_result {
+                    Ok(_) => {
+                        println!("[GNOME EXT] ✓ Logout command sent");
+                        Ok("Extension installée et activée !\n\nDéconnexion en cours...".to_string())
+                    },
+                    Err(e) => {
+                        println!("[GNOME EXT] ⚠️ Logout failed: {}", e);
+                        Ok("Extension installée et activée !\n\nVeuillez vous déconnecter manuellement pour activer l'extension.".to_string())
+                    }
+                }
             } else {
                 Ok(
                     "Extension installée !\n\n\
@@ -1548,6 +1600,22 @@ async fn remove_focused_window_extension() -> Result<String, String> {
     }
 }
 
+#[tauri::command]
+fn get_autostart_enabled() -> bool {
+    autostart::is_autostart_enabled()
+}
+
+#[tauri::command]
+async fn set_autostart_enabled(enabled: bool) -> Result<String, String> {
+    if enabled {
+        autostart::enable_autostart()?;
+        Ok("Autostart enabled".to_string())
+    } else {
+        autostart::disable_autostart()?;
+        Ok("Autostart disabled".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1558,6 +1626,21 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
         .setup(|app| {
+            // Auto-setup venv on first launch
+            let venv_python = get_venv_python();
+            if !venv_python.exists() {
+                println!("[STARTUP] First launch detected - setting up Python venv...");
+                let app_handle_venv = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match install_stt_dependencies(app_handle_venv, "CPU".to_string()).await {
+                        Ok(msg) => println!("[STARTUP] ✅ Venv setup complete: {}", msg),
+                        Err(e) => eprintln!("[STARTUP] ⚠️  Venv setup failed: {}", e),
+                    }
+                });
+            } else {
+                println!("[STARTUP] Venv already exists at: {}", venv_python.display());
+            }
+
             // Initialize STT engine at startup
             println!("[STARTUP] Initializing STT engine...");
             let app_handle = app.handle().clone();
@@ -1741,7 +1824,9 @@ pub fn run() {
             restart_wireplumber,
             check_focused_window_extension,
             install_focused_window_extension,
-            remove_focused_window_extension
+            remove_focused_window_extension,
+            get_autostart_enabled,
+            set_autostart_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

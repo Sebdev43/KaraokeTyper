@@ -110,7 +110,9 @@ fn get_repo_id_for_model(model_name: &str) -> Option<&'static str> {
         "sherpa-onnx-whisper-base" => Some("csukuangfj/sherpa-onnx-whisper-base"),
         "sherpa-onnx-whisper-small" => Some("csukuangfj/sherpa-onnx-whisper-small"),
         "sherpa-onnx-whisper-medium" => Some("csukuangfj/sherpa-onnx-whisper-medium"),
-        "sherpa-onnx-sense-voice" => Some("csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"),
+        "sherpa-onnx-sense-voice" => {
+            Some("csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
+        }
         "sherpa-onnx-paraformer" => Some("csukuangfj/sherpa-onnx-paraformer-zh-2023-03-28"),
         _ => None,
     }
@@ -141,10 +143,16 @@ pub fn resolve_model_path(model_name: &str) -> Option<String> {
         .join(&repo_folder)
         .join("snapshots");
 
-    println!("[PARAKEET] Looking for model in: {}", snapshots_dir.display());
+    println!(
+        "[PARAKEET] Looking for model in: {}",
+        snapshots_dir.display()
+    );
 
     if !snapshots_dir.exists() {
-        println!("[PARAKEET] Snapshots dir not found: {}", snapshots_dir.display());
+        println!(
+            "[PARAKEET] Snapshots dir not found: {}",
+            snapshots_dir.display()
+        );
         return None;
     }
 
@@ -194,7 +202,9 @@ impl ParakeetSttEngine {
         // All possible paths to check
         let possible_paths = [
             // Path 1: CWD is project root (karaoketyper/), need src-tauri/python/
-            cwd.join("src-tauri").join("python").join("parakeet_service.py"),
+            cwd.join("src-tauri")
+                .join("python")
+                .join("parakeet_service.py"),
             // Path 2: CWD is src-tauri/, need python/
             cwd.join("python").join("parakeet_service.py"),
             // Path 3: Relative to Cargo.toml location (works in dev and when running from source)
@@ -283,7 +293,10 @@ impl ParakeetSttEngine {
         })?;
 
         let ready_response: ParakeetResponse = serde_json::from_str(&ready_line).map_err(|e| {
-            ParakeetError::ServiceStartError(format!("Invalid ready signal: {} - raw: {}", e, ready_line))
+            ParakeetError::ServiceStartError(format!(
+                "Invalid ready signal: {} - raw: {}",
+                e, ready_line
+            ))
         })?;
 
         if !ready_response.ready.unwrap_or(false) {
@@ -298,10 +311,7 @@ impl ParakeetSttEngine {
 
         // Log available providers
         if let Some(providers) = &ready_response.providers {
-            println!(
-                "[PARAKEET] Available providers: {:?}",
-                providers.providers
-            );
+            println!("[PARAKEET] Available providers: {:?}", providers.providers);
             if providers.has_cuda {
                 println!("[PARAKEET] ✓ CUDA available (NVIDIA GPU)");
             }
@@ -410,9 +420,10 @@ impl ParakeetSttEngine {
 
     /// Initialize and load model
     pub fn initialize(&self) -> Result<(), ParakeetError> {
-        let model_path = self.model_path.clone().ok_or_else(|| {
-            ParakeetError::ModelLoadError("No model path specified".to_string())
-        })?;
+        let model_path = self
+            .model_path
+            .clone()
+            .ok_or_else(|| ParakeetError::ModelLoadError("No model path specified".to_string()))?;
 
         println!("[PARAKEET] Loading model from: {}", model_path);
 
@@ -469,10 +480,7 @@ impl ParakeetSttEngine {
             sample_rate: Some(16000),
         };
 
-        println!(
-            "[STT_TIMING] Request built: {}ms",
-            t0.elapsed().as_millis()
-        );
+        println!("[STT_TIMING] Request built: {}ms", t0.elapsed().as_millis());
 
         let response = self.send_command_timed(request)?;
 
@@ -492,7 +500,10 @@ impl ParakeetSttEngine {
     }
 
     /// Send command with detailed timing
-    fn send_command_timed(&self, request: ParakeetRequest) -> Result<ParakeetResponse, ParakeetError> {
+    fn send_command_timed(
+        &self,
+        request: ParakeetRequest,
+    ) -> Result<ParakeetResponse, ParakeetError> {
         let t0 = std::time::Instant::now();
         let mut service_lock = self.service.lock().unwrap();
 
@@ -505,10 +516,7 @@ impl ParakeetSttEngine {
             .as_mut()
             .ok_or(ParakeetError::ServiceNotRunning)?;
 
-        println!(
-            "[STT_TIMING] Lock acquired: {}ms",
-            t0.elapsed().as_millis()
-        );
+        println!("[STT_TIMING] Lock acquired: {}ms", t0.elapsed().as_millis());
 
         // Serialize
         let t1 = std::time::Instant::now();

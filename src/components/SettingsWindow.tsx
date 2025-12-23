@@ -36,6 +36,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 
 interface AudioDevice {
@@ -152,6 +153,8 @@ function SettingsWindow() {
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [currentPlatform, setCurrentPlatform] = useState<string>("linux");
+  const [autostart, setAutostart] = useState<boolean>(false);
+  const [isTogglingAutostart, setIsTogglingAutostart] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // GPU & STT Backend state
@@ -274,6 +277,31 @@ function SettingsWindow() {
     }
   }, []);
 
+  const loadAutostart = useCallback(async () => {
+    try {
+      const enabled = await invoke<boolean>("get_autostart_enabled");
+      setAutostart(enabled);
+    } catch (error) {
+      console.error("Failed to load autostart status:", error);
+    }
+  }, []);
+
+  const handleToggleAutostart = async (enabled: boolean) => {
+    setIsTogglingAutostart(true);
+    try {
+      await invoke<string>("set_autostart_enabled", { enabled });
+      setAutostart(enabled);
+    } catch (error) {
+      console.error("Failed to toggle autostart:", error);
+      await message(`Échec du changement d'autostart : ${error}`, {
+        title: "Erreur",
+        kind: "error",
+      });
+    } finally {
+      setIsTogglingAutostart(false);
+    }
+  };
+
   const handleDownloadModel = async (modelName: string) => {
     const modelInfo = installedModels.find((m) => m.name === modelName);
     if (!modelInfo) return;
@@ -313,6 +341,7 @@ function SettingsWindow() {
     void checkGnomeExtension();
     void detectGpu();
     void checkSherpaOnnx();
+    void loadAutostart();
   }, [
     loadAudioDevices,
     loadSettings,
@@ -324,6 +353,7 @@ function SettingsWindow() {
     checkGnomeExtension,
     detectGpu,
     checkSherpaOnnx,
+    loadAutostart,
   ]);
 
   useEffect(() => {
@@ -552,7 +582,7 @@ function SettingsWindow() {
 
   const handleInstallGnomeExtension = async () => {
     const confirmed = await confirm(
-      "Installer l'extension GNOME pour la détection de terminal ?\n\nCela permet de coller automatiquement avec Ctrl+Shift+V dans les terminaux.\n\nNote: Nécessite de se déconnecter/reconnecter pour activer.",
+      "Installer l'extension GNOME pour la détection de terminal ?\n\nCela permet de coller automatiquement avec Ctrl+Shift+V dans les terminaux.\n\nNote: La session sera redémarrée automatiquement après l'installation.",
       { title: "Extension Terminal", kind: "info" },
     );
 
@@ -563,7 +593,6 @@ function SettingsWindow() {
     try {
       const result = await invoke<string>("install_focused_window_extension");
       await message(result, { title: "Succès", kind: "info" });
-      await checkGnomeExtension();
     } catch (error) {
       await message(`Échec de l'installation : ${error}`, {
         title: "Erreur",
@@ -1103,6 +1132,31 @@ function SettingsWindow() {
                   </div>
                 </div>
               )}
+
+              <Separator />
+
+              {/* Autostart */}
+              <div className="space-y-3">
+                <Label>Launch at Startup</Label>
+                <p className="text-sm text-muted-foreground">
+                  Automatically start KaraokeTyper when you log in
+                </p>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Badge variant={autostart ? "default" : "secondary"}>
+                      {autostart ? "Enabled" : "Disabled"}
+                    </Badge>
+                    <span className="text-sm">
+                      {autostart ? "Starts at login" : "Manual start only"}
+                    </span>
+                  </div>
+                  <Switch
+                    checked={autostart}
+                    onCheckedChange={handleToggleAutostart}
+                    disabled={isTogglingAutostart}
+                  />
+                </div>
+              </div>
             </CardContent>
           </Card>
 

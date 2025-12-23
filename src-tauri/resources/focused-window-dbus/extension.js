@@ -102,10 +102,13 @@ class FocusedWindowDBus {
     }
 
     export() {
+        // Export the object on GNOME Shell's bus
+        // Extensions cannot create their own D-Bus services
         this._dbusImpl.export(
             Gio.DBus.session,
             '/org/karaoketyper/FocusedWindow'
         );
+        console.log('[KaraokeTyper] D-Bus object exported at /org/karaoketyper/FocusedWindow');
     }
 
     unexport() {

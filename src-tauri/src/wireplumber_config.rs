@@ -63,10 +63,7 @@ monitor.alsa.rules = [
 
 /// Detect WirePlumber version (returns major.minor as tuple)
 fn get_wireplumber_version() -> Option<(u32, u32)> {
-    let output = Command::new("wireplumber")
-        .arg("--version")
-        .output()
-        .ok()?;
+    let output = Command::new("wireplumber").arg("--version").output().ok()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Parse "Linked with libwireplumber 0.4.17" or similar
@@ -78,10 +75,7 @@ fn get_wireplumber_version() -> Option<(u32, u32)> {
                     if let Ok(major) = major.parse::<u32>() {
                         if let Some((minor, _)) = rest.split_once('.') {
                             if let Ok(minor) = minor.parse::<u32>() {
-                                println!(
-                                    "[WIREPLUMBER] Detected version: {}.{}",
-                                    major, minor
-                                );
+                                println!("[WIREPLUMBER] Detected version: {}.{}", major, minor);
                                 return Some((major, minor));
                             }
                         }
@@ -138,10 +132,18 @@ fn get_all_config_paths() -> Vec<PathBuf> {
         let wp_dir = base.join("wireplumber");
 
         // Lua format (0.4.x)
-        paths.push(wp_dir.join("main.lua.d").join("51-karaoketyper-no-suspend.lua"));
+        paths.push(
+            wp_dir
+                .join("main.lua.d")
+                .join("51-karaoketyper-no-suspend.lua"),
+        );
 
         // Conf format (0.5+)
-        paths.push(wp_dir.join("wireplumber.conf.d").join("51-karaoketyper-no-suspend.conf"));
+        paths.push(
+            wp_dir
+                .join("wireplumber.conf.d")
+                .join("51-karaoketyper-no-suspend.conf"),
+        );
     }
 
     paths
@@ -191,7 +193,11 @@ pub fn install_config() -> Result<String, String> {
     Ok(format!(
         "Configuration installée!\n\nFichier: {}\nFormat: {}\n\n{}",
         config_file.display(),
-        if is_lua { "Lua (WirePlumber 0.4.x)" } else { "Conf (WirePlumber 0.5+)" },
+        if is_lua {
+            "Lua (WirePlumber 0.4.x)"
+        } else {
+            "Conf (WirePlumber 0.5+)"
+        },
         restart_msg
     ))
 }
@@ -202,7 +208,8 @@ pub fn remove_config() -> Result<String, String> {
 
     for path in get_all_config_paths() {
         if path.exists() {
-            fs::remove_file(&path).map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
+            fs::remove_file(&path)
+                .map_err(|e| format!("Failed to remove {}: {}", path.display(), e))?;
             println!("[WIREPLUMBER] ✅ Removed: {}", path.display());
             removed = true;
         }

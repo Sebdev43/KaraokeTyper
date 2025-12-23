@@ -4,6 +4,8 @@ use tauri::AppHandle;
 
 // On Windows/macOS: full rdev-based implementation
 #[cfg(not(target_os = "linux"))]
+use rdev::{listen, Event, EventType, Key};
+#[cfg(not(target_os = "linux"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(target_os = "linux"))]
 use std::sync::Arc;
@@ -11,8 +13,6 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(not(target_os = "linux"))]
 use tokio::sync::mpsc;
-#[cfg(not(target_os = "linux"))]
-use rdev::{listen, Event, EventType, Key};
 
 /// Hotkey events for push-to-talk (used on Windows/macOS only)
 #[cfg(not(target_os = "linux"))]
@@ -210,7 +210,8 @@ pub fn check_linux_permissions() -> Result<(), String> {
     if !groups.contains("input") {
         return Err("User is not in 'input' group. Run:\n\
             sudo usermod -aG input $USER\n\
-            Then log out and log back in.".to_string());
+            Then log out and log back in."
+            .to_string());
     }
 
     Ok(())

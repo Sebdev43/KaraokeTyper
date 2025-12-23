@@ -490,7 +490,10 @@ impl TextOutput {
         self.clipboard
             .set_text(text)
             .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
-        println!("[OUTPUT_TIMING] Clipboard set_text: {}ms", t1.elapsed().as_millis());
+        println!(
+            "[OUTPUT_TIMING] Clipboard set_text: {}ms",
+            t1.elapsed().as_millis()
+        );
 
         println!("[OUTPUT] ✅ Text copied to clipboard");
 
@@ -501,9 +504,15 @@ impl TextOutput {
 
         let t2 = std::time::Instant::now();
         self.simulate_paste()?;
-        println!("[OUTPUT_TIMING] simulate_paste: {}ms", t2.elapsed().as_millis());
+        println!(
+            "[OUTPUT_TIMING] simulate_paste: {}ms",
+            t2.elapsed().as_millis()
+        );
 
-        println!("[OUTPUT_TIMING] Total type_text: {}ms", t0.elapsed().as_millis());
+        println!(
+            "[OUTPUT_TIMING] Total type_text: {}ms",
+            t0.elapsed().as_millis()
+        );
         println!("[OUTPUT] ✅ Text pasted successfully");
 
         Ok(())
@@ -568,7 +577,7 @@ impl TextOutput {
             return is_terminal;
         }
 
-        // Method 2: Fallback to GNOME Shell Eval (blocked on GNOME 46+ but works on older versions)
+        // Method 2: Fallback to GNOME Shell Eval (works on older GNOME versions)
         if let Some(is_terminal) = Self::check_terminal_via_gnome_eval() {
             return is_terminal;
         }
@@ -581,12 +590,13 @@ impl TextOutput {
     #[cfg(target_os = "linux")]
     fn check_terminal_via_extension() -> Option<bool> {
         // Call our KaraokeTyper GNOME extension via D-Bus
+        // Extensions export their objects on org.gnome.Shell bus
         let result = std::process::Command::new("gdbus")
             .args([
                 "call",
                 "--session",
                 "--dest",
-                "org.karaoketyper.FocusedWindow",
+                "org.gnome.Shell",
                 "--object-path",
                 "/org/karaoketyper/FocusedWindow",
                 "--method",

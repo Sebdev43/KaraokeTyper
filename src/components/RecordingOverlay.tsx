@@ -1,12 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { Loader2 } from "lucide-react";
+import { Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getAudioCapture, transcribeAudio } from "@/lib/audioCapture";
-import { cn } from "@/lib/utils";
-
-// Static equalizer bar heights (looks like frozen audio waveform)
-const EQUALIZER_BARS = [0.3, 0.7, 0.5, 0.9, 0.4, 0.8, 0.6, 0.95, 0.5, 0.7, 0.4, 0.85, 0.55];
 
 interface StatusEvent {
   status: string;
@@ -121,41 +117,94 @@ function RecordingOverlay() {
   }, [handleStartRecording, handleStopRecording]);
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 bg-zinc-900/95 backdrop-blur-sm rounded-xl border border-zinc-700 shadow-2xl">
-      {/* Big Recording Dot */}
-      <div
-        className={cn(
-          "h-5 w-5 rounded-full flex-shrink-0 shadow-lg",
-          status === "recording" && "bg-red-500 shadow-red-500/50",
-          status === "processing" && "bg-amber-500 shadow-amber-500/50",
-          status === "idle" && "bg-emerald-500 shadow-emerald-500/50",
-          !["recording", "processing", "idle"].includes(status) && "bg-zinc-500",
-        )}
-      />
+    <div className="inline-flex items-center gap-2 px-3 py-2 bg-zinc-900/80 backdrop-blur-md rounded-lg border border-zinc-700/40 shadow-lg">
+      {/* Idle State - Minimal green dot */}
+      {status === "idle" && (
+        <>
+          <div className="h-2 w-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/40" />
+          <span className="text-xs text-zinc-300 font-medium">Prêt</span>
+        </>
+      )}
 
-      {/* Static Equalizer Bars */}
+      {/* Recording State - Pulsing red dot with waves */}
       {status === "recording" && (
-        <div className="flex items-end gap-[3px] h-6">
-          {EQUALIZER_BARS.map((height, i) => (
-            <div
-              key={`bar-${i}-${height}`}
-              className="w-[3px] bg-red-500 rounded-full"
-              style={{ height: `${height * 24}px` }}
-            />
-          ))}
-        </div>
+        <>
+          <div className="relative flex items-center">
+            {/* Pulsing dot */}
+            <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse shadow-sm shadow-red-500/60" />
+
+            {/* Outer ring */}
+            <div className="absolute inset-0 h-2 w-2 rounded-full bg-red-500/30 animate-ping" />
+          </div>
+
+          {/* Mini sound wave bars */}
+          <div className="flex items-center gap-[2px]">
+            {[0, 1, 2, 3].map((i) => (
+              <div
+                key={`wave-${i}`}
+                className="w-[2px] bg-red-500 rounded-full"
+                style={{
+                  animation: "soundwave 0.6s ease-in-out infinite",
+                  animationDelay: `${i * 0.12}s`,
+                  height: "8px",
+                }}
+              />
+            ))}
+          </div>
+
+          <span className="text-xs text-red-400 font-medium">Écoute...</span>
+        </>
       )}
 
-      {/* Processing Spinner */}
+      {/* Processing State - Spinning amber dot */}
       {status === "processing" && (
-        <div className="flex items-center gap-2">
-          <Loader2 className="h-5 w-5 text-amber-500 animate-spin" />
-          <span className="text-sm text-zinc-300 font-medium">Transcription...</span>
-        </div>
+        <>
+          <div className="relative flex items-center">
+            <Zap className="h-3 w-3 text-amber-500 animate-pulse" />
+          </div>
+
+          <div className="flex items-center gap-[2px]">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <div
+                key={`shimmer-${i}`}
+                className="w-[2px] bg-amber-500 rounded-full"
+                style={{
+                  animation: "shimmer 1s ease-in-out infinite",
+                  animationDelay: `${i * 0.15}s`,
+                  height: "10px",
+                }}
+              />
+            ))}
+          </div>
+
+          <span className="text-xs text-amber-400 font-medium">IA...</span>
+        </>
       )}
 
-      {/* Idle State */}
-      {status === "idle" && <span className="text-sm text-zinc-400 font-medium">Prêt</span>}
+      {/* Minimal CSS animations */}
+      <style>{`
+        @keyframes soundwave {
+          0%, 100% {
+            height: 6px;
+            opacity: 0.5;
+          }
+          50% {
+            height: 14px;
+            opacity: 1;
+          }
+        }
+
+        @keyframes shimmer {
+          0%, 100% {
+            height: 8px;
+            opacity: 0.4;
+          }
+          50% {
+            height: 14px;
+            opacity: 1;
+          }
+        }
+      `}</style>
     </div>
   );
 }

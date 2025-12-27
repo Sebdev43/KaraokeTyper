@@ -140,8 +140,6 @@ function SettingsWindow() {
   const [uinputAvailable, setUinputAvailable] = useState<boolean>(false);
   const [pythonAvailable, setPythonAvailable] = useState<boolean>(false);
   const [isInstallingSystem, setIsInstallingSystem] = useState(false);
-  const [wireplumberInstalled, setWireplumberInstalled] = useState<boolean>(false);
-  const [isInstallingWireplumber, setIsInstallingWireplumber] = useState(false);
   const [gnomeExtInstalled, setGnomeExtInstalled] = useState<boolean>(false);
   const [gnomeExtEnabled, setGnomeExtEnabled] = useState<boolean>(false);
   const [isGnomeWayland, setIsGnomeWayland] = useState<boolean>(false);
@@ -224,15 +222,6 @@ function SettingsWindow() {
       setInstalledModels(models);
     } catch (error) {
       console.error("Failed to load installed models:", error);
-    }
-  }, []);
-
-  const checkWireplumber = useCallback(async () => {
-    try {
-      const result = await invoke<{ installed: boolean }>("check_wireplumber_latency_fix");
-      setWireplumberInstalled(result.installed);
-    } catch (error) {
-      console.error("Failed to check wireplumber:", error);
     }
   }, []);
 
@@ -334,7 +323,6 @@ function SettingsWindow() {
     void checkUinput();
     void checkPython();
     void loadInstalledModels();
-    void checkWireplumber();
     void checkGnomeExtension();
     void detectGpu();
     void checkSherpaOnnx();
@@ -346,7 +334,6 @@ function SettingsWindow() {
     checkUinput,
     checkPython,
     loadInstalledModels,
-    checkWireplumber,
     checkGnomeExtension,
     detectGpu,
     checkSherpaOnnx,
@@ -566,54 +553,6 @@ function SettingsWindow() {
     } finally {
       setIsInstallingStt(false);
       setSttInstallProgress("");
-    }
-  };
-
-  const handleInstallWireplumber = async () => {
-    const confirmed = await confirm(
-      "Installer le fix de latence audio WirePlumber ?\n\nCela va :\n• Désactiver la suspension des nœuds audio\n• Éliminer le délai de ~2s au début des enregistrements\n\nNote: Nécessite un redémarrage de WirePlumber.",
-      { title: "Fix Latence Audio", kind: "info" },
-    );
-
-    if (!confirmed) return;
-
-    setIsInstallingWireplumber(true);
-
-    try {
-      const result = await invoke<string>("install_wireplumber_latency_fix");
-      await message(result, { title: "Succès", kind: "info" });
-      await checkWireplumber();
-    } catch (error) {
-      await message(`Échec de l'installation : ${error}`, {
-        title: "Erreur",
-        kind: "error",
-      });
-    } finally {
-      setIsInstallingWireplumber(false);
-    }
-  };
-
-  const handleRemoveWireplumber = async () => {
-    const confirmed = await confirm("Supprimer le fix de latence audio WirePlumber ?", {
-      title: "Supprimer Configuration",
-      kind: "warning",
-    });
-
-    if (!confirmed) return;
-
-    setIsInstallingWireplumber(true);
-
-    try {
-      const result = await invoke<string>("remove_wireplumber_latency_fix");
-      await message(result, { title: "Succès", kind: "info" });
-      await checkWireplumber();
-    } catch (error) {
-      await message(`Échec de la suppression : ${error}`, {
-        title: "Erreur",
-        kind: "error",
-      });
-    } finally {
-      setIsInstallingWireplumber(false);
     }
   };
 
@@ -1052,56 +991,6 @@ function SettingsWindow() {
               )}
 
               {currentPlatform === "linux" && <Separator />}
-
-              {/* WirePlumber Latency Fix (Linux only) */}
-              {currentPlatform === "linux" && (
-                <div className="space-y-3">
-                  <Label>Audio Latency Fix</Label>
-                  <p className="text-sm text-muted-foreground">
-                    {wireplumberInstalled
-                      ? "WirePlumber configured - no audio delay"
-                      : "Fix ~2s delay at recording start (WirePlumber)"}
-                  </p>
-
-                  <div className="flex items-center gap-2">
-                    <Badge variant={wireplumberInstalled ? "default" : "secondary"}>
-                      {wireplumberInstalled ? "✓" : "○"}
-                    </Badge>
-                    <span className="text-sm">
-                      {wireplumberInstalled
-                        ? "Node suspension disabled"
-                        : "Audio nodes suspend when idle"}
-                    </span>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={handleInstallWireplumber}
-                      disabled={isInstallingWireplumber || wireplumberInstalled}
-                      variant={wireplumberInstalled ? "outline" : "default"}
-                      size="sm"
-                    >
-                      {isInstallingWireplumber
-                        ? "Installing..."
-                        : wireplumberInstalled
-                          ? "Installed ✓"
-                          : "Install Fix"}
-                    </Button>
-                    {wireplumberInstalled && (
-                      <Button
-                        onClick={handleRemoveWireplumber}
-                        disabled={isInstallingWireplumber}
-                        variant="destructive"
-                        size="sm"
-                      >
-                        Remove
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <Separator />
 
               {/* Autostart */}
               <div className="space-y-3">

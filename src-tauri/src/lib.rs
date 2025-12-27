@@ -13,9 +13,6 @@ mod evdev_listener;
 #[cfg(target_os = "linux")]
 mod audio_cli;
 
-#[cfg(target_os = "linux")]
-mod wireplumber_config;
-
 use audio::AudioCapture;
 use config::AppConfig;
 use output::TextOutput;
@@ -1303,84 +1300,6 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
     Ok("All dependencies ready ✅".to_string())
 }
 
-// ========== WirePlumber Latency Fix Commands (Linux only) ==========
-
-/// Check if WirePlumber latency fix is installed
-#[tauri::command]
-async fn check_wireplumber_latency_fix() -> Result<serde_json::Value, String> {
-    #[cfg(target_os = "linux")]
-    {
-        tokio::task::spawn_blocking(|| {
-            let installed = wireplumber_config::is_config_installed();
-            let running = wireplumber_config::is_wireplumber_running();
-            serde_json::json!({
-                "installed": installed,
-                "wireplumber_running": running,
-                "status": wireplumber_config::get_status()
-            })
-        })
-        .await
-        .map_err(|e| format!("Task failed: {}", e))
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        Ok(serde_json::json!({
-            "installed": false,
-            "wireplumber_running": false,
-            "status": "Not applicable on this platform"
-        }))
-    }
-}
-
-/// Install WirePlumber latency fix configuration
-#[tauri::command]
-async fn install_wireplumber_latency_fix() -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    {
-        tokio::task::spawn_blocking(wireplumber_config::install_config)
-            .await
-            .map_err(|e| format!("Task failed: {}", e))?
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err("WirePlumber is only available on Linux".to_string())
-    }
-}
-
-/// Remove WirePlumber latency fix configuration
-#[tauri::command]
-async fn remove_wireplumber_latency_fix() -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    {
-        tokio::task::spawn_blocking(wireplumber_config::remove_config)
-            .await
-            .map_err(|e| format!("Task failed: {}", e))?
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err("WirePlumber is only available on Linux".to_string())
-    }
-}
-
-/// Restart WirePlumber service to apply changes
-#[tauri::command]
-async fn restart_wireplumber() -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    {
-        tokio::task::spawn_blocking(wireplumber_config::restart_wireplumber)
-            .await
-            .map_err(|e| format!("Task failed: {}", e))?
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err("WirePlumber is only available on Linux".to_string())
-    }
-}
-
 // ========== GNOME Focused Window Extension Commands (Linux only) ==========
 
 /// Get the extension installation path
@@ -1857,10 +1776,6 @@ pub fn run() {
             get_stt_install_commands,
             install_stt_dependencies,
             get_system_info,
-            check_wireplumber_latency_fix,
-            install_wireplumber_latency_fix,
-            remove_wireplumber_latency_fix,
-            restart_wireplumber,
             check_focused_window_extension,
             install_focused_window_extension,
             remove_focused_window_extension,

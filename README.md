@@ -16,7 +16,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version">
-  <img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License">
+  <img src="https://img.shields.io/badge/license-Polyform%20NC-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/platform-Linux%20|%20Windows%20|%20macOS-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/rust-1.70+-orange.svg" alt="Rust">
   <img src="https://img.shields.io/badge/tauri-2.0-blueviolet.svg" alt="Tauri">
@@ -140,7 +140,10 @@ npm run tauri build
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0** - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **Polyform Noncommercial License 1.0.0** - see the [LICENSE](LICENSE) file for details.
+
+**You CAN**: Use, modify, and share for personal/non-commercial purposes.
+**You CANNOT**: Use commercially or sell without explicit permission.
 
 ---
 
@@ -255,7 +258,10 @@ npm run tauri build
 
 ## Licence
 
-Ce projet est sous licence **GNU General Public License v3.0** - voir le fichier [LICENSE](LICENSE) pour plus de détails.
+Ce projet est sous licence **Polyform Noncommercial License 1.0.0** - voir le fichier [LICENSE](LICENSE) pour plus de détails.
+
+**Vous POUVEZ** : Utiliser, modifier et partager pour usage personnel/non-commercial.
+**Vous NE POUVEZ PAS** : Utiliser commercialement ou vendre sans autorisation explicite.
 
 ---
 

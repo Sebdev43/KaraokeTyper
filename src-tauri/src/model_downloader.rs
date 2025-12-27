@@ -40,7 +40,8 @@ fn get_parakeet_models() -> Vec<ModelInfo> {
             size_mb: 150,
             url: "csukuangfj/sherpa-onnx-whisper-base".to_string(),
             installed: false,
-            description: "150 MB • 99 langues (FR, EN, ES, DE...) • Bon compromis vitesse/qualité".to_string(),
+            description: "150 MB • 99 langues (FR, EN, ES, DE...) • Bon compromis vitesse/qualité"
+                .to_string(),
         },
         ModelInfo {
             name: "sherpa-onnx-whisper-small".to_string(),
@@ -48,7 +49,9 @@ fn get_parakeet_models() -> Vec<ModelInfo> {
             size_mb: 400,
             url: "csukuangfj/sherpa-onnx-whisper-small".to_string(),
             installed: false,
-            description: "400 MB • 99 langues (FR, EN, ES, DE...) • Meilleure précision pour le français".to_string(),
+            description:
+                "400 MB • 99 langues (FR, EN, ES, DE...) • Meilleure précision pour le français"
+                    .to_string(),
         },
         ModelInfo {
             name: "sherpa-onnx-whisper-medium".to_string(),
@@ -56,7 +59,8 @@ fn get_parakeet_models() -> Vec<ModelInfo> {
             size_mb: 1000,
             url: "csukuangfj/sherpa-onnx-whisper-medium".to_string(),
             installed: false,
-            description: "1 GB • 99 langues (FR, EN, ES, DE...) • Excellente qualité, plus lent".to_string(),
+            description: "1 GB • 99 langues (FR, EN, ES, DE...) • Excellente qualité, plus lent"
+                .to_string(),
         },
         ModelInfo {
             name: "sherpa-onnx-whisper-large-v3".to_string(),
@@ -64,7 +68,9 @@ fn get_parakeet_models() -> Vec<ModelInfo> {
             size_mb: 3000,
             url: "csukuangfj/sherpa-onnx-whisper-large-v3".to_string(),
             installed: false,
-            description: "3 GB • 99 langues (FR, EN, ES, DE...) • Meilleure précision maximale, très lent".to_string(),
+            description:
+                "3 GB • 99 langues (FR, EN, ES, DE...) • Meilleure précision maximale, très lent"
+                    .to_string(),
         },
     ]
 }

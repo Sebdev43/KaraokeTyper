@@ -7,11 +7,106 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
+use crate::config::AppConfig;
 use crate::{do_start_recording, do_stop_recording, do_type_text, AppState};
 
-const KEY_SPACE: Key = Key::KEY_SPACE;
-const KEY_LEFTCTRL: Key = Key::KEY_LEFTCTRL;
-const KEY_RIGHTCTRL: Key = Key::KEY_RIGHTCTRL;
+/// Parsed hotkey configuration
+#[derive(Debug, Clone)]
+struct HotkeyConfig {
+    require_ctrl: bool,
+    require_alt: bool,
+    require_shift: bool,
+    trigger_key: Option<Key>,       // For keyboard keys
+    trigger_mouse_btn: Option<u16>, // For mouse buttons (BTN_SIDE=0x114, BTN_EXTRA=0x115, etc.)
+}
+
+impl HotkeyConfig {
+    fn parse(shortcut: &str) -> Self {
+        let parts: Vec<&str> = shortcut.split('+').collect();
+        let mut config = HotkeyConfig {
+            require_ctrl: false,
+            require_alt: false,
+            require_shift: false,
+            trigger_key: None,
+            trigger_mouse_btn: None,
+        };
+
+        for part in parts {
+            match part.to_lowercase().as_str() {
+                "ctrl" | "control" | "commandorcontrol" => config.require_ctrl = true,
+                "alt" => config.require_alt = true,
+                "shift" => config.require_shift = true,
+                "super" | "meta" => {} // Ignore Super/Meta for now
+                "space" => config.trigger_key = Some(Key::KEY_SPACE),
+                "mouse4" => config.trigger_mouse_btn = Some(0x115), // BTN_EXTRA
+                "mouse5" => config.trigger_mouse_btn = Some(0x114), // BTN_SIDE
+                "mouseright" => config.trigger_mouse_btn = Some(0x111), // BTN_RIGHT
+                "mousemiddle" => config.trigger_mouse_btn = Some(0x112), // BTN_MIDDLE
+                "mouseleft" => config.trigger_mouse_btn = Some(0x110), // BTN_LEFT
+                key => {
+                    // Try to map single character keys
+                    if key.len() == 1 {
+                        if let Some(c) = key.chars().next() {
+                            config.trigger_key = char_to_key(c);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Default to Ctrl+Space if nothing parsed
+        if config.trigger_key.is_none() && config.trigger_mouse_btn.is_none() {
+            config.require_ctrl = true;
+            config.trigger_key = Some(Key::KEY_SPACE);
+        }
+
+        println!("[EVDEV] Parsed hotkey config: {:?}", config);
+        config
+    }
+}
+
+/// Convert a character to evdev Key
+fn char_to_key(c: char) -> Option<Key> {
+    match c.to_ascii_uppercase() {
+        'A' => Some(Key::KEY_A),
+        'B' => Some(Key::KEY_B),
+        'C' => Some(Key::KEY_C),
+        'D' => Some(Key::KEY_D),
+        'E' => Some(Key::KEY_E),
+        'F' => Some(Key::KEY_F),
+        'G' => Some(Key::KEY_G),
+        'H' => Some(Key::KEY_H),
+        'I' => Some(Key::KEY_I),
+        'J' => Some(Key::KEY_J),
+        'K' => Some(Key::KEY_K),
+        'L' => Some(Key::KEY_L),
+        'M' => Some(Key::KEY_M),
+        'N' => Some(Key::KEY_N),
+        'O' => Some(Key::KEY_O),
+        'P' => Some(Key::KEY_P),
+        'Q' => Some(Key::KEY_Q),
+        'R' => Some(Key::KEY_R),
+        'S' => Some(Key::KEY_S),
+        'T' => Some(Key::KEY_T),
+        'U' => Some(Key::KEY_U),
+        'V' => Some(Key::KEY_V),
+        'W' => Some(Key::KEY_W),
+        'X' => Some(Key::KEY_X),
+        'Y' => Some(Key::KEY_Y),
+        'Z' => Some(Key::KEY_Z),
+        '0' => Some(Key::KEY_0),
+        '1' => Some(Key::KEY_1),
+        '2' => Some(Key::KEY_2),
+        '3' => Some(Key::KEY_3),
+        '4' => Some(Key::KEY_4),
+        '5' => Some(Key::KEY_5),
+        '6' => Some(Key::KEY_6),
+        '7' => Some(Key::KEY_7),
+        '8' => Some(Key::KEY_8),
+        '9' => Some(Key::KEY_9),
+        _ => None,
+    }
+}
 
 const MAX_RECONNECT_ATTEMPTS: u32 = 5;
 const RECONNECT_DELAY_MS: u64 = 2000;
@@ -22,8 +117,9 @@ struct DeviceState {
     is_active: AtomicBool,
 }
 
-fn find_keyboard_devices() -> Result<Vec<PathBuf>, String> {
-    let mut keyboards = Vec::new();
+/// Find input devices that can handle our hotkey
+fn find_input_devices(hotkey: &HotkeyConfig) -> Result<Vec<PathBuf>, String> {
+    let mut devices = Vec::new();
 
     for entry in
         std::fs::read_dir("/dev/input").map_err(|e| format!("Failed to read /dev/input: {}", e))?
@@ -41,45 +137,105 @@ fn find_keyboard_devices() -> Result<Vec<PathBuf>, String> {
         }
 
         if let Ok(device) = Device::open(&path) {
-            if device.supported_events().contains(EventType::KEY) {
-                if let Some(keys) = device.supported_keys() {
-                    if keys.contains(KEY_SPACE)
-                        && (keys.contains(KEY_LEFTCTRL) || keys.contains(KEY_RIGHTCTRL))
-                    {
-                        println!(
-                            "[EVDEV] Found keyboard: {} ({})",
-                            path.display(),
-                            device.name().unwrap_or("unknown")
-                        );
-                        keyboards.push(path);
-                    }
-                }
+            let device_name = device.name().unwrap_or("unknown").to_string();
+            let supports_keys = device.supported_events().contains(EventType::KEY);
+
+            if !supports_keys {
+                continue;
+            }
+
+            // Check if device supports the trigger key/button
+            let has_trigger = if let Some(trigger_key) = hotkey.trigger_key {
+                device
+                    .supported_keys()
+                    .map(|keys| keys.contains(trigger_key))
+                    .unwrap_or(false)
+            } else if let Some(btn_code) = hotkey.trigger_mouse_btn {
+                // For mouse buttons, check if it's a mouse device
+                device
+                    .supported_keys()
+                    .map(|keys| {
+                        // Check for mouse buttons (BTN_LEFT through BTN_TASK range: 0x110-0x11f)
+                        keys.contains(Key::BTN_LEFT)
+                            || keys.contains(Key::BTN_RIGHT)
+                            || keys.contains(Key::BTN_MIDDLE)
+                            || keys.contains(Key::BTN_SIDE)
+                            || keys.contains(Key::BTN_EXTRA)
+                            || (0x110..=0x11f).contains(&btn_code)
+                    })
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            // Check if device supports required modifiers
+            let has_modifiers = if hotkey.require_ctrl || hotkey.require_alt || hotkey.require_shift
+            {
+                device
+                    .supported_keys()
+                    .map(|keys| {
+                        let has_ctrl = !hotkey.require_ctrl
+                            || keys.contains(Key::KEY_LEFTCTRL)
+                            || keys.contains(Key::KEY_RIGHTCTRL);
+                        let has_alt = !hotkey.require_alt
+                            || keys.contains(Key::KEY_LEFTALT)
+                            || keys.contains(Key::KEY_RIGHTALT);
+                        let has_shift = !hotkey.require_shift
+                            || keys.contains(Key::KEY_LEFTSHIFT)
+                            || keys.contains(Key::KEY_RIGHTSHIFT);
+                        has_ctrl && has_alt && has_shift
+                    })
+                    .unwrap_or(false)
+            } else {
+                true // No modifiers required
+            };
+
+            // Include device if:
+            // 1. It has the trigger key/button, OR
+            // 2. It has modifiers (for keyboard+mouse combos, we need both devices)
+            if has_trigger || has_modifiers {
+                println!(
+                    "[EVDEV] Found input device: {} ({}) - trigger: {}, modifiers: {}",
+                    path.display(),
+                    device_name,
+                    has_trigger,
+                    has_modifiers
+                );
+                devices.push(path);
             }
         }
     }
 
-    if keyboards.is_empty() {
-        return Err("No keyboard devices found with required keys".to_string());
+    if devices.is_empty() {
+        return Err("No input devices found for configured hotkey".to_string());
     }
 
-    Ok(keyboards)
+    Ok(devices)
 }
 
 pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
-    println!("[EVDEV] Starting keyboard listener for push-to-talk...");
+    println!("[EVDEV] Starting input listener for push-to-talk...");
 
-    let keyboards = find_keyboard_devices()?;
-    println!("[EVDEV] Monitoring {} keyboard device(s)", keyboards.len());
+    // Load hotkey configuration
+    let config = AppConfig::load().unwrap_or_default();
+    let hotkey = HotkeyConfig::parse(&config.shortcut);
+    println!("[EVDEV] Configured hotkey: {}", config.shortcut);
+
+    let input_devices = find_input_devices(&hotkey)?;
+    println!("[EVDEV] Monitoring {} input device(s)", input_devices.len());
 
     let ctrl_pressed = Arc::new(AtomicBool::new(false));
-    let space_pressed = Arc::new(AtomicBool::new(false));
-    let is_recording = Arc::new(AtomicBool::new(false)); // Track recording state
+    let alt_pressed = Arc::new(AtomicBool::new(false));
+    let shift_pressed = Arc::new(AtomicBool::new(false));
+    let trigger_pressed = Arc::new(AtomicBool::new(false));
+    let is_recording = Arc::new(AtomicBool::new(false));
+    let hotkey_config = Arc::new(hotkey);
     let device_states: Arc<Mutex<HashMap<PathBuf, Arc<DeviceState>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    for keyboard_path in keyboards {
+    for device_path in input_devices {
         let state = Arc::new(DeviceState {
-            _path: keyboard_path.clone(),
+            _path: device_path.clone(),
             reconnect_attempts: AtomicU32::new(0),
             is_active: AtomicBool::new(true),
         });
@@ -87,21 +243,24 @@ pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
         device_states
             .lock()
             .await
-            .insert(keyboard_path.clone(), state.clone());
+            .insert(device_path.clone(), state.clone());
 
         spawn_device_monitor(
-            keyboard_path,
+            device_path,
             app_handle.clone(),
             ctrl_pressed.clone(),
-            space_pressed.clone(),
+            alt_pressed.clone(),
+            shift_pressed.clone(),
+            trigger_pressed.clone(),
             is_recording.clone(),
+            hotkey_config.clone(),
             state,
             device_states.clone(),
         );
     }
 
     println!("[EVDEV] ✅ Push-to-talk listener started!");
-    println!("[EVDEV] Hold Ctrl+Space to record, release to transcribe and paste");
+    println!("[EVDEV] Hotkey: {}", config.shortcut);
 
     Ok(())
 }
@@ -110,32 +269,41 @@ fn spawn_device_monitor(
     device_path: PathBuf,
     app_handle: AppHandle,
     ctrl_pressed: Arc<AtomicBool>,
-    space_pressed: Arc<AtomicBool>,
+    alt_pressed: Arc<AtomicBool>,
+    shift_pressed: Arc<AtomicBool>,
+    trigger_pressed: Arc<AtomicBool>,
     is_recording: Arc<AtomicBool>,
+    hotkey_config: Arc<HotkeyConfig>,
     state: Arc<DeviceState>,
     device_states: Arc<Mutex<HashMap<PathBuf, Arc<DeviceState>>>>,
 ) {
     let path_clone = device_path.clone();
 
     tokio::task::spawn_blocking(move || {
-        monitor_keyboard_device_with_reconnect(
+        monitor_device_with_reconnect(
             path_clone,
             app_handle,
             ctrl_pressed,
-            space_pressed,
+            alt_pressed,
+            shift_pressed,
+            trigger_pressed,
             is_recording,
+            hotkey_config,
             state,
             device_states,
         );
     });
 }
 
-fn monitor_keyboard_device_with_reconnect(
+fn monitor_device_with_reconnect(
     device_path: PathBuf,
     app_handle: AppHandle,
     ctrl_pressed: Arc<AtomicBool>,
-    space_pressed: Arc<AtomicBool>,
+    alt_pressed: Arc<AtomicBool>,
+    shift_pressed: Arc<AtomicBool>,
+    trigger_pressed: Arc<AtomicBool>,
     is_recording: Arc<AtomicBool>,
+    hotkey_config: Arc<HotkeyConfig>,
     state: Arc<DeviceState>,
     _device_states: Arc<Mutex<HashMap<PathBuf, Arc<DeviceState>>>>,
 ) {
@@ -148,12 +316,15 @@ fn monitor_keyboard_device_with_reconnect(
             return;
         }
 
-        match monitor_keyboard_device(
+        match monitor_input_device(
             &device_path,
             &app_handle,
             &ctrl_pressed,
-            &space_pressed,
+            &alt_pressed,
+            &shift_pressed,
+            &trigger_pressed,
             &is_recording,
+            &hotkey_config,
         ) {
             Ok(()) => {
                 println!(
@@ -185,9 +356,6 @@ fn monitor_keyboard_device_with_reconnect(
                     MAX_RECONNECT_ATTEMPTS
                 );
 
-                // DON'T reset any shared state - other keyboards are still active!
-                // The key states and recording state are shared across all devices
-
                 std::thread::sleep(Duration::from_millis(delay));
 
                 if !device_path.exists() {
@@ -207,12 +375,15 @@ fn monitor_keyboard_device_with_reconnect(
     }
 }
 
-fn monitor_keyboard_device(
+fn monitor_input_device(
     device_path: &PathBuf,
     app_handle: &AppHandle,
     ctrl_pressed: &Arc<AtomicBool>,
-    space_pressed: &Arc<AtomicBool>,
+    alt_pressed: &Arc<AtomicBool>,
+    shift_pressed: &Arc<AtomicBool>,
+    trigger_pressed: &Arc<AtomicBool>,
     is_recording: &Arc<AtomicBool>,
+    hotkey_config: &HotkeyConfig,
 ) -> Result<(), String> {
     let mut device = Device::open(device_path)
         .map_err(|e| format!("Failed to open {}: {}", device_path.display(), e))?;
@@ -234,27 +405,60 @@ fn monitor_keyboard_device(
                 let pressed = event.value() == 1;
                 let released = event.value() == 0;
 
-                if key == KEY_LEFTCTRL || key == KEY_RIGHTCTRL {
-                    if pressed {
-                        ctrl_pressed.store(true, Ordering::SeqCst);
-                    } else if released {
-                        ctrl_pressed.store(false, Ordering::SeqCst);
+                // Track modifier keys
+                match key {
+                    Key::KEY_LEFTCTRL | Key::KEY_RIGHTCTRL => {
+                        if pressed {
+                            ctrl_pressed.store(true, Ordering::SeqCst);
+                        } else if released {
+                            ctrl_pressed.store(false, Ordering::SeqCst);
+                        }
                     }
+                    Key::KEY_LEFTALT | Key::KEY_RIGHTALT => {
+                        if pressed {
+                            alt_pressed.store(true, Ordering::SeqCst);
+                        } else if released {
+                            alt_pressed.store(false, Ordering::SeqCst);
+                        }
+                    }
+                    Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => {
+                        if pressed {
+                            shift_pressed.store(true, Ordering::SeqCst);
+                        } else if released {
+                            shift_pressed.store(false, Ordering::SeqCst);
+                        }
+                    }
+                    _ => {}
                 }
 
-                if key == KEY_SPACE {
-                    let ctrl_is_pressed = ctrl_pressed.load(Ordering::SeqCst);
+                // Check if this is the trigger key/button
+                let is_trigger = if let Some(trigger_key) = hotkey_config.trigger_key {
+                    key == trigger_key
+                } else if let Some(btn_code) = hotkey_config.trigger_mouse_btn {
+                    // Check mouse buttons by their code
+                    let key_code = key.code();
+                    key_code == btn_code
+                } else {
+                    false
+                };
 
-                    if pressed && !space_pressed.load(Ordering::SeqCst) {
-                        space_pressed.store(true, Ordering::SeqCst);
+                if is_trigger {
+                    // Check if all required modifiers are pressed
+                    let modifiers_ok = (!hotkey_config.require_ctrl
+                        || ctrl_pressed.load(Ordering::SeqCst))
+                        && (!hotkey_config.require_alt || alt_pressed.load(Ordering::SeqCst))
+                        && (!hotkey_config.require_shift || shift_pressed.load(Ordering::SeqCst));
 
-                        if ctrl_is_pressed && !is_recording.load(Ordering::SeqCst) {
+                    if pressed && !trigger_pressed.load(Ordering::SeqCst) {
+                        trigger_pressed.store(true, Ordering::SeqCst);
+
+                        if modifiers_ok && !is_recording.load(Ordering::SeqCst) {
                             let t0 = std::time::Instant::now();
                             println!("[TIMING] ========== RECORDING SESSION START ==========");
-                            println!("[TIMING] T+0ms: Ctrl+Space PRESSED");
+                            println!("[TIMING] T+0ms: Hotkey PRESSED");
                             is_recording.store(true, Ordering::SeqCst);
 
-                            // Store t0 in AppState for later use
+                            // Store t0 in AppState
                             {
                                 let state = app_handle.state::<AppState>();
                                 *state.recording_start_time.lock().unwrap() = Some(t0);
@@ -267,7 +471,7 @@ fn monitor_keyboard_device(
                             }
                             println!("[TIMING] T+{}ms: overlay shown", t0.elapsed().as_millis());
 
-                            // Start recording via cpal
+                            // Start recording
                             let app_clone = app_handle.clone();
                             tauri::async_runtime::spawn(async move {
                                 println!(
@@ -289,17 +493,15 @@ fn monitor_keyboard_device(
                             });
                         }
                     } else if released {
-                        space_pressed.store(false, Ordering::SeqCst);
+                        trigger_pressed.store(false, Ordering::SeqCst);
 
-                        // Stop recording if active (check is_recording, not key states)
                         if is_recording.load(Ordering::SeqCst) {
-                            // Get t0 from AppState
                             let t0 = {
                                 let state = app_handle.state::<AppState>();
                                 let guard = state.recording_start_time.lock().unwrap();
                                 guard.unwrap_or_else(std::time::Instant::now)
                             };
-                            println!("[TIMING] T+{}ms: Space RELEASED", t0.elapsed().as_millis());
+                            println!("[TIMING] T+{}ms: Hotkey RELEASED", t0.elapsed().as_millis());
                             is_recording.store(false, Ordering::SeqCst);
 
                             // Stop recording, transcribe, and type
@@ -324,13 +526,11 @@ fn monitor_keyboard_device(
                                             transcription
                                         );
                                         if !transcription.is_empty() {
-                                            // Hide overlay before typing
                                             if let Some(overlay_win) =
                                                 app_clone.get_webview_window("overlay")
                                             {
                                                 let _ = overlay_win.hide();
                                             }
-                                            // Longer delay for Wayland focus to return to previous window
                                             println!(
                                                 "[TIMING] T+{}ms: waiting 400ms for focus",
                                                 t0.elapsed().as_millis()
@@ -340,7 +540,6 @@ fn monitor_keyboard_device(
                                             ))
                                             .await;
 
-                                            // Type the text
                                             println!(
                                                 "[TIMING] T+{}ms: pasting text",
                                                 t0.elapsed().as_millis()
@@ -352,7 +551,10 @@ fn monitor_keyboard_device(
                                                     e
                                                 );
                                             } else {
-                                                println!("[TIMING] T+{}ms: ========== SESSION COMPLETE ==========", t0.elapsed().as_millis());
+                                                println!(
+                                                    "[TIMING] T+{}ms: ========== SESSION COMPLETE ==========",
+                                                    t0.elapsed().as_millis()
+                                                );
                                             }
                                         } else {
                                             println!(

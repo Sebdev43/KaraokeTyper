@@ -408,6 +408,46 @@ function SettingsWindow() {
     setIsCapturing(false);
   };
 
+  // Map mouse button numbers to readable names
+  const getMouseButtonName = (button: number): string => {
+    switch (button) {
+      case 0:
+        return "MouseLeft";
+      case 1:
+        return "MouseMiddle";
+      case 2:
+        return "MouseRight";
+      case 3:
+        return "Mouse4"; // Back button on gaming mice
+      case 4:
+        return "Mouse5"; // Forward button on gaming mice
+      default:
+        return `Mouse${button + 1}`;
+    }
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (!isCapturing) return;
+
+    // Ignore left click (button 0) as it's used for UI interaction
+    // Allow right click (2), middle click (1), and extra buttons (3, 4, etc.)
+    if (e.button === 0) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const modifiers: string[] = [];
+    if (e.ctrlKey) modifiers.push("Ctrl");
+    if (e.altKey) modifiers.push("Alt");
+    if (e.shiftKey) modifiers.push("Shift");
+    if (e.metaKey) modifiers.push("Super");
+
+    const buttonName = getMouseButtonName(e.button);
+    const newShortcut = [...modifiers, buttonName].join("+");
+    setShortcut(newShortcut);
+    setIsCapturing(false);
+  };
+
   const handleBlur = () => {
     if (isCapturing) {
       setShortcut("Ctrl+Space");
@@ -689,7 +729,9 @@ function SettingsWindow() {
                   value={shortcut}
                   onClick={handleShortcutCapture}
                   onKeyDown={handleKeyDown}
+                  onMouseDown={handleMouseDown}
                   onBlur={handleBlur}
+                  onContextMenu={(e) => e.preventDefault()}
                   readOnly
                   placeholder="Click to set hotkey..."
                   className={cn(
@@ -697,6 +739,9 @@ function SettingsWindow() {
                     isCapturing && "ring-2 ring-primary bg-primary/10",
                   )}
                 />
+                <p className="text-xs text-muted-foreground">
+                  Click, then press any key or mouse button (Mouse4, Mouse5...)
+                </p>
               </div>
             </CardContent>
           </Card>

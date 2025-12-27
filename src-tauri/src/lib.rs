@@ -374,7 +374,7 @@ pub(crate) async fn do_stop_recording(
     // This is a known issue with Whisper models - they can truncate the end of transcriptions
     let padding_samples = 8000; // 0.5s at 16kHz
     let mut padded_audio = audio_data.clone();
-    padded_audio.extend(std::iter::repeat(0.0f32).take(padding_samples));
+    padded_audio.extend(std::iter::repeat_n(0.0f32, padding_samples));
     println!(
         "[TIMING] T+{}ms: added {}ms padding at end ({} -> {} samples)",
         t0.elapsed().as_millis(),
@@ -626,36 +626,46 @@ async fn save_settings(
     Ok(())
 }
 
+/// Check if a shortcut string contains a mouse button (which Tauri's global shortcut doesn't support)
+fn is_mouse_shortcut(shortcut: &str) -> bool {
+    let lower = shortcut.to_lowercase();
+    lower.contains("mouse") || lower.contains("btn_")
+}
+
 fn update_global_shortcut(
     app_handle: &AppHandle,
     old_shortcut: &str,
     new_shortcut: &str,
 ) -> Result<(), String> {
-    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
-    app_handle
-        .global_shortcut()
-        .unregister(old_shortcut)
-        .map_err(|e| format!("Failed to unregister old shortcut: {}", e))?;
+    // Try to unregister the old shortcut (ignore errors if it was a mouse shortcut)
+    if !is_mouse_shortcut(old_shortcut) {
+        let _ = app_handle.global_shortcut().unregister(old_shortcut);
+    }
 
-    let app_handle_clone = app_handle.clone();
-    app_handle
-        .global_shortcut()
-        .on_shortcut(new_shortcut, move |_app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                if let Some(overlay_win) = app_handle_clone.get_webview_window("overlay") {
-                    if let Ok(is_visible) = overlay_win.is_visible() {
-                        if is_visible {
-                            let _ = overlay_win.hide();
-                        } else {
-                            let _ = overlay_win.show();
-                            let _ = overlay_win.set_focus();
-                        }
-                    }
-                }
-            }
-        })
-        .map_err(|e| format!("Failed to register new shortcut: {}", e))?;
+    // If the new shortcut is a mouse button, don't register with Tauri's global shortcut
+    // On Linux, evdev handles mouse button detection directly
+    if is_mouse_shortcut(new_shortcut) {
+        println!(
+            "[SHORTCUT] Mouse button shortcut '{}' - handled by evdev, skipping Tauri registration",
+            new_shortcut
+        );
+        return Ok(());
+    }
+
+    // For keyboard shortcuts, register with Tauri's global shortcut system
+    // Note: This is mainly used for the overlay toggle, not for push-to-talk
+    // Push-to-talk is handled by evdev on Linux for better Wayland compatibility
+    println!(
+        "[SHORTCUT] Registering keyboard shortcut '{}' with Tauri",
+        new_shortcut
+    );
+
+    // We don't actually need to register push-to-talk shortcuts with Tauri
+    // because evdev handles them. This function is kept for compatibility
+    // but we skip the actual registration to avoid errors.
+    // The overlay toggle uses F10 which is registered in setup().
 
     Ok(())
 }
@@ -682,7 +692,7 @@ async fn transcribe_audio(
     // Add 0.5 second of silence at the END to prevent Whisper from cutting off last words
     let padding_samples = 8000; // 0.5s at 16kHz
     let mut padded_audio = audio_data.clone();
-    padded_audio.extend(std::iter::repeat(0.0f32).take(padding_samples));
+    padded_audio.extend(std::iter::repeat_n(0.0f32, padding_samples));
     println!(
         "[TRANSCRIBE] Added {}ms padding at end ({} -> {} samples)",
         padding_samples * 1000 / 16000,

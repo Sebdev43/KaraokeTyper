@@ -95,7 +95,7 @@ import { cn } from "@/lib/utils"
 ❌ **STRICTEMENT INTERDIT:**
 ```bash
 # JAMAIS exécuter ces commandes manuellement
-pip install nemo_toolkit
+pip install sherpa-onnx
 pip install anything
 apt install something
 brew install something
@@ -125,6 +125,48 @@ async fn install_dependencies(app_handle: AppHandle) -> Result<String, String> {
 ```
 
 **Cette règle est NON-NÉGOCIABLE.**
+
+### Rule #0.4: NEVER MODIFY THE LINUX SYSTEM
+
+**🚨 INTERDICTION ABSOLUE - AUCUNE EXCEPTION 🚨**
+
+**Tu n'as JAMAIS le droit de modifier le système Linux de l'utilisateur.**
+
+❌ **STRICTEMENT INTERDIT:**
+```bash
+# JAMAIS exécuter ces commandes
+systemctl --user restart wireplumber
+systemctl --user restart pipewire
+systemctl restart anything
+
+# JAMAIS modifier ces fichiers/dossiers
+~/.config/wireplumber/*
+~/.config/pipewire/*
+/etc/systemd/*
+/etc/pulse/*
+/etc/pipewire/*
+
+# JAMAIS toucher à la configuration système
+gsettings set ...
+dconf write ...
+```
+
+❌ **JAMAIS modifier:**
+- WirePlumber / PipeWire / PulseAudio
+- systemd services (user ou system)
+- Configuration GNOME/KDE/desktop
+- Fichiers système (/etc/*, /usr/*, etc.)
+- Variables d'environnement système
+
+✅ **CE QUI EST AUTORISÉ:**
+- Modifier UNIQUEMENT le code source de KaraokeTyper
+- Lire les fichiers système pour diagnostic (lecture seule)
+- Exécuter des commandes de build (cargo, npm, etc.)
+- Exécuter l'application elle-même
+
+**Si un problème nécessite une modification système, INFORMER l'utilisateur et lui donner les instructions à exécuter lui-même.**
+
+**Cette règle est NON-NÉGOCIABLE. Toute violation est INACCEPTABLE.**
 
 ---
 

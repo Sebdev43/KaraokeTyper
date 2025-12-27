@@ -15,12 +15,15 @@ const logToRust = (msg: string) => {
   invoke("log_from_frontend", { message: msg }).catch(() => {});
 };
 
+// Guard to prevent duplicate listener setup
+let listenersInitialized = false;
+
 function RecordingOverlay() {
   const [status, setStatus] = useState<string>("idle");
   const isRecordingRef = useRef<boolean>(false);
   const audioCapture = useRef(getAudioCapture());
 
-  // Log on mount
+  // Log on mount (only once)
   useEffect(() => {
     logToRust("[Overlay] Component mounted");
   }, []);
@@ -78,6 +81,13 @@ function RecordingOverlay() {
   }, []);
 
   useEffect(() => {
+    // Guard against duplicate listener setup
+    if (listenersInitialized) {
+      logToRust("[Overlay] Listeners already initialized, skipping");
+      return;
+    }
+    listenersInitialized = true;
+
     const unlisteners: UnlistenFn[] = [];
 
     const setupListeners = async () => {
@@ -113,6 +123,7 @@ function RecordingOverlay() {
       for (const unlisten of unlisteners) {
         unlisten();
       }
+      listenersInitialized = false;
     };
   }, [handleStartRecording, handleStopRecording]);
 
@@ -132,24 +143,26 @@ function RecordingOverlay() {
           <div className="relative flex items-center">
             {/* Pulsing dot */}
             <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse shadow-sm shadow-red-500/60" />
-
-            {/* Outer ring */}
-            <div className="absolute inset-0 h-2 w-2 rounded-full bg-red-500/30 animate-ping" />
           </div>
 
           {/* Mini sound wave bars */}
           <div className="flex items-center gap-[2px]">
-            {[0, 1, 2, 3].map((i) => (
-              <div
-                key={`wave-${i}`}
-                className="w-[2px] bg-red-500 rounded-full"
-                style={{
-                  animation: "soundwave 0.6s ease-in-out infinite",
-                  animationDelay: `${i * 0.12}s`,
-                  height: "8px",
-                }}
-              />
-            ))}
+            <div
+              className="w-[2px] bg-red-500 rounded-full overlay-soundwave h-2"
+              style={{ animationDelay: "0s" }}
+            />
+            <div
+              className="w-[2px] bg-red-500 rounded-full overlay-soundwave h-2"
+              style={{ animationDelay: "0.12s" }}
+            />
+            <div
+              className="w-[2px] bg-red-500 rounded-full overlay-soundwave h-2"
+              style={{ animationDelay: "0.24s" }}
+            />
+            <div
+              className="w-[2px] bg-red-500 rounded-full overlay-soundwave h-2"
+              style={{ animationDelay: "0.36s" }}
+            />
           </div>
 
           <span className="text-xs text-red-400 font-medium">Écoute...</span>
@@ -164,47 +177,31 @@ function RecordingOverlay() {
           </div>
 
           <div className="flex items-center gap-[2px]">
-            {[0, 1, 2, 3, 4].map((i) => (
-              <div
-                key={`shimmer-${i}`}
-                className="w-[2px] bg-amber-500 rounded-full"
-                style={{
-                  animation: "shimmer 1s ease-in-out infinite",
-                  animationDelay: `${i * 0.15}s`,
-                  height: "10px",
-                }}
-              />
-            ))}
+            <div
+              className="w-[2px] bg-amber-500 rounded-full overlay-shimmer h-2.5"
+              style={{ animationDelay: "0s" }}
+            />
+            <div
+              className="w-[2px] bg-amber-500 rounded-full overlay-shimmer h-2.5"
+              style={{ animationDelay: "0.15s" }}
+            />
+            <div
+              className="w-[2px] bg-amber-500 rounded-full overlay-shimmer h-2.5"
+              style={{ animationDelay: "0.3s" }}
+            />
+            <div
+              className="w-[2px] bg-amber-500 rounded-full overlay-shimmer h-2.5"
+              style={{ animationDelay: "0.45s" }}
+            />
+            <div
+              className="w-[2px] bg-amber-500 rounded-full overlay-shimmer h-2.5"
+              style={{ animationDelay: "0.6s" }}
+            />
           </div>
 
           <span className="text-xs text-amber-400 font-medium">IA...</span>
         </>
       )}
-
-      {/* Minimal CSS animations */}
-      <style>{`
-        @keyframes soundwave {
-          0%, 100% {
-            height: 6px;
-            opacity: 0.5;
-          }
-          50% {
-            height: 14px;
-            opacity: 1;
-          }
-        }
-
-        @keyframes shimmer {
-          0%, 100% {
-            height: 8px;
-            opacity: 0.4;
-          }
-          50% {
-            height: 14px;
-            opacity: 1;
-          }
-        }
-      `}</style>
     </div>
   );
 }

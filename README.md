@@ -1,19 +1,17 @@
 <p align="center">
-  <img src="public/tauri.svg" alt="KaraokeTyper Logo" width="120" height="120">
+  <img src="public/logo.png" alt="KaraokeTyper Logo" width="120" height="120">
 </p>
 
 <h1 align="center">KaraokeTyper</h1>
 
 <p align="center">
-  <strong>Offline voice dictation with push-to-talk</strong>
+  <strong>Offline voice dictation with push-to-talk</strong><br>
+  <strong>Dictée vocale hors-ligne avec push-to-talk</strong>
 </p>
 
 <p align="center">
-  <a href="#features">Features</a> •
-  <a href="#installation">Installation</a> •
-  <a href="#usage">Usage</a> •
-  <a href="#building">Building</a> •
-  <a href="#contributing">Contributing</a>
+  <a href="#english">English</a> •
+  <a href="#français">Français</a>
 </p>
 
 <p align="center">
@@ -26,18 +24,18 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
-  <img src="https://img.shields.io/badge/AI-Canary--1B-ff6b6b.svg" alt="AI Model">
+  <img src="https://img.shields.io/badge/STT-sherpa--onnx-ff6b6b.svg" alt="STT Engine">
 </p>
 
 ---
 
+# English
+
 ## Overview
 
-**KaraokeTyper** is a privacy-first, cross-platform voice dictation application. All speech recognition happens **100% offline** using NVIDIA's Canary-1B model - no cloud, no telemetry, no data leaving your machine.
+**KaraokeTyper** is a privacy-first, cross-platform voice dictation application. All speech recognition happens **100% offline** using sherpa-onnx with Whisper models - no cloud, no telemetry, no data leaving your machine.
 
 Press `Ctrl+Space`, speak, release - your words appear instantly in any application.
-
----
 
 ## Features
 
@@ -47,33 +45,19 @@ Press `Ctrl+Space`, speak, release - your words appear instantly in any applicat
 | **100% Offline** | All AI processing happens locally on your machine |
 | **Cross-Platform** | Native support for Linux, Windows, and macOS |
 | **Privacy-First** | Zero telemetry, zero cloud, zero data collection |
-| **Fast Transcription** | Canary-1B delivers high-accuracy results in seconds |
+| **Fast Transcription** | sherpa-onnx delivers high-accuracy results in seconds |
 | **Auto-Type** | Text automatically injected into focused application |
 | **Multi-Language** | Support for French, English, German, Spanish (configurable) |
+| **Multiple Models** | Whisper Tiny/Base/Small/Medium/Large-v3 for quality/speed trade-offs |
 | **Modern UI** | Clean dark theme with real-time status indicators |
 | **System Tray** | Runs quietly in the background |
-
----
-
-## Screenshots
-
-<p align="center">
-  <em>Recording overlay with visual feedback</em>
-</p>
-
-| Recording | Processing | Ready |
-|:---------:|:----------:|:-----:|
-| 🔴 Red dot + equalizer | 🟠 Spinner | 🟢 Green dot |
-
----
 
 ## Installation
 
 ### Prerequisites
 
 - **Node.js** 18+ and npm
-- **Rust** 1.70+ (installed automatically)
-- **Python** 3.8+ (for Canary AI model)
+- **Rust** 1.70+
 
 ### Quick Start
 
@@ -92,12 +76,10 @@ npm run tauri dev
 ### First Launch
 
 1. Open the **Settings** window (F10 or system tray)
-2. Install Python dependencies (one-click button)
-3. Download the Canary-1B model (~2GB)
+2. Select your preferred Whisper model (Tiny for speed, Large-v3 for accuracy)
+3. Download the model (automatic via Settings)
 4. Select your microphone
 5. Ready to dictate!
-
----
 
 ## Usage
 
@@ -122,19 +104,23 @@ npm run tauri dev
 | 🔴 Red | Recording - speak now |
 | 🟠 Orange | Processing - transcribing audio |
 
----
+## Available Models
+
+| Model | Size | Speed | Accuracy | Best For |
+|-------|------|-------|----------|----------|
+| **Whisper Tiny** | ~75MB | Fastest | Good | Quick notes, low-resource devices |
+| **Whisper Base** | ~150MB | Fast | Better | Daily dictation (recommended) |
+| **Whisper Small** | ~500MB | Medium | Very Good | Professional use |
+| **Whisper Medium** | ~1.5GB | Slower | Excellent | High accuracy needs |
+| **Whisper Large-v3** | ~3GB | Slowest | Best | Maximum accuracy |
 
 ## Building
 
-### Development
-
 ```bash
+# Development
 npm run tauri dev
-```
 
-### Production
-
-```bash
+# Production
 npm run tauri build
 ```
 
@@ -143,43 +129,7 @@ npm run tauri build
 - **Windows**: .msi, .exe
 - **macOS**: .dmg, .app
 
----
-
-## Architecture
-
-```
-KaraokeTyper/
-├── src/                    # React/TypeScript frontend
-│   ├── components/         # UI components (shadcn/ui)
-│   └── windows/            # Window-specific views
-├── src-tauri/              # Rust backend
-│   ├── src/
-│   │   ├── lib.rs          # Tauri commands & app setup
-│   │   ├── audio.rs        # Audio capture (cpal)
-│   │   ├── stt_canary.rs   # Canary AI integration
-│   │   ├── output.rs       # Text injection (enigo/uinput)
-│   │   └── keyboard_listener.rs  # Push-to-talk handler
-│   └── python/
-│       └── canary_service.py     # Python AI service
-└── documentation/          # Technical docs
-```
-
-### Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| **Frontend** | React 18, TypeScript, Tailwind CSS, shadcn/ui |
-| **Backend** | Rust, Tauri 2.0 |
-| **AI Model** | NVIDIA Canary-1B (NeMo toolkit) |
-| **Audio** | cpal (cross-platform) |
-| **Keyboard** | rdev (Windows/macOS), evdev (Linux) |
-| **Text Output** | enigo, arboard, uinput |
-
----
-
 ## Privacy & Security
-
-**KaraokeTyper is designed with privacy as a core principle:**
 
 - All speech recognition runs **locally** on your hardware
 - **No internet connection** required for core functionality
@@ -188,138 +138,182 @@ KaraokeTyper/
 - Audio is processed in memory and **never saved** to disk
 - Open source - audit the code yourself
 
----
-
-## Configuration
-
-Settings are stored in:
-- **Linux**: `~/.config/karaoketyper/settings.json`
-- **Windows**: `%APPDATA%\karaoketyper\settings.json`
-- **macOS**: `~/Library/Application Support/karaoketyper/settings.json`
-
-### Available Options
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| `shortcut` | Push-to-talk hotkey | `Ctrl+Space` |
-| `language` | Recognition language | `fr` |
-| `model` | AI model name | `canary-1b-flash` |
-| `audio_device_name` | Microphone device | System default |
-
----
-
-## Contributing
-
-We welcome contributions! Please read our guidelines before submitting.
-
-### Branch Protection
-
-This repository uses strict branch protection:
-
-- **`main`** - Production branch (protected)
-  - Requires pull request with review
-  - Requires status checks to pass
-  - No direct pushes allowed
-
-- **`dev`** - Development branch (protected)
-  - Requires pull request
-  - Feature branches merge here first
-
-### Workflow
-
-1. **Fork** the repository
-2. Create a **feature branch** from `dev`
-3. Make your changes
-4. Run tests and linting:
-   ```bash
-   cd src-tauri && cargo clippy && cargo test
-   npx biome check --write src/
-   ```
-5. Submit a **Pull Request** to `dev`
-
-### Code Style
-
-- **Rust**: `cargo fmt` + `cargo clippy` (zero warnings)
-- **TypeScript**: Biome linter (`npx biome check --write`)
-- **UI Components**: shadcn/ui only (no custom components)
-- **Styling**: Tailwind CSS only (no inline styles)
-
----
-
-## Troubleshooting
-
-<details>
-<summary><strong>Push-to-talk not working</strong></summary>
-
-**Linux**: Add your user to the `input` group:
-```bash
-sudo usermod -aG input $USER
-# Log out and back in
-```
-
-**Wayland**: Install required tools:
-```bash
-sudo apt install wtype ydotool
-```
-</details>
-
-<details>
-<summary><strong>No audio captured</strong></summary>
-
-1. Check Settings > Audio Device
-2. Ensure microphone permissions are granted
-3. Test microphone in another app first
-</details>
-
-<details>
-<summary><strong>Model download fails</strong></summary>
-
-Manual download:
-```bash
-pip install huggingface_hub
-huggingface-cli download nvidia/canary-1b-flash
-```
-</details>
-
-<details>
-<summary><strong>Text not appearing</strong></summary>
-
-- Ensure target window is focused before releasing hotkey
-- Some applications block simulated input (games, secure apps)
-- Try clipboard mode in settings
-</details>
-
----
-
-## Roadmap
-
-- [x] Cross-platform support (Linux, Windows, macOS)
-- [x] Canary-1B AI integration
-- [x] Push-to-talk with global hotkey
-- [x] System tray integration
-- [ ] Voice commands ("new paragraph", "delete that")
-- [ ] Custom vocabulary and corrections
-- [ ] Real-time transcription preview
-- [ ] Multiple language models
-- [ ] Audio level visualization
-
----
-
 ## License
 
 This project is licensed under the **GNU General Public License v3.0** - see the [LICENSE](LICENSE) file for details.
 
-**Key points:**
-- You can use, modify, and distribute this software
-- Derivative works must also be open source under GPL-3.0
-- Commercial use is allowed but must comply with GPL terms
-- No warranty is provided
+---
+
+# Français
+
+## Présentation
+
+**KaraokeTyper** est une application de dictée vocale multi-plateforme axée sur la confidentialité. Toute la reconnaissance vocale se fait **100% hors-ligne** avec sherpa-onnx et les modèles Whisper - pas de cloud, pas de télémétrie, aucune donnée ne quitte votre machine.
+
+Appuyez sur `Ctrl+Espace`, parlez, relâchez - vos mots apparaissent instantanément dans n'importe quelle application.
+
+## Fonctionnalités
+
+| Fonctionnalité | Description |
+|----------------|-------------|
+| **Push-to-Talk** | Maintenez `Ctrl+Espace` pour enregistrer, relâchez pour transcrire |
+| **100% Hors-ligne** | Tout le traitement IA se fait localement sur votre machine |
+| **Multi-plateforme** | Support natif pour Linux, Windows et macOS |
+| **Confidentialité** | Zéro télémétrie, zéro cloud, zéro collecte de données |
+| **Transcription rapide** | sherpa-onnx offre des résultats de haute précision en quelques secondes |
+| **Frappe automatique** | Le texte est automatiquement injecté dans l'application active |
+| **Multi-langue** | Support du français, anglais, allemand, espagnol (configurable) |
+| **Plusieurs modèles** | Whisper Tiny/Base/Small/Medium/Large-v3 pour différents compromis qualité/vitesse |
+| **Interface moderne** | Thème sombre avec indicateurs de statut en temps réel |
+| **Barre système** | Fonctionne discrètement en arrière-plan |
+
+## Installation
+
+### Prérequis
+
+- **Node.js** 18+ et npm
+- **Rust** 1.70+
+
+### Démarrage rapide
+
+```bash
+# Cloner le dépôt
+git clone https://github.com/Sebdev43/KaraokeTyper.git
+cd KaraokeTyper
+
+# Installer les dépendances
+npm install
+
+# Lancer en mode développement
+npm run tauri dev
+```
+
+### Premier lancement
+
+1. Ouvrez la fenêtre **Paramètres** (F10 ou barre système)
+2. Sélectionnez votre modèle Whisper préféré (Tiny pour la vitesse, Large-v3 pour la précision)
+3. Téléchargez le modèle (automatique via Paramètres)
+4. Sélectionnez votre microphone
+5. Prêt à dicter !
+
+## Utilisation
+
+### Workflow de base
+
+1. **Focalisez** n'importe quel champ texte (navigateur, éditeur, terminal...)
+2. **Maintenez** `Ctrl+Espace` et parlez clairement
+3. **Relâchez** pour transcrire et taper automatiquement
+
+### Raccourcis clavier
+
+| Raccourci | Action |
+|-----------|--------|
+| `Ctrl+Espace` | Push-to-talk (maintenir pour enregistrer) |
+| `F10` | Ouvrir les paramètres |
+
+### Indicateurs de statut
+
+| Couleur | État |
+|---------|------|
+| 🟢 Vert | Prêt - en attente |
+| 🔴 Rouge | Enregistrement - parlez maintenant |
+| 🟠 Orange | Traitement - transcription en cours |
+
+## Modèles disponibles
+
+| Modèle | Taille | Vitesse | Précision | Idéal pour |
+|--------|--------|---------|-----------|------------|
+| **Whisper Tiny** | ~75Mo | Plus rapide | Bonne | Notes rapides, appareils peu puissants |
+| **Whisper Base** | ~150Mo | Rapide | Meilleure | Dictée quotidienne (recommandé) |
+| **Whisper Small** | ~500Mo | Moyenne | Très bonne | Usage professionnel |
+| **Whisper Medium** | ~1.5Go | Lente | Excellente | Haute précision |
+| **Whisper Large-v3** | ~3Go | Plus lente | Meilleure | Précision maximale |
+
+## Compilation
+
+```bash
+# Développement
+npm run tauri dev
+
+# Production
+npm run tauri build
+```
+
+**Formats de sortie :**
+- **Linux** : AppImage, .deb
+- **Windows** : .msi, .exe
+- **macOS** : .dmg, .app
+
+## Confidentialité et sécurité
+
+- Toute la reconnaissance vocale s'exécute **localement** sur votre machine
+- **Aucune connexion internet** requise pour les fonctionnalités principales
+- **Aucune télémétrie**, analytique ou suivi
+- **Aucun service cloud** - vos données vocales ne quittent jamais votre machine
+- L'audio est traité en mémoire et **jamais sauvegardé** sur le disque
+- Open source - auditez le code vous-même
+
+## Licence
+
+Ce projet est sous licence **GNU General Public License v3.0** - voir le fichier [LICENSE](LICENSE) pour plus de détails.
 
 ---
 
-## Credits
+## Architecture
 
-- [NVIDIA NeMo](https://github.com/NVIDIA/NeMo) - Canary-1B speech recognition model
+```
+KaraokeTyper/
+├── src/                    # Frontend React/TypeScript
+│   ├── components/         # Composants UI (shadcn/ui)
+│   └── windows/            # Vues spécifiques aux fenêtres
+├── src-tauri/              # Backend Rust
+│   ├── src/
+│   │   ├── lib.rs          # Commandes Tauri & setup
+│   │   ├── audio.rs        # Capture audio (cpal)
+│   │   ├── audio_cli.rs    # Capture audio fallback (parec)
+│   │   ├── stt_parakeet.rs # Intégration sherpa-onnx STT
+│   │   ├── model_downloader.rs  # Gestionnaire de téléchargement
+│   │   ├── output.rs       # Injection de texte (enigo/uinput)
+│   │   └── keyboard_listener.rs # Gestionnaire push-to-talk
+│   └── python/
+│       ├── gpu_detector.py # Détection GPU pour optimisation
+│       └── parakeet_service.py  # Service Python fallback
+└── README.md
+```
+
+## Tech Stack
+
+| Couche | Technologie |
+|--------|-------------|
+| **Frontend** | React 18, TypeScript, Tailwind CSS, shadcn/ui |
+| **Backend** | Rust, Tauri 2.0 |
+| **Moteur STT** | sherpa-onnx (modèles Whisper) |
+| **Audio** | cpal (multi-plateforme), parec fallback (Linux) |
+| **Clavier** | rdev (Windows/macOS), evdev (Linux) |
+| **Sortie texte** | enigo, arboard, uinput |
+
+---
+
+## Contributing / Contribuer
+
+We welcome contributions! / Les contributions sont les bienvenues !
+
+1. **Fork** the repository / Forkez le dépôt
+2. Create a **feature branch** from `dev` / Créez une branche depuis `dev`
+3. Make your changes / Faites vos modifications
+4. Run tests / Lancez les tests :
+   ```bash
+   cd src-tauri && cargo clippy && cargo test
+   npx biome check --write src/
+   ```
+5. Submit a **Pull Request** to `dev` / Soumettez une PR vers `dev`
+
+---
+
+## Credits / Crédits
+
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) - High-performance speech recognition
+- [OpenAI Whisper](https://github.com/openai/whisper) - Speech recognition models
 - [Tauri](https://tauri.app) - Cross-platform app framework
 - [shadcn/ui](https://ui.shadcn.com) - Beautiful UI components
 - [cpal](https://github.com/RustAudio/cpal) - Cross-platform audio I/O
@@ -329,10 +323,11 @@ This project is licensed under the **GNU General Public License v3.0** - see the
 ---
 
 <p align="center">
-  <strong>Built with care for privacy-conscious users</strong>
+  <strong>Built with care for privacy-conscious users</strong><br>
+  <strong>Conçu avec soin pour les utilisateurs soucieux de leur vie privée</strong>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Sebdev43/KaraokeTyper/issues">Report Bug</a> •
-  <a href="https://github.com/Sebdev43/KaraokeTyper/issues">Request Feature</a>
+  <a href="https://github.com/Sebdev43/KaraokeTyper/issues">Report Bug / Signaler un bug</a> •
+  <a href="https://github.com/Sebdev43/KaraokeTyper/issues">Request Feature / Demander une fonctionnalité</a>
 </p>

@@ -183,20 +183,6 @@ export class WebAudioCapture {
     this.audioChunks = [];
     this.isRecording = false;
   }
-
-  isCurrentlyRecording(): boolean {
-    return this.isRecording;
-  }
-}
-
-// Convert Float32Array to Int16Array for more efficient transfer
-export function float32ToInt16(input: Float32Array): Int16Array {
-  const output = new Int16Array(input.length);
-  for (let i = 0; i < input.length; i++) {
-    const s = Math.max(-1, Math.min(1, input[i]));
-    output[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  return output;
 }
 
 // Send audio to backend for transcription

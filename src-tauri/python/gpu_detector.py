@@ -16,6 +16,7 @@ import sys
 import os
 import subprocess
 import platform
+import glob
 from typing import Dict, List, Optional, Any
 
 
@@ -346,13 +347,12 @@ def check_rocm_installed() -> bool:
         pass
 
     # Check for ROCm directory
-    rocm_paths = [
-        "/opt/rocm",
-        "/opt/rocm-*"
-    ]
-    for path in rocm_paths:
-        if os.path.exists(path):
-            return True
+    if os.path.exists("/opt/rocm"):
+        return True
+
+    # Check for versioned ROCm directories (e.g., /opt/rocm-6.0.0)
+    if glob.glob("/opt/rocm-*"):
+        return True
 
     return False
 

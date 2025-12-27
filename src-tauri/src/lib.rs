@@ -370,11 +370,24 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
+    // Add 0.5 second of silence at the END to prevent Whisper from cutting off last words
+    // This is a known issue with Whisper models - they can truncate the end of transcriptions
+    let padding_samples = 8000; // 0.5s at 16kHz
+    let mut padded_audio = audio_data.clone();
+    padded_audio.extend(std::iter::repeat(0.0f32).take(padding_samples));
+    println!(
+        "[TIMING] T+{}ms: added {}ms padding at end ({} -> {} samples)",
+        t0.elapsed().as_millis(),
+        padding_samples * 1000 / 16000,
+        audio_data.len(),
+        padded_audio.len()
+    );
+
     let stt_engine = state.stt_engine.lock().unwrap();
     let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
 
     let transcription = engine
-        .transcribe(&audio_data)
+        .transcribe(&padded_audio)
         .map_err(|e| format!("Transcription error: {}", e))?;
 
     println!(
@@ -666,13 +679,24 @@ async fn transcribe_audio(
     let duration = audio_data.len() as f32 / 16000.0;
     println!("[TRANSCRIBE] Audio duration: {:.2}s", duration);
 
+    // Add 0.5 second of silence at the END to prevent Whisper from cutting off last words
+    let padding_samples = 8000; // 0.5s at 16kHz
+    let mut padded_audio = audio_data.clone();
+    padded_audio.extend(std::iter::repeat(0.0f32).take(padding_samples));
+    println!(
+        "[TRANSCRIBE] Added {}ms padding at end ({} -> {} samples)",
+        padding_samples * 1000 / 16000,
+        audio_data.len(),
+        padded_audio.len()
+    );
+
     // Get STT engine
     let stt_engine = state.stt_engine.lock().unwrap();
     let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
 
     // Transcribe the audio
     let transcription = engine
-        .transcribe(&audio_data)
+        .transcribe(&padded_audio)
         .map_err(|e| format!("Transcription error: {}", e))?;
 
     println!("[TRANSCRIBE] Result: '{}'", transcription);
@@ -1751,10 +1775,15 @@ pub fn run() {
             // Start keyboard listener for push-to-talk (cross-platform)
             // - Linux: uses evdev for best Wayland support
             // - Windows/macOS: uses rdev
-            println!("[KEYBOARD] Starting push-to-talk listener...");
+            // NOTE: Delayed start to avoid Bluetooth audio interference during device enumeration
+            println!("[KEYBOARD] Starting push-to-talk listener (delayed)...");
             let app_handle_keyboard = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
+                // Delay startup to let Bluetooth audio devices stabilize
+                // This prevents crackling/noise when the app launches with Bluetooth headsets
+                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
                 match keyboard_listener::start_keyboard_listener(app_handle_keyboard).await {
                     Ok(_) => {
                         println!("[KEYBOARD] ✅ Keyboard listener active");

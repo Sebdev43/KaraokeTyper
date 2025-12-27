@@ -624,43 +624,6 @@ function SettingsWindow() {
     }
   };
 
-  const currentWindow = getCurrentWindow();
-
-  const _handleMinimize = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    try {
-      await currentWindow.hide();
-    } catch (err) {
-      console.error("[TITLEBAR] Minimize error:", err);
-    }
-  };
-
-  const _handleMaximize = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    try {
-      const isFullscreen = await currentWindow.isFullscreen();
-      if (isFullscreen) {
-        await currentWindow.setFullscreen(false);
-      } else {
-        await currentWindow.setFullscreen(true);
-      }
-    } catch (err) {
-      console.error("[TITLEBAR] Fullscreen error:", err);
-    }
-  };
-
-  const _handleClose = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    try {
-      await currentWindow.hide();
-    } catch (err) {
-      console.error("[TITLEBAR] Close error:", err);
-    }
-  };
-
   const systemDepsInstalled = permissionsInstalled && uinputAvailable;
 
   return (

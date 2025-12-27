@@ -48,8 +48,7 @@ zip = "2.2"
 # Lock-free ring buffer for zero-latency audio capture
 ringbuf = "0.4"
 
-# Speech-to-text - NVIDIA Canary-1B via Python subprocess
-# whisper-rs removed - migrated to Canary-1B for better accuracy/speed
+# Error handling
 thiserror = "2.0"
 
 # Clipboard (cross-platform: Windows/macOS/Linux+Wayland)

@@ -1,70 +1,47 @@
-# Canary-1B Python Service
+# KaraokeTyper Python Services
 
-This service provides NVIDIA Canary-1B speech recognition via Python subprocess.
+This directory contains Python services for speech recognition using sherpa-onnx.
 
-## Installation
+## Files
 
-### 1. Install Python 3.8+
-
-**Linux:**
-```bash
-sudo apt install python3 python3-pip
-```
-
-**macOS:**
-```bash
-brew install python3
-```
-
-**Windows:**
-Download from https://python.org/downloads
-
-### 2. Install NeMo Toolkit
-
-```bash
-pip install -r requirements.txt
-```
-
-This will download ~2GB of dependencies including:
-- NVIDIA NeMo Framework
-- PyTorch
-- Audio processing libraries
-
-### 3. First Run
-
-On first run, NeMo will automatically download the selected Canary model to:
-- Linux/macOS: `~/.cache/huggingface/hub/`
-- Windows: `%USERPROFILE%\.cache\huggingface\hub\`
-
-Model sizes:
-- `canary-1b-flash`: ~700MB (recommended)
-- `canary-1b`: ~3.5GB
-- `canary-1b-v2`: ~3.5GB (25 languages)
+- `parakeet_service.py` - Main STT service using sherpa-onnx with Whisper models
+- `gpu_detector.py` - GPU detection for optimal execution provider selection
 
 ## Architecture
 
 ```
-Rust (Tauri) ←→ Python (canary_service.py)
-               JSON via stdin/stdout
+Rust (Tauri) <--> Python (parakeet_service.py)
+                  JSON via stdin/stdout
 ```
 
-### Communication Protocol
+## Requirements
 
-#### Commands
+The Python dependencies are automatically installed by the application into a virtual environment:
+- `~/.local/share/karaoketyper/venv/` (Linux)
+- `%APPDATA%\karaoketyper\venv\` (Windows)
+- `~/Library/Application Support/karaoketyper/venv/` (macOS)
+
+### Main Dependencies
+
+- `sherpa-onnx` - High-performance speech recognition
+- `numpy` - Audio data processing
+- `onnxruntime` - Model inference (CPU/GPU)
+
+## Communication Protocol
+
+### Commands
 
 **Load Model:**
 ```json
-{"command": "load_model", "model_name": "canary-1b-flash", "language": "fr"}
+{"command": "load_model", "model_path": "/path/to/model", "language": "fr"}
 ```
 
-**Transcribe Audio Data:**
+**Transcribe Audio:**
 ```json
 {
-  "command": "transcribe_audio_data",
+  "command": "transcribe",
   "audio_data": [0.0, 0.1, -0.05, ...],
-  "sample_rate": 16000,
-  "source_lang": "fr",
-  "target_lang": "fr"
+  "sample_rate": 16000
 }
 ```
 
@@ -78,7 +55,7 @@ Rust (Tauri) ←→ Python (canary_service.py)
 {"command": "shutdown"}
 ```
 
-#### Responses
+### Responses
 
 **Success:**
 ```json
@@ -87,34 +64,19 @@ Rust (Tauri) ←→ Python (canary_service.py)
 
 **Error:**
 ```json
-{"success": false, "error": "error message", "type": "error_type"}
+{"success": false, "error": "error message"}
 ```
 
-## Testing Standalone
+## Supported Models
 
-```bash
-# Run service directly
-python3 canary_service.py
+All models are downloaded automatically via the Settings UI:
 
-# Send commands via stdin
-echo '{"command":"load_model","model_name":"canary-1b-flash","language":"fr"}' | python3 canary_service.py
-```
+| Model | Size | Speed | Accuracy |
+|-------|------|-------|----------|
+| Whisper Tiny | ~75MB | Fastest | Good |
+| Whisper Base | ~150MB | Fast | Better |
+| Whisper Small | ~500MB | Medium | Very Good |
+| Whisper Medium | ~1.5GB | Slower | Excellent |
+| Whisper Large-v3 | ~3GB | Slowest | Best |
 
-## Troubleshooting
-
-### Import Error: ModuleNotFoundError
-
-```bash
-pip install nemo_toolkit[asr]
-```
-
-### CUDA/GPU Issues
-
-NeMo will use GPU if available, but CPU-only also works (slower).
-
-### Model Download Fails
-
-Check internet connection and Hugging Face access:
-```bash
-huggingface-cli login  # Optional: for faster downloads
-```
+Models are stored in `~/.cache/huggingface/hub/` (Linux/macOS) or `%USERPROFILE%\.cache\huggingface\hub\` (Windows).

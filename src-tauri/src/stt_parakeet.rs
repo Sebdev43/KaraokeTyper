@@ -183,7 +183,7 @@ impl ParakeetSttEngine {
                 // It's a model name or repo ID, try to resolve it
                 resolve_model_path(p).or_else(|| {
                     // Try treating it as a model name
-                    let model_name = p.split('/').last().unwrap_or(p);
+                    let model_name = p.split('/').next_back().unwrap_or(p);
                     resolve_model_path(model_name)
                 })
             }

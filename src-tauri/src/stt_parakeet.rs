@@ -197,45 +197,93 @@ impl ParakeetSttEngine {
         }
     }
 
-    /// Start Python service subprocess
-    fn start_service(&self) -> Result<ServiceProcess, ParakeetError> {
-        // Find Python service script - try multiple locations
-        let cwd = std::env::current_dir().unwrap_or_default();
+    /// Find Python service script - handles dev vs production paths
+    fn find_python_script() -> Result<std::path::PathBuf, ParakeetError> {
+        let script_name = "parakeet_service.py";
 
-        // All possible paths to check
-        let possible_paths = [
-            // Path 1: CWD is project root (karaoketyper/), need src-tauri/python/
-            cwd.join("src-tauri")
-                .join("python")
-                .join("parakeet_service.py"),
-            // Path 2: CWD is src-tauri/, need python/
-            cwd.join("python").join("parakeet_service.py"),
-            // Path 3: Relative to Cargo.toml location (works in dev and when running from source)
+        // Check if we're in development mode (debug build)
+        #[cfg(debug_assertions)]
+        {
+            // Development paths
+            let dev_paths = [
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("python")
+                    .join(script_name),
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join("src-tauri")
+                    .join("python")
+                    .join(script_name),
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .join("python")
+                    .join(script_name),
+            ];
+
+            for path in &dev_paths {
+                if path.exists() {
+                    println!("[PARAKEET] Found Python script (dev): {}", path.display());
+                    return Ok(path.clone());
+                }
+            }
+        }
+
+        // Production paths (release build)
+        #[cfg(not(debug_assertions))]
+        {
+            let prod_paths = [
+                // Linux .deb: /usr/lib/karaoketyper/python/
+                std::path::PathBuf::from("/usr/lib/karaoketyper/python").join(script_name),
+                // Linux alt: /usr/share/karaoketyper/python/
+                std::path::PathBuf::from("/usr/share/karaoketyper/python").join(script_name),
+                // macOS/Windows: resources next to executable
+                std::env::current_exe()
+                    .unwrap_or_default()
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join("resources")
+                    .join("python")
+                    .join(script_name),
+                // AppImage: ../lib/karaoketyper/python/
+                std::env::current_exe()
+                    .unwrap_or_default()
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join("../lib/karaoketyper/python")
+                    .join(script_name),
+            ];
+
+            for path in &prod_paths {
+                if path.exists() {
+                    println!("[PARAKEET] Found Python script (prod): {}", path.display());
+                    return Ok(path.clone());
+                }
+            }
+        }
+
+        // Fallback: try all known paths
+        let all_paths = [
+            std::path::PathBuf::from("/usr/lib/karaoketyper/python").join(script_name),
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("python")
-                .join("parakeet_service.py"),
-            // Path 4: Production - bundled next to executable
-            std::env::current_exe()
-                .unwrap_or_default()
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join("python")
-                .join("parakeet_service.py"),
-            // Path 5: Production - in resources directory
-            std::env::current_exe()
-                .unwrap_or_default()
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join("resources")
-                .join("python")
-                .join("parakeet_service.py"),
+                .join(script_name),
         ];
 
-        let python_script = possible_paths
-            .iter()
-            .find(|p| p.exists())
-            .cloned()
-            .unwrap_or_else(|| possible_paths[2].clone()); // Default to CARGO_MANIFEST_DIR
+        for path in &all_paths {
+            if path.exists() {
+                return Ok(path.clone());
+            }
+        }
+
+        Err(ParakeetError::ServiceStartError(format!(
+            "Python service script '{}' not found in any expected location",
+            script_name
+        )))
+    }
+
+    /// Start Python service subprocess
+    fn start_service(&self) -> Result<ServiceProcess, ParakeetError> {
+        let python_script = Self::find_python_script()?;
 
         if !python_script.exists() {
             return Err(ParakeetError::ServiceStartError(format!(

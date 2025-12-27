@@ -1,0 +1,41 @@
+name: PR Check
+
+on:
+  pull_request:
+    branches:
+      - master
+      - main
+
+jobs:
+  check-dev-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check for development-only files
+        run: |
+          # Files that will be auto-removed on merge
+          DEV_FILES=(
+            "CLAUDE.md"
+            ".claude"
+            "documentation"
+          )
+
+          FOUND=()
+
+          for file in "${DEV_FILES[@]}"; do
+            if [ -e "$file" ]; then
+              FOUND+=("$file")
+            fi
+          done
+
+          if [ ${#FOUND[@]} -gt 0 ]; then
+            echo "::notice::📋 Development files detected (will be auto-removed on merge):"
+            printf '  - %s\n' "${FOUND[@]}"
+            echo ""
+            echo "ℹ️  These files are used for development only and will be"
+            echo "   automatically removed when this PR is merged to production."
+          else
+            echo "✅ No development-only files detected"
+          fi

@@ -87,6 +87,32 @@ impl Default for AppState {
     }
 }
 
+/// Get path to Python scripts (works in dev and production)
+fn get_python_script_path(app_handle: &AppHandle, script_name: &str) -> Result<std::path::PathBuf, String> {
+    // Try production path first (bundled resources)
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        let prod_path = resource_dir.join("python").join(script_name);
+        if prod_path.exists() {
+            println!("[PATH] Using production path: {}", prod_path.display());
+            return Ok(prod_path);
+        }
+    }
+
+    // Fallback to dev path
+    let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("python")
+        .join(script_name);
+    if dev_path.exists() {
+        println!("[PATH] Using dev path: {}", dev_path.display());
+        return Ok(dev_path);
+    }
+
+    Err(format!(
+        "Python script '{}' not found in production or dev paths",
+        script_name
+    ))
+}
+
 /// Debug helper to save audio data as WAV file
 fn save_debug_wav(audio_data: &[f32], path: &std::path::PathBuf) -> Result<(), String> {
     let spec = hound::WavSpec {
@@ -880,20 +906,11 @@ fn check_sherpa_onnx_installed() -> bool {
 
 /// Detect GPU hardware and recommend STT backend
 #[tauri::command]
-async fn detect_gpu() -> Result<serde_json::Value, String> {
+async fn detect_gpu(app_handle: AppHandle) -> Result<serde_json::Value, String> {
     use std::process::Command;
 
-    // Get path to gpu_detector.py
-    let detector_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("python")
-        .join("gpu_detector.py");
-
-    if !detector_path.exists() {
-        return Err(format!(
-            "GPU detector not found: {}",
-            detector_path.display()
-        ));
-    }
+    // Get path to gpu_detector.py (works in dev and production)
+    let detector_path = get_python_script_path(&app_handle, "gpu_detector.py")?;
 
     // Try venv python first, fallback to system
     let python_cmd = {
@@ -929,12 +946,14 @@ async fn detect_gpu() -> Result<serde_json::Value, String> {
 
 /// Get installation commands for a specific backend
 #[tauri::command]
-async fn get_stt_install_commands(backend: String) -> Result<serde_json::Value, String> {
+async fn get_stt_install_commands(
+    app_handle: AppHandle,
+    backend: String,
+) -> Result<serde_json::Value, String> {
     use std::process::Command;
 
-    let detector_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("python")
-        .join("gpu_detector.py");
+    // Get path to gpu_detector.py (works in dev and production)
+    let detector_path = get_python_script_path(&app_handle, "gpu_detector.py")?;
 
     let python_cmd = {
         let venv_python = get_venv_python();

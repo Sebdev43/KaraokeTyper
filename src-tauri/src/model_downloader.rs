@@ -170,6 +170,7 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
     };
 
     let python_script = if cfg!(debug_assertions) {
+        // Development paths
         let cwd = std::env::current_dir().unwrap();
         let path1 = cwd
             .join("src-tauri")
@@ -188,12 +189,33 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
             path3
         }
     } else {
-        std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("python")
-            .join("parakeet_service.py")
+        // Production paths - check multiple locations
+        let prod_paths = [
+            // Linux .deb: /usr/lib/karaoketyper/python/
+            std::path::PathBuf::from("/usr/lib/karaoketyper/python/parakeet_service.py"),
+            // Linux alt: /usr/share/karaoketyper/python/
+            std::path::PathBuf::from("/usr/share/karaoketyper/python/parakeet_service.py"),
+            // macOS/Windows: resources next to executable
+            std::env::current_exe()
+                .unwrap_or_default()
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("resources")
+                .join("python")
+                .join("parakeet_service.py"),
+            // AppImage: ../lib/karaoketyper/python/
+            std::env::current_exe()
+                .unwrap_or_default()
+                .parent()
+                .unwrap_or(std::path::Path::new("."))
+                .join("../lib/karaoketyper/python/parakeet_service.py"),
+        ];
+
+        prod_paths
+            .iter()
+            .find(|p| p.exists())
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from("/usr/lib/karaoketyper/python/parakeet_service.py"))
     };
 
     if !python_script.exists() {

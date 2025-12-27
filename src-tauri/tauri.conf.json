@@ -56,6 +56,14 @@
     ],
     "resources": {
       "python/*": "python/"
+    },
+    "linux": {
+      "deb": {
+        "section": "utils",
+        "priority": "optional",
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libasound2"],
+        "postRemoveScript": "debian/postrm"
+      }
     }
   }
 }

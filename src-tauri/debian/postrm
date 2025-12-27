@@ -1,0 +1,59 @@
+#!/bin/bash
+# KaraokeTyper post-removal script
+# Executed by dpkg after package removal
+# Cleans up user data ONLY on 'purge' (apt purge / dpkg --purge)
+
+set -e
+
+case "$1" in
+    purge)
+        echo "KaraokeTyper: Nettoyage des données utilisateur..."
+
+        # Clean data for all users
+        for user_home in /home/*; do
+            [ -d "$user_home" ] || continue
+            username=$(basename "$user_home")
+
+            # Config: ~/.config/karaoketyper/
+            if [ -d "$user_home/.config/karaoketyper" ]; then
+                rm -rf "$user_home/.config/karaoketyper"
+                echo "  ✓ Config supprimée pour $username"
+            fi
+
+            # Data/venv: ~/.local/share/karaoketyper/
+            if [ -d "$user_home/.local/share/karaoketyper" ]; then
+                rm -rf "$user_home/.local/share/karaoketyper"
+                echo "  ✓ Venv supprimé pour $username"
+            fi
+
+            # Autostart: ~/.config/autostart/karaoketyper.desktop
+            if [ -f "$user_home/.config/autostart/karaoketyper.desktop" ]; then
+                rm -f "$user_home/.config/autostart/karaoketyper.desktop"
+                echo "  ✓ Autostart supprimé pour $username"
+            fi
+
+            # HuggingFace models: ~/.cache/huggingface/hub/models--csukuangfj--sherpa-onnx*
+            for model_dir in "$user_home/.cache/huggingface/hub"/models--csukuangfj--sherpa-onnx*; do
+                if [ -d "$model_dir" ]; then
+                    rm -rf "$model_dir"
+                    echo "  ✓ Modèle $(basename "$model_dir") supprimé pour $username"
+                fi
+            done
+        done
+
+        echo "KaraokeTyper: Nettoyage terminé."
+        ;;
+
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        # Regular remove: keep user data
+        echo "KaraokeTyper désinstallé. Données utilisateur conservées."
+        echo "Pour tout supprimer: sudo apt purge karaoketyper"
+        ;;
+
+    *)
+        echo "postrm: argument inconnu '$1'" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

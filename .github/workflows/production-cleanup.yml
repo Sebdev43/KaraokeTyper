@@ -1,0 +1,47 @@
+name: Production Cleanup
+
+on:
+  push:
+    branches:
+      - master
+      - main
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Remove development-only files
+        run: |
+          # Remove specific dev files
+          for file in CLAUDE.md .env.local .env.development; do
+            [ -f "$file" ] && git rm -f "$file" && echo "🗑️  Removed: $file"
+          done
+
+          # Remove dev directories
+          for dir in .claude documentation; do
+            [ -d "$dir" ] && git rm -rf "$dir" && echo "🗑️  Removed: $dir/"
+          done
+
+          # Check if there are staged changes
+          if git diff --cached --quiet; then
+            echo "✅ No development files to remove"
+            echo "CHANGES=false" >> $GITHUB_ENV
+          else
+            echo "CHANGES=true" >> $GITHUB_ENV
+          fi
+
+      - name: Commit cleanup
+        if: env.CHANGES == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: remove development-only files from production"
+          git push

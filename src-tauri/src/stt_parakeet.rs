@@ -381,10 +381,20 @@ impl ParakeetSttEngine {
     fn send_command(&self, request: ParakeetRequest) -> Result<ParakeetResponse, ParakeetError> {
         let mut service_lock = self.service.lock().unwrap();
 
+        let mut needs_model_load = false;
         // Start service if not running
         if service_lock.is_none() {
             println!("[PARAKEET] Service not running, starting...");
             *service_lock = Some(self.start_service()?);
+            needs_model_load = true;
+        }
+
+        // If we just started the service and this isn't a load_model command, load the model first
+        if needs_model_load && request.command != "load_model" && self.model_path.is_some() {
+            println!("[PARAKEET] Auto-loading model after service restart...");
+            drop(service_lock); // Release lock before calling initialize
+            self.initialize()?;
+            service_lock = self.service.lock().unwrap();
         }
 
         let service = service_lock
@@ -558,9 +568,19 @@ impl ParakeetSttEngine {
         let t0 = std::time::Instant::now();
         let mut service_lock = self.service.lock().unwrap();
 
+        let mut needs_model_load = false;
         if service_lock.is_none() {
             println!("[PARAKEET] Service not running, starting...");
             *service_lock = Some(self.start_service()?);
+            needs_model_load = true;
+        }
+
+        // If we just started the service, load the model first
+        if needs_model_load && self.model_path.is_some() {
+            println!("[PARAKEET] Auto-loading model after service restart...");
+            drop(service_lock); // Release lock before calling initialize
+            self.initialize()?;
+            service_lock = self.service.lock().unwrap();
         }
 
         let service = service_lock

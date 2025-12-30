@@ -11,10 +11,13 @@ import {
   Gpu,
   Info,
   Keyboard,
+  Maximize2,
   Mic,
+  Minimize2,
   Monitor,
   RefreshCw,
   Settings,
+  X,
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -304,6 +307,9 @@ function SettingsWindow() {
 
     try {
       await invoke("download_model", { modelName });
+      // Show 100% complete for 1.5 seconds
+      setDownloadProgress(100);
+      await new Promise((r) => setTimeout(r, 1500));
       await loadInstalledModels();
     } catch (error) {
       await message(`Échec du téléchargement : ${error}`, {
@@ -605,8 +611,62 @@ function SettingsWindow() {
 
   const systemDepsInstalled = permissionsInstalled && uinputAvailable;
 
+  const handleMinimize = async () => {
+    await getCurrentWindow().minimize();
+  };
+
+  const handleMaximize = async () => {
+    const win = getCurrentWindow();
+    if (await win.isMaximized()) {
+      await win.unmaximize();
+    } else {
+      await win.maximize();
+    }
+  };
+
+  const handleClose = async () => {
+    await getCurrentWindow().hide();
+  };
+
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-background">
+      {/* Custom Titlebar - needed for Wayland compatibility */}
+      <div
+        data-tauri-drag-region
+        className="flex-none flex items-center justify-between h-10 px-3 border-b border-border bg-muted/50 select-none"
+      >
+        <div data-tauri-drag-region className="flex items-center gap-2">
+          <Settings className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">KaraokeTyper Settings</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 hover:bg-muted"
+            onClick={handleMinimize}
+          >
+            <Minimize2 className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 hover:bg-muted"
+            onClick={handleMaximize}
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 hover:bg-destructive hover:text-destructive-foreground"
+            onClick={handleClose}
+          >
+            <X className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </div>
+
       {/* Content */}
       <ScrollArea className="flex-1 min-h-0">
         <div className="p-6 space-y-6">

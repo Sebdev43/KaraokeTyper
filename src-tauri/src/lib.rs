@@ -30,12 +30,19 @@ pub struct SttEngine {
 
 impl SttEngine {
     pub fn new(config: &AppConfig) -> Result<Self, String> {
-        let model_path = config.model_path.as_deref();
-        let provider = config.stt_provider.as_deref();
-        let engine = ParakeetSttEngine::new(model_path, &config.language, provider);
+        // Use model_path if provided, otherwise resolve from model name
+        let resolved_path = config.model_path.clone().or_else(|| {
+            stt_parakeet::resolve_model_path(&config.model)
+        });
 
-        if model_path.is_some() {
+        let provider = config.stt_provider.as_deref();
+        let engine = ParakeetSttEngine::new(resolved_path.as_deref(), &config.language, provider);
+
+        // Initialize if we have a model path (either from config or resolved)
+        if resolved_path.is_some() {
             engine.initialize().map_err(|e| e.to_string())?;
+        } else {
+            return Err("No model path specified".to_string());
         }
 
         Ok(SttEngine { engine })
@@ -372,20 +379,6 @@ pub(crate) async fn do_stop_recording(
     }
     println!("[TIMING] T+{}ms: debug WAV saved", t0.elapsed().as_millis());
 
-    // Show first 20 samples for debugging
-    if audio_data.len() >= 20 {
-        println!("[DEBUG] First 20 samples: {:?}", &audio_data[..20]);
-    }
-
-    // Check for silence
-    let non_zero = audio_data.iter().filter(|&&x| x.abs() > 0.001).count();
-    println!(
-        "[DEBUG] Non-silent samples: {}/{} ({:.1}%)",
-        non_zero,
-        audio_data.len(),
-        100.0 * non_zero as f32 / audio_data.len().max(1) as f32
-    );
-
     if audio_data.is_empty() {
         app_handle
             .emit(
@@ -496,8 +489,6 @@ async fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
 
 #[cfg(target_os = "linux")]
 async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
-    use std::process::Command;
-
     let mut devices = Vec::new();
 
     // Always add PipeWire default first (index 0) - this works with any PipeWire source
@@ -510,14 +501,19 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
     // Use pactl to get real PipeWire sources
     // Ensure D-Bus session is available (needed when launched from .desktop)
     let (xdg_runtime, dbus_addr) = get_dbus_env();
-    println!("[DEVICES] XDG_RUNTIME_DIR={}", xdg_runtime);
-    println!("[DEVICES] DBUS_SESSION_BUS_ADDRESS={}", dbus_addr);
 
-    let output = Command::new("pactl")
+    // IMPORTANT: Use tokio::process::Command instead of std::process::Command
+    // std::process::Command::output() can hang in async Tauri commands in production
+    // See: https://github.com/tauri-apps/tauri/issues/3505
+    // IMPORTANT: Force English locale (LC_ALL=C) because pactl output is localized
+    // When launched from .desktop, French locale causes "Nom :" instead of "Name:"
+    let output = tokio::process::Command::new("pactl")
         .args(["list", "sources"])
         .env("XDG_RUNTIME_DIR", &xdg_runtime)
         .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
+        .env("LC_ALL", "C")
         .output()
+        .await
         .map_err(|e| format!("Failed to run pactl: {}", e))?;
 
     if !output.status.success() {
@@ -527,7 +523,6 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    println!("[DEVICES] pactl returned {} bytes", stdout.len());
     let mut current_name: Option<String> = None;
     let mut current_description: Option<String> = None;
     let mut index = 1; // Start at 1 since pipewire is 0

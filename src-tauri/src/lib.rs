@@ -497,17 +497,31 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
     });
 
     // Use pactl to get real PipeWire sources
+    // Ensure D-Bus session is available (needed when launched from .desktop)
+    let xdg_runtime = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
+
+    let dbus_addr = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .unwrap_or_else(|_| format!("unix:path={}/bus", xdg_runtime));
+
+    println!("[DEVICES] XDG_RUNTIME_DIR={}", xdg_runtime);
+    println!("[DEVICES] DBUS_SESSION_BUS_ADDRESS={}", dbus_addr);
+
     let output = Command::new("pactl")
         .args(["list", "sources"])
+        .env("XDG_RUNTIME_DIR", &xdg_runtime)
+        .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
         .output()
         .map_err(|e| format!("Failed to run pactl: {}", e))?;
 
     if !output.status.success() {
-        println!("[DEVICES] pactl failed, returning default only");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("[DEVICES] pactl failed: {}", stderr);
         return Ok(devices);
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    println!("[DEVICES] pactl returned {} bytes", stdout.len());
     let mut current_name: Option<String> = None;
     let mut current_description: Option<String> = None;
     let mut index = 1; // Start at 1 since pipewire is 0

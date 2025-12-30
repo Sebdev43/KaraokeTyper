@@ -2,6 +2,16 @@ use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+/// Get D-Bus environment variables needed for PulseAudio/PipeWire commands
+/// when launched from .desktop file (where these might not be inherited)
+fn get_dbus_env() -> (String, String) {
+    let xdg_runtime = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
+    let dbus_addr = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .unwrap_or_else(|_| format!("unix:path={}/bus", xdg_runtime));
+    (xdg_runtime, dbus_addr)
+}
+
 /// Audio capture using CLI tools (parec/pw-record) - fallback for when cpal doesn't work.
 /// This is the approach used by nerd-dictation and other reliable Linux voice tools.
 pub struct AudioCaptureCli {
@@ -49,12 +59,15 @@ impl AudioCaptureCli {
         if let Some(dev) = device_name {
             if dev != "pipewire" && dev != "default" {
                 args.push(format!("--device={}", dev));
-                println!("[AUDIO_CLI] 🎤 Recording from device: {}", dev);
+                crate::dev_log!("[AUDIO_CLI] 🎤 Recording from device: {}", dev);
             }
         }
 
+        let (xdg_runtime, dbus_addr) = get_dbus_env();
         let mut child = Command::new("parec")
             .args(&args)
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
+            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -65,7 +78,7 @@ impl AudioCaptureCli {
                 )
             })?;
 
-        println!("[AUDIO_CLI] ✅ Started parec recording (16kHz mono S16LE)");
+        crate::dev_log!("[AUDIO_CLI] ✅ Started parec recording (16kHz mono S16LE)");
 
         let stdout = child.stdout.take().ok_or("Failed to get parec stdout")?;
         *recording_process.lock().unwrap() = Some(child);
@@ -95,14 +108,14 @@ impl AudioCaptureCli {
                     }
                     Err(e) => {
                         if e.kind() != std::io::ErrorKind::WouldBlock {
-                            println!("[AUDIO_CLI] ❌ Read error: {}", e);
+                            crate::dev_log!("[AUDIO_CLI] ❌ Read error: {}", e);
                             break;
                         }
                     }
                 }
             }
 
-            println!("[AUDIO_CLI] 📍 Reader thread finished");
+            crate::dev_log!("[AUDIO_CLI] 📍 Reader thread finished");
         });
 
         Ok(())
@@ -129,8 +142,8 @@ impl AudioCaptureCli {
             .map(|t| t.elapsed().as_millis())
             .unwrap_or(0);
 
-        println!("[AUDIO_CLI] 🛑 Recording stopped after {}ms", elapsed);
-        println!(
+        crate::dev_log!("[AUDIO_CLI] 🛑 Recording stopped after {}ms", elapsed);
+        crate::dev_log!(
             "[AUDIO_CLI] 🛑 Buffer: {} samples = {:.2}s of audio",
             buffer.len(),
             buffer.len() as f32 / 16000.0
@@ -142,7 +155,7 @@ impl AudioCaptureCli {
 
         // Check for non-silent samples
         let non_silent = buffer.iter().filter(|&&s| s.abs() > 0.01).count();
-        println!(
+        crate::dev_log!(
             "[AUDIO_CLI] 📊 Non-silent samples: {}/{} ({:.1}%)",
             non_silent,
             buffer.len(),

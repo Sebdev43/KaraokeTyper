@@ -146,7 +146,7 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
         .find(|m| m.name == model_name)
         .ok_or_else(|| format!("Model '{}' not found", model_name))?;
 
-    println!(
+    crate::dev_log!(
         "[MODEL] 📥 Starting download of {} ({} MB)...",
         model_name, model_info.size_mb
     );
@@ -323,7 +323,7 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
-                println!("[MODEL] ✅ Downloaded {} successfully", model_name);
+                crate::dev_log!("[MODEL] ✅ Downloaded {} successfully", model_name);
 
                 let cache_dir = result
                     .get("cache_dir")

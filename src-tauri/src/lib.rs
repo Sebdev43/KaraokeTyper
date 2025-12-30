@@ -113,6 +113,17 @@ fn get_python_script_path(app_handle: &AppHandle, script_name: &str) -> Result<s
     ))
 }
 
+/// Get D-Bus environment variables needed for PulseAudio/PipeWire/GNOME commands
+/// when launched from .desktop file (where these might not be inherited)
+#[cfg(target_os = "linux")]
+fn get_dbus_env() -> (String, String) {
+    let xdg_runtime = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
+    let dbus_addr = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .unwrap_or_else(|_| format!("unix:path={}/bus", xdg_runtime));
+    (xdg_runtime, dbus_addr)
+}
+
 /// Debug helper to save audio data as WAV file
 fn save_debug_wav(audio_data: &[f32], path: &std::path::PathBuf) -> Result<(), String> {
     let spec = hound::WavSpec {
@@ -498,12 +509,7 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
 
     // Use pactl to get real PipeWire sources
     // Ensure D-Bus session is available (needed when launched from .desktop)
-    let xdg_runtime = std::env::var("XDG_RUNTIME_DIR")
-        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
-
-    let dbus_addr = std::env::var("DBUS_SESSION_BUS_ADDRESS")
-        .unwrap_or_else(|_| format!("unix:path={}/bus", xdg_runtime));
-
+    let (xdg_runtime, dbus_addr) = get_dbus_env();
     println!("[DEVICES] XDG_RUNTIME_DIR={}", xdg_runtime);
     println!("[DEVICES] DBUS_SESSION_BUS_ADDRESS={}", dbus_addr);
 
@@ -1512,8 +1518,11 @@ async fn check_focused_window_extension() -> Result<serde_json::Value, String> {
             let is_installed = extension_path.join("extension.js").exists();
 
             let is_enabled = if is_installed {
+                let (xdg_runtime, dbus_addr) = get_dbus_env();
                 Command::new("gnome-extensions")
                     .args(["info", "focused-window-dbus@karaoketyper"])
+                    .env("XDG_RUNTIME_DIR", &xdg_runtime)
+                    .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
                     .output()
                     .map(|o| {
                         let stdout = String::from_utf8_lossy(&o.stdout);
@@ -1620,8 +1629,13 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
 
             println!("[GNOME EXT] Created zip at: {}", zip_path.display());
 
+            // Get D-Bus env for all GNOME commands in this block
+            let (xdg_runtime, dbus_addr) = get_dbus_env();
+
             let install_result = std::process::Command::new("gnome-extensions")
                 .args(["install", "--force", &zip_path.to_string_lossy()])
+                .env("XDG_RUNTIME_DIR", &xdg_runtime)
+                .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
                 .output()
                 .map_err(|e| format!("Failed to run gnome-extensions install: {}", e))?;
 
@@ -1638,6 +1652,8 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
 
             let enable_result = std::process::Command::new("gnome-extensions")
                 .args(["enable", "focused-window-dbus@karaoketyper"])
+                .env("XDG_RUNTIME_DIR", &xdg_runtime)
+                .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
                 .output();
 
             let cli_enabled = matches!(&enable_result, Ok(output) if output.status.success());
@@ -1645,6 +1661,8 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
             let ext_uuid = "focused-window-dbus@karaoketyper";
             let current = std::process::Command::new("gsettings")
                 .args(["get", "org.gnome.shell", "enabled-extensions"])
+                .env("XDG_RUNTIME_DIR", &xdg_runtime)
+                .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
                 .output()
                 .ok()
                 .and_then(|o| String::from_utf8(o.stdout).ok())
@@ -1662,6 +1680,8 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
                 println!("[GNOME EXT] Setting enabled-extensions to: {}", new_list);
                 let _ = std::process::Command::new("gsettings")
                     .args(["set", "org.gnome.shell", "enabled-extensions", &new_list])
+                    .env("XDG_RUNTIME_DIR", &xdg_runtime)
+                    .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
                     .output();
             }
 
@@ -1671,6 +1691,8 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
                 println!("[GNOME EXT] Initiating automatic logout...");
                 let logout_result = std::process::Command::new("gnome-session-quit")
                     .args(["--logout", "--no-prompt"])
+                    .env("XDG_RUNTIME_DIR", &xdg_runtime)
+                    .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
                     .spawn();
 
                 match logout_result {
@@ -1716,8 +1738,11 @@ async fn remove_focused_window_extension() -> Result<String, String> {
                 return Ok("Extension was not installed".to_string());
             }
 
+            let (xdg_runtime, dbus_addr) = get_dbus_env();
             let _ = std::process::Command::new("gnome-extensions")
                 .args(["disable", "focused-window-dbus@karaoketyper"])
+                .env("XDG_RUNTIME_DIR", &xdg_runtime)
+                .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
                 .output();
 
             fs::remove_dir_all(&extension_path)

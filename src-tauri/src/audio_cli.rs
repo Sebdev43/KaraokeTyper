@@ -2,6 +2,16 @@ use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+/// Get D-Bus environment variables needed for PulseAudio/PipeWire commands
+/// when launched from .desktop file (where these might not be inherited)
+fn get_dbus_env() -> (String, String) {
+    let xdg_runtime = std::env::var("XDG_RUNTIME_DIR")
+        .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
+    let dbus_addr = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .unwrap_or_else(|_| format!("unix:path={}/bus", xdg_runtime));
+    (xdg_runtime, dbus_addr)
+}
+
 /// Audio capture using CLI tools (parec/pw-record) - fallback for when cpal doesn't work.
 /// This is the approach used by nerd-dictation and other reliable Linux voice tools.
 pub struct AudioCaptureCli {
@@ -53,8 +63,11 @@ impl AudioCaptureCli {
             }
         }
 
+        let (xdg_runtime, dbus_addr) = get_dbus_env();
         let mut child = Command::new("parec")
             .args(&args)
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
+            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()

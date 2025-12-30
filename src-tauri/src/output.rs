@@ -588,9 +588,19 @@ impl TextOutput {
     }
 
     #[cfg(target_os = "linux")]
+    fn get_dbus_env() -> (String, String) {
+        let xdg_runtime = std::env::var("XDG_RUNTIME_DIR")
+            .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
+        let dbus_addr = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+            .unwrap_or_else(|_| format!("unix:path={}/bus", xdg_runtime));
+        (xdg_runtime, dbus_addr)
+    }
+
+    #[cfg(target_os = "linux")]
     fn check_terminal_via_extension() -> Option<bool> {
         // Call our KaraokeTyper GNOME extension via D-Bus
         // Extensions export their objects on org.gnome.Shell bus
+        let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
         let result = std::process::Command::new("gdbus")
             .args([
                 "call",
@@ -602,6 +612,8 @@ impl TextOutput {
                 "--method",
                 "org.karaoketyper.FocusedWindow.IsTerminal",
             ])
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
+            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
             .output();
 
         if let Ok(output) = result {
@@ -625,6 +637,7 @@ impl TextOutput {
     #[cfg(target_os = "linux")]
     fn check_terminal_via_gnome_eval() -> Option<bool> {
         // Fallback: Try GNOME Shell.Eval (blocked on GNOME 46+ for security)
+        let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
         let result = std::process::Command::new("gdbus")
             .args([
                 "call",
@@ -637,6 +650,8 @@ impl TextOutput {
                 "org.gnome.Shell.Eval",
                 "global.display.focus_window ? global.display.focus_window.get_wm_class() : ''",
             ])
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
+            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
             .output();
 
         if let Ok(output) = result {

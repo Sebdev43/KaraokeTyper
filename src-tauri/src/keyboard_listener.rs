@@ -26,13 +26,13 @@ pub enum HotkeyEvent {
 /// On Linux: Uses evdev for best Wayland compatibility
 /// On Windows/macOS: Uses rdev
 pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String> {
-    println!("[KEYBOARD] Starting cross-platform keyboard listener...");
-    println!("[KEYBOARD] Platform: {}", std::env::consts::OS);
+    crate::dev_log!("[KEYBOARD] Starting cross-platform keyboard listener...");
+    crate::dev_log!("[KEYBOARD] Platform: {}", std::env::consts::OS);
 
     // On Linux, use evdev for better Wayland support
     #[cfg(target_os = "linux")]
     {
-        println!("[KEYBOARD] Linux detected - using evdev for reliable Wayland support");
+        crate::dev_log!("[KEYBOARD] Linux detected - using evdev for reliable Wayland support");
         crate::evdev_listener::start_evdev_listener(app_handle).await
     }
 
@@ -46,7 +46,7 @@ pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String
 /// rdev-based keyboard listener for Windows/macOS
 #[cfg(not(target_os = "linux"))]
 async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
-    println!("[KEYBOARD] Using rdev for keyboard capture");
+    crate::dev_log!("[KEYBOARD] Using rdev for keyboard capture");
 
     // Channel for communicating hotkey events to async context
     let (tx, mut rx) = mpsc::unbounded_channel::<HotkeyEvent>();
@@ -60,7 +60,7 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
 
     // Spawn the rdev listener in a blocking thread
     std::thread::spawn(move || {
-        println!("[KEYBOARD] rdev listener thread started");
+        crate::dev_log!("[KEYBOARD] rdev listener thread started");
 
         let callback = move |event: Event| match event.event_type {
             EventType::KeyPress(key) => {
@@ -74,25 +74,25 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
 
         // Start listening - this blocks
         if let Err(e) = listen(callback) {
-            eprintln!("[KEYBOARD] Error in rdev listener: {:?}", e);
+            crate::dev_log!("[KEYBOARD] Error in rdev listener: {:?}", e);
         }
     });
 
     // Spawn async task to handle hotkey events
     let app_clone = app_handle.clone();
     tokio::spawn(async move {
-        println!("[KEYBOARD] ✅ Push-to-talk listener started!");
-        println!("[KEYBOARD] Hold Ctrl+Space to record, release to transcribe and paste");
+        crate::dev_log!("[KEYBOARD] ✅ Push-to-talk listener started!");
+        crate::dev_log!("[KEYBOARD] Hold Ctrl+Space to record, release to transcribe and paste");
 
         while let Some(event) = rx.recv().await {
             match event {
                 HotkeyEvent::PushToTalkPressed => {
-                    println!("[KEYBOARD] 🎤 Ctrl+Space PRESSED - starting recording");
+                    crate::dev_log!("[KEYBOARD] 🎤 Ctrl+Space PRESSED - starting recording");
 
                     // Start recording using helper function
                     let state = app_clone.state::<crate::AppState>();
                     if let Err(e) = crate::do_start_recording(app_clone.clone(), &state).await {
-                        eprintln!("[KEYBOARD] Failed to start recording: {}", e);
+                        crate::dev_log!("[KEYBOARD] Failed to start recording: {}", e);
                     }
 
                     // Show overlay
@@ -103,13 +103,13 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
                     }
                 }
                 HotkeyEvent::PushToTalkReleased => {
-                    println!("[KEYBOARD] 🛑 Ctrl+Space RELEASED - stopping recording");
+                    crate::dev_log!("[KEYBOARD] 🛑 Ctrl+Space RELEASED - stopping recording");
 
                     // Stop recording and transcribe using helper function
                     let state = app_clone.state::<crate::AppState>();
                     match crate::do_stop_recording(app_clone.clone(), &state).await {
                         Ok(transcription) => {
-                            println!("[KEYBOARD] Transcription: {}", transcription);
+                            crate::dev_log!("[KEYBOARD] Transcription: {}", transcription);
 
                             // Wait for physical keys to fully release
                             tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
@@ -117,7 +117,7 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
                             // Type the text using helper function
                             match crate::do_type_text(transcription).await {
                                 Ok(_) => {
-                                    println!("[KEYBOARD] ✅ Text pasted successfully");
+                                    crate::dev_log!("[KEYBOARD] ✅ Text pasted successfully");
                                     if let Some(overlay_win) =
                                         app_clone.get_webview_window("overlay")
                                     {
@@ -126,12 +126,12 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("[KEYBOARD] Failed to paste text: {}", e);
+                                    crate::dev_log!("[KEYBOARD] Failed to paste text: {}", e);
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("[KEYBOARD] Failed to transcribe: {}", e);
+                            crate::dev_log!("[KEYBOARD] Failed to transcribe: {}", e);
                         }
                     }
                 }

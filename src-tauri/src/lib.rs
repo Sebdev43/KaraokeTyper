@@ -1,3 +1,6 @@
+#[macro_use]
+mod logging;
+
 mod audio;
 mod autostart;
 mod config;
@@ -100,7 +103,7 @@ fn get_python_script_path(app_handle: &AppHandle, script_name: &str) -> Result<s
     if let Ok(resource_dir) = app_handle.path().resource_dir() {
         let prod_path = resource_dir.join("python").join(script_name);
         if prod_path.exists() {
-            println!("[PATH] Using production path: {}", prod_path.display());
+            dev_log!("[PATH] Using production path: {}", prod_path.display());
             return Ok(prod_path);
         }
     }
@@ -110,7 +113,7 @@ fn get_python_script_path(app_handle: &AppHandle, script_name: &str) -> Result<s
         .join("python")
         .join(script_name);
     if dev_path.exists() {
-        println!("[PATH] Using dev path: {}", dev_path.display());
+        dev_log!("[PATH] Using dev path: {}", dev_path.display());
         return Ok(dev_path);
     }
 
@@ -174,7 +177,7 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
         )
         .ok();
 
-    println!(
+    dev_log!(
         "[STT] Loading sherpa-onnx Parakeet model: {} (language: {})",
         config.model, config.language
     );
@@ -193,7 +196,7 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
         }
     })?;
 
-    println!("[STT] ✓ {} engine initialized", engine.backend_name());
+    dev_log!("[STT] ✓ {} engine initialized", engine.backend_name());
     *state.stt_engine.lock().unwrap() = Some(engine);
 
     app_handle
@@ -226,7 +229,7 @@ pub(crate) async fn do_start_recording(
         .lock()
         .unwrap()
         .unwrap_or_else(std::time::Instant::now);
-    println!(
+    dev_log!(
         "[TIMING] T+{}ms: do_start_recording() entered",
         t0.elapsed().as_millis()
     );
@@ -249,7 +252,7 @@ pub(crate) async fn do_start_recording(
         capture.start_recording(config.audio_device_name.as_deref())?;
         *state.audio_cli.lock().unwrap() = Some(capture);
         state.recording_ready.store(true, Ordering::SeqCst);
-        println!(
+        dev_log!(
             "[TIMING] T+{}ms: audio_cli started",
             t0.elapsed().as_millis()
         );
@@ -271,7 +274,7 @@ pub(crate) async fn do_start_recording(
 
         tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
         state.recording_ready.store(true, Ordering::SeqCst);
-        println!("[RECORDING] ✅ cpal audio stream initialized and ready");
+        dev_log!("[RECORDING] ✅ cpal audio stream initialized and ready");
         Ok(())
     }
 }
@@ -297,7 +300,7 @@ pub(crate) async fn do_stop_recording(
         .lock()
         .unwrap()
         .unwrap_or_else(std::time::Instant::now);
-    println!(
+    dev_log!(
         "[TIMING] T+{}ms: do_stop_recording() entered",
         t0.elapsed().as_millis()
     );
@@ -308,14 +311,14 @@ pub(crate) async fn do_stop_recording(
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         waited += 10;
     }
-    println!(
+    dev_log!(
         "[TIMING] T+{}ms: waited {}ms for recording_ready",
         t0.elapsed().as_millis(),
         waited
     );
 
     if !state.recording_ready.load(Ordering::SeqCst) {
-        println!("[RECORDING] ⚠️ Recording never became ready, proceeding anyway");
+        dev_log!("[RECORDING] ⚠️ Recording never became ready, proceeding anyway");
     }
 
     // Reset the ready flag
@@ -331,7 +334,7 @@ pub(crate) async fn do_stop_recording(
         )
         .ok();
 
-    println!(
+    dev_log!(
         "[TIMING] T+{}ms: stopping audio capture...",
         t0.elapsed().as_millis()
     );
@@ -358,7 +361,7 @@ pub(crate) async fn do_stop_recording(
         data
     };
 
-    println!(
+    dev_log!(
         "[TIMING] T+{}ms: audio capture stopped, got {} samples ({:.2}s)",
         t0.elapsed().as_millis(),
         audio_data.len(),
@@ -368,16 +371,16 @@ pub(crate) async fn do_stop_recording(
     // DEBUG: Save audio to file for inspection (cross-platform temp dir)
     let debug_path = std::env::temp_dir().join("karaoketyper_debug.wav");
     if let Err(e) = save_debug_wav(&audio_data, &debug_path) {
-        println!("[DEBUG] Failed to save debug WAV: {}", e);
+        dev_log!("[DEBUG] Failed to save debug WAV: {}", e);
     } else {
-        println!(
+        dev_log!(
             "[DEBUG] 🎵 Audio saved to: {} ({} samples, {:.2}s)",
             debug_path.display(),
             audio_data.len(),
             audio_data.len() as f32 / 16000.0
         );
     }
-    println!("[TIMING] T+{}ms: debug WAV saved", t0.elapsed().as_millis());
+    dev_log!("[TIMING] T+{}ms: debug WAV saved", t0.elapsed().as_millis());
 
     if audio_data.is_empty() {
         app_handle
@@ -392,7 +395,7 @@ pub(crate) async fn do_stop_recording(
         return Err("No audio data captured".to_string());
     }
 
-    println!(
+    dev_log!(
         "[TIMING] T+{}ms: starting transcription...",
         t0.elapsed().as_millis()
     );
@@ -402,7 +405,7 @@ pub(crate) async fn do_stop_recording(
     let padding_samples = 8000; // 0.5s at 16kHz
     let mut padded_audio = audio_data.clone();
     padded_audio.extend(std::iter::repeat_n(0.0f32, padding_samples));
-    println!(
+    dev_log!(
         "[TIMING] T+{}ms: added {}ms padding at end ({} -> {} samples)",
         t0.elapsed().as_millis(),
         padding_samples * 1000 / 16000,
@@ -417,7 +420,7 @@ pub(crate) async fn do_stop_recording(
         .transcribe(&padded_audio)
         .map_err(|e| format!("Transcription error: {}", e))?;
 
-    println!(
+    dev_log!(
         "[TIMING] T+{}ms: transcription complete: '{}'",
         t0.elapsed().as_millis(),
         transcription
@@ -518,7 +521,7 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        println!("[DEVICES] pactl failed: {}", stderr);
+        dev_log!("[DEVICES] pactl failed: {}", stderr);
         return Ok(devices);
     }
 
@@ -563,9 +566,9 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
         }
     }
 
-    println!("[DEVICES] Listed {} audio devices:", devices.len());
+    dev_log!("[DEVICES] Listed {} audio devices:", devices.len());
     for dev in &devices {
-        println!(
+        dev_log!(
             "[DEVICES]   [{}] {} -> {}",
             dev.index, dev.name, dev.raw_name
         );
@@ -685,7 +688,7 @@ fn update_global_shortcut(
     // If the new shortcut is a mouse button, don't register with Tauri's global shortcut
     // On Linux, evdev handles mouse button detection directly
     if is_mouse_shortcut(new_shortcut) {
-        println!(
+        dev_log!(
             "[SHORTCUT] Mouse button shortcut '{}' - handled by evdev, skipping Tauri registration",
             new_shortcut
         );
@@ -695,7 +698,7 @@ fn update_global_shortcut(
     // For keyboard shortcuts, register with Tauri's global shortcut system
     // Note: This is mainly used for the overlay toggle, not for push-to-talk
     // Push-to-talk is handled by evdev on Linux for better Wayland compatibility
-    println!(
+    dev_log!(
         "[SHORTCUT] Registering keyboard shortcut '{}' with Tauri",
         new_shortcut
     );
@@ -715,7 +718,7 @@ async fn transcribe_audio(
     state: State<'_, AppState>,
     audio_data: Vec<f32>,
 ) -> Result<String, String> {
-    println!(
+    dev_log!(
         "[TRANSCRIBE] Received {} samples from frontend",
         audio_data.len()
     );
@@ -725,13 +728,13 @@ async fn transcribe_audio(
     }
 
     let duration = audio_data.len() as f32 / 16000.0;
-    println!("[TRANSCRIBE] Audio duration: {:.2}s", duration);
+    dev_log!("[TRANSCRIBE] Audio duration: {:.2}s", duration);
 
     // Add 0.5 second of silence at the END to prevent Whisper from cutting off last words
     let padding_samples = 8000; // 0.5s at 16kHz
     let mut padded_audio = audio_data.clone();
     padded_audio.extend(std::iter::repeat_n(0.0f32, padding_samples));
-    println!(
+    dev_log!(
         "[TRANSCRIBE] Added {}ms padding at end ({} -> {} samples)",
         padding_samples * 1000 / 16000,
         audio_data.len(),
@@ -747,7 +750,7 @@ async fn transcribe_audio(
         .transcribe(&padded_audio)
         .map_err(|e| format!("Transcription error: {}", e))?;
 
-    println!("[TRANSCRIBE] Result: '{}'", transcription);
+    dev_log!("[TRANSCRIBE] Result: '{}'", transcription);
     Ok(transcription)
 }
 
@@ -762,7 +765,7 @@ fn check_evdev_permissions() -> bool {
 async fn install_evdev_permissions(app_handle: AppHandle) -> Result<String, String> {
     use tauri_plugin_shell::ShellExt;
 
-    println!("[EVDEV INSTALL] Starting installation...");
+    dev_log!("[EVDEV INSTALL] Starting installation...");
 
     let script_path = std::env::current_dir()
         .map_err(|e| format!("Failed to get current directory: {}", e))?
@@ -777,7 +780,7 @@ async fn install_evdev_permissions(app_handle: AppHandle) -> Result<String, Stri
         ));
     }
 
-    println!("[EVDEV INSTALL] Running script: {}", script_path.display());
+    dev_log!("[EVDEV INSTALL] Running script: {}", script_path.display());
 
     let shell = app_handle.shell();
 
@@ -790,19 +793,19 @@ async fn install_evdev_permissions(app_handle: AppHandle) -> Result<String, Stri
         Ok(output) => {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                println!("[EVDEV INSTALL] Success: {}", stdout);
+                dev_log!("[EVDEV INSTALL] Success: {}", stdout);
                 Ok(
                     "evdev permissions installed successfully! Please restart the application."
                         .to_string(),
                 )
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                eprintln!("[EVDEV INSTALL] Failed: {}", stderr);
+                dev_log!("[EVDEV INSTALL] Failed: {}", stderr);
                 Err(format!("Installation failed: {}", stderr))
             }
         }
         Err(e) => {
-            eprintln!("[EVDEV INSTALL] Command error: {}", e);
+            dev_log!("[EVDEV INSTALL] Command error: {}", e);
             Err(format!("Failed to execute installation: {}", e))
         }
     }
@@ -844,7 +847,7 @@ fn check_uinput_available() -> bool {
 /// Log message from frontend to Rust console
 #[tauri::command]
 fn log_from_frontend(message: String) {
-    println!("[FRONTEND] {}", message);
+    dev_log!("[FRONTEND] {}", message);
 }
 
 /// Check if Python 3.8+ is installed
@@ -857,7 +860,7 @@ fn check_python_available() -> bool {
         if let Ok(output) = Command::new(python_cmd).args(["--version"]).output() {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout);
-                println!(
+                dev_log!(
                     "[PYTHON CHECK] {} --version: {}",
                     python_cmd,
                     version.trim()
@@ -891,7 +894,7 @@ fn check_sherpa_onnx_installed() -> bool {
         {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout);
-                println!(
+                dev_log!(
                     "[SHERPA CHECK] sherpa-onnx version (venv): {}",
                     version.trim()
                 );
@@ -908,7 +911,7 @@ fn check_sherpa_onnx_installed() -> bool {
         {
             if output.status.success() {
                 let version = String::from_utf8_lossy(&output.stdout);
-                println!(
+                dev_log!(
                     "[SHERPA CHECK] sherpa-onnx version (system): {}",
                     version.trim()
                 );
@@ -951,7 +954,7 @@ async fn detect_gpu(app_handle: AppHandle) -> Result<serde_json::Value, String> 
     let result: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("Failed to parse GPU detection result: {}", e))?;
 
-    println!(
+    dev_log!(
         "[GPU DETECT] Result: {}",
         serde_json::to_string_pretty(&result).unwrap_or_default()
     );
@@ -1009,7 +1012,7 @@ async fn install_stt_dependencies(
     use std::process::Command;
     use tauri::Emitter;
 
-    println!(
+    dev_log!(
         "[STT INSTALL] Starting installation for backend: {}",
         backend
     );
@@ -1036,7 +1039,7 @@ async fn install_stt_dependencies(
 
     // Step 1: Create venv if needed
     if !venv_python.exists() {
-        println!("[STT INSTALL] Creating venv at: {}", venv_path.display());
+        dev_log!("[STT INSTALL] Creating venv at: {}", venv_path.display());
 
         app_handle
             .emit(
@@ -1170,7 +1173,7 @@ async fn install_stt_dependencies(
 
     if !onnx_output.status.success() {
         let stderr = String::from_utf8_lossy(&onnx_output.stderr);
-        println!(
+        dev_log!(
             "[STT INSTALL] Warning: {} install issue: {}",
             onnx_package, stderr
         );
@@ -1205,7 +1208,7 @@ async fn install_stt_dependencies(
             )
             .ok();
 
-        println!(
+        dev_log!(
             "[STT INSTALL] ✅ Installation complete for backend: {}",
             backend
         );
@@ -1402,11 +1405,11 @@ async fn cleanup_app_data(app_handle: AppHandle) -> Result<String, String> {
 
         match result {
             Ok(_) => {
-                println!("[CLEANUP] Removed: {}", path.display());
+                dev_log!("[CLEANUP] Removed: {}", path.display());
                 cleaned.push(name);
             }
             Err(e) => {
-                eprintln!("[CLEANUP] Failed to remove {}: {}", path.display(), e);
+                dev_log!("[CLEANUP] Failed to remove {}: {}", path.display(), e);
                 errors.push(format!("{}: {}", name, e));
             }
         }
@@ -1448,25 +1451,25 @@ async fn download_model(app_handle: AppHandle, model_name: String) -> Result<(),
 /// Install system dependencies (Linux only - handles evdev permissions)
 #[tauri::command]
 async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, String> {
-    println!("[SETUP] 🚀 Checking system dependencies...");
+    dev_log!("[SETUP] 🚀 Checking system dependencies...");
 
     // Cross-platform keyboard simulation via enigo - no install needed
-    println!("[SETUP] ✅ Text output: using enigo (cross-platform, no install needed)");
+    dev_log!("[SETUP] ✅ Text output: using enigo (cross-platform, no install needed)");
 
     // Linux-specific: evdev permissions for keyboard listening
     #[cfg(target_os = "linux")]
     {
         let evdev_ok = check_evdev_permissions();
-        println!(
+        dev_log!(
             "[SETUP] evdev permissions: {}",
             if evdev_ok { "OK" } else { "needed" }
         );
 
         if !evdev_ok {
-            println!("[SETUP] Installing evdev permissions...");
+            dev_log!("[SETUP] Installing evdev permissions...");
             match install_evdev_permissions(app_handle.clone()).await {
                 Ok(_) => {
-                    println!("[SETUP] ✅ evdev permissions installed");
+                    dev_log!("[SETUP] ✅ evdev permissions installed");
                     return Ok(
                         "evdev permissions installed! Please restart the application.".to_string(),
                     );
@@ -1482,7 +1485,7 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
     #[cfg(not(target_os = "linux"))]
     {
         let _ = app_handle; // Suppress unused warning
-        println!("[SETUP] ✅ No special permissions needed on this platform");
+        dev_log!("[SETUP] ✅ No special permissions needed on this platform");
     }
 
     Ok("All dependencies ready ✅".to_string())
@@ -1622,7 +1625,7 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
 
             zip.finish().map_err(|e| format!("Failed to finish zip: {}", e))?;
 
-            println!("[GNOME EXT] Created zip at: {}", zip_path.display());
+            dev_log!("[GNOME EXT] Created zip at: {}", zip_path.display());
 
             // Get D-Bus env for all GNOME commands in this block
             let (xdg_runtime, dbus_addr) = get_dbus_env();
@@ -1641,7 +1644,7 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
                 return Err(format!("gnome-extensions install failed: {}", stderr));
             }
 
-            println!("[GNOME EXT] ✅ Extension installed via gnome-extensions");
+            dev_log!("[GNOME EXT] ✅ Extension installed via gnome-extensions");
 
             std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -1672,7 +1675,7 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
                     format!("{}, '{}']", without_bracket, ext_uuid)
                 };
 
-                println!("[GNOME EXT] Setting enabled-extensions to: {}", new_list);
+                dev_log!("[GNOME EXT] Setting enabled-extensions to: {}", new_list);
                 let _ = std::process::Command::new("gsettings")
                     .args(["set", "org.gnome.shell", "enabled-extensions", &new_list])
                     .env("XDG_RUNTIME_DIR", &xdg_runtime)
@@ -1681,9 +1684,9 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
             }
 
             if cli_enabled {
-                println!("[GNOME EXT] ✅ Extension enabled");
+                dev_log!("[GNOME EXT] ✅ Extension enabled");
 
-                println!("[GNOME EXT] Initiating automatic logout...");
+                dev_log!("[GNOME EXT] Initiating automatic logout...");
                 let logout_result = std::process::Command::new("gnome-session-quit")
                     .args(["--logout", "--no-prompt"])
                     .env("XDG_RUNTIME_DIR", &xdg_runtime)
@@ -1692,11 +1695,11 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
 
                 match logout_result {
                     Ok(_) => {
-                        println!("[GNOME EXT] ✓ Logout command sent");
+                        dev_log!("[GNOME EXT] ✓ Logout command sent");
                         Ok("Extension installée et activée !\n\nDéconnexion en cours...".to_string())
                     },
                     Err(e) => {
-                        println!("[GNOME EXT] ⚠️ Logout failed: {}", e);
+                        dev_log!("[GNOME EXT] ⚠️ Logout failed: {}", e);
                         Ok("Extension installée et activée !\n\nVeuillez vous déconnecter manuellement pour activer l'extension.".to_string())
                     }
                 }
@@ -1743,7 +1746,7 @@ async fn remove_focused_window_extension() -> Result<String, String> {
             fs::remove_dir_all(&extension_path)
                 .map_err(|e| format!("Failed to remove extension: {}", e))?;
 
-            println!(
+            dev_log!(
                 "[GNOME EXT] ✅ Extension removed: {}",
                 extension_path.display()
             );
@@ -1781,7 +1784,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // When another instance tries to start, show the existing settings window
-            println!("[SINGLE-INSTANCE] Another instance tried to start - focusing existing window");
+            dev_log!("[SINGLE-INSTANCE] Another instance tried to start - focusing existing window");
             if let Some(window) = app.get_webview_window("settings") {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -1797,28 +1800,28 @@ pub fn run() {
             // Auto-setup venv on first launch
             let venv_python = get_venv_python();
             if !venv_python.exists() {
-                println!("[STARTUP] First launch detected - setting up Python venv...");
+                dev_log!("[STARTUP] First launch detected - setting up Python venv...");
                 let app_handle_venv = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     match install_stt_dependencies(app_handle_venv, "CPU".to_string()).await {
-                        Ok(msg) => println!("[STARTUP] ✅ Venv setup complete: {}", msg),
-                        Err(e) => eprintln!("[STARTUP] ⚠️  Venv setup failed: {}", e),
+                        Ok(msg) => dev_log!("[STARTUP] ✅ Venv setup complete: {}", msg),
+                        Err(e) => dev_log!("[STARTUP] ⚠️  Venv setup failed: {}", e),
                     }
                 });
             } else {
-                println!("[STARTUP] Venv already exists at: {}", venv_python.display());
+                dev_log!("[STARTUP] Venv already exists at: {}", venv_python.display());
             }
 
             // Initialize STT engine at startup
-            println!("[STARTUP] Initializing STT engine...");
+            dev_log!("[STARTUP] Initializing STT engine...");
             let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<AppState>();
                 match init_stt(app_handle.clone(), state).await {
-                    Ok(_) => println!("[STARTUP] ✅ STT engine initialized successfully"),
+                    Ok(_) => dev_log!("[STARTUP] ✅ STT engine initialized successfully"),
                     Err(e) => {
-                        eprintln!("[STARTUP] ⚠️  STT initialization skipped: {}", e);
-                        eprintln!("[STARTUP] Open Settings to configure STT backend");
+                        dev_log!("[STARTUP] ⚠️  STT initialization skipped: {}", e);
+                        dev_log!("[STARTUP] Open Settings to configure STT backend");
                     }
                 }
             });
@@ -1853,12 +1856,12 @@ pub fn run() {
 
             // Detect display server
             let display_server = std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".to_string());
-            println!("[SHORTCUT DEBUG] Display server: {}", display_server);
+            dev_log!("[SHORTCUT DEBUG] Display server: {}", display_server);
 
             if display_server == "wayland" {
-                println!("[SHORTCUT WARNING] ⚠️  Running on Wayland - global shortcuts may not work");
-                println!("[SHORTCUT WARNING] Modifiers (Ctrl, Alt) are often blocked by Wayland compositor");
-                println!("[SHORTCUT WARNING] Consider using X11 session or simple F-key shortcuts");
+                dev_log!("[SHORTCUT WARNING] ⚠️  Running on Wayland - global shortcuts may not work");
+                dev_log!("[SHORTCUT WARNING] Modifiers (Ctrl, Alt) are often blocked by Wayland compositor");
+                dev_log!("[SHORTCUT WARNING] Consider using X11 session or simple F-key shortcuts");
             }
 
             let shortcut = {
@@ -1867,8 +1870,8 @@ pub fn run() {
                 config.shortcut.clone()
             };
 
-            println!("[SHORTCUT DEBUG] Loading primary shortcut from config: '{}'", shortcut);
-            println!("[SHORTCUT DEBUG] ⚠️  Ctrl+Space handled by evdev only - Global Shortcuts disabled");
+            dev_log!("[SHORTCUT DEBUG] Loading primary shortcut from config: '{}'", shortcut);
+            dev_log!("[SHORTCUT DEBUG] ⚠️  Ctrl+Space handled by evdev only - Global Shortcuts disabled");
 
             // Only register F10 for Settings window
             let shortcuts_to_try = vec![
@@ -1883,7 +1886,7 @@ pub fn run() {
 
                 match app.global_shortcut().on_shortcut(test_shortcut.as_str(), move |_app, _shortcut_event, event| {
                     if event.state == ShortcutState::Pressed {
-                        println!("[SHORTCUT DEBUG] F10 pressed - showing settings");
+                        dev_log!("[SHORTCUT DEBUG] F10 pressed - showing settings");
                         if let Some(settings_win) = app_handle.get_webview_window("settings") {
                             let _ = settings_win.show();
                             let _ = settings_win.set_focus();
@@ -1891,28 +1894,28 @@ pub fn run() {
                     }
                 }) {
                     Ok(_) => {
-                        println!("[SHORTCUT DEBUG] ✅ Successfully registered shortcut: '{}'", shortcut_name);
+                        dev_log!("[SHORTCUT DEBUG] ✅ Successfully registered shortcut: '{}'", shortcut_name);
                         registered_shortcuts.push(shortcut_name);
                     }
                     Err(e) => {
-                        eprintln!("[SHORTCUT WARNING] ⚠️  Failed to register shortcut '{}': {}", shortcut_name, e);
+                        dev_log!("[SHORTCUT WARNING] ⚠️  Failed to register shortcut '{}': {}", shortcut_name, e);
                     }
                 }
             }
 
             if registered_shortcuts.is_empty() {
-                eprintln!("[SHORTCUT WARNING] ⚠️  Failed to register ANY global shortcuts!");
+                dev_log!("[SHORTCUT WARNING] ⚠️  Failed to register ANY global shortcuts!");
                 if display_server == "wayland" {
-                    eprintln!("[SHORTCUT INFO] On Wayland, global F-key shortcuts are often blocked by other apps.");
-                    eprintln!("[SHORTCUT INFO] Don't worry - evdev handles Ctrl+Space for push-to-talk! 👍");
+                    dev_log!("[SHORTCUT INFO] On Wayland, global F-key shortcuts are often blocked by other apps.");
+                    dev_log!("[SHORTCUT INFO] Don't worry - evdev handles Ctrl+Space for push-to-talk! 👍");
                 } else {
-                    eprintln!("[SHORTCUT INFO] No global shortcuts available, but evdev handles Ctrl+Space! 👍");
+                    dev_log!("[SHORTCUT INFO] No global shortcuts available, but evdev handles Ctrl+Space! 👍");
                 }
             } else {
-                println!("[SHORTCUT DEBUG] 📋 Active shortcuts: {:?}", registered_shortcuts);
+                dev_log!("[SHORTCUT DEBUG] 📋 Active shortcuts: {:?}", registered_shortcuts);
                 if display_server == "wayland" && !registered_shortcuts.contains(&shortcut) {
-                    println!("[SHORTCUT WARNING] ⚠️  Your configured shortcut '{}' doesn't work on Wayland", shortcut);
-                    println!("[SHORTCUT WARNING] Using fallback: {:?}", registered_shortcuts);
+                    dev_log!("[SHORTCUT WARNING] ⚠️  Your configured shortcut '{}' doesn't work on Wayland", shortcut);
+                    dev_log!("[SHORTCUT WARNING] Using fallback: {:?}", registered_shortcuts);
                 }
             }
 
@@ -1920,7 +1923,7 @@ pub fn run() {
             // - Linux: uses evdev for best Wayland support
             // - Windows/macOS: uses rdev
             // NOTE: Delayed start to avoid Bluetooth audio interference during device enumeration
-            println!("[KEYBOARD] Starting push-to-talk listener (delayed)...");
+            dev_log!("[KEYBOARD] Starting push-to-talk listener (delayed)...");
             let app_handle_keyboard = app.handle().clone();
 
             tauri::async_runtime::spawn(async move {
@@ -1930,17 +1933,17 @@ pub fn run() {
 
                 match keyboard_listener::start_keyboard_listener(app_handle_keyboard).await {
                     Ok(_) => {
-                        println!("[KEYBOARD] ✅ Keyboard listener active");
+                        dev_log!("[KEYBOARD] ✅ Keyboard listener active");
                     }
                     Err(e) => {
-                        eprintln!("[KEYBOARD] ❌ Keyboard listener failed: {}", e);
-                        eprintln!("[KEYBOARD] Push-to-talk will not work.");
+                        dev_log!("[KEYBOARD] ❌ Keyboard listener failed: {}", e);
+                        dev_log!("[KEYBOARD] Push-to-talk will not work.");
 
                         #[cfg(target_os = "linux")]
                         {
-                            eprintln!("[KEYBOARD] Add user to 'input' group:");
-                            eprintln!("[KEYBOARD]   sudo usermod -aG input $USER");
-                            eprintln!("[KEYBOARD]   Then log out and back in.");
+                            dev_log!("[KEYBOARD] Add user to 'input' group:");
+                            dev_log!("[KEYBOARD]   sudo usermod -aG input $USER");
+                            dev_log!("[KEYBOARD]   Then log out and back in.");
                         }
                     }
                 }
@@ -1954,13 +1957,13 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let label = window.label();
-                println!("[WINDOW] Close requested for window: {}", label);
+                dev_log!("[WINDOW] Close requested for window: {}", label);
 
                 // Hide window instead of closing (tray app behavior)
                 if let Err(e) = window.hide() {
-                    eprintln!("[WINDOW] Failed to hide window {}: {}", label, e);
+                    dev_log!("[WINDOW] Failed to hide window {}: {}", label, e);
                 } else {
-                    println!("[WINDOW] Window {} hidden successfully", label);
+                    dev_log!("[WINDOW] Window {} hidden successfully", label);
                 }
                 api.prevent_close();
             }

@@ -59,7 +59,7 @@ impl AudioCaptureCli {
         if let Some(dev) = device_name {
             if dev != "pipewire" && dev != "default" {
                 args.push(format!("--device={}", dev));
-                println!("[AUDIO_CLI] 🎤 Recording from device: {}", dev);
+                crate::dev_log!("[AUDIO_CLI] 🎤 Recording from device: {}", dev);
             }
         }
 
@@ -78,7 +78,7 @@ impl AudioCaptureCli {
                 )
             })?;
 
-        println!("[AUDIO_CLI] ✅ Started parec recording (16kHz mono S16LE)");
+        crate::dev_log!("[AUDIO_CLI] ✅ Started parec recording (16kHz mono S16LE)");
 
         let stdout = child.stdout.take().ok_or("Failed to get parec stdout")?;
         *recording_process.lock().unwrap() = Some(child);
@@ -108,14 +108,14 @@ impl AudioCaptureCli {
                     }
                     Err(e) => {
                         if e.kind() != std::io::ErrorKind::WouldBlock {
-                            println!("[AUDIO_CLI] ❌ Read error: {}", e);
+                            crate::dev_log!("[AUDIO_CLI] ❌ Read error: {}", e);
                             break;
                         }
                     }
                 }
             }
 
-            println!("[AUDIO_CLI] 📍 Reader thread finished");
+            crate::dev_log!("[AUDIO_CLI] 📍 Reader thread finished");
         });
 
         Ok(())
@@ -142,8 +142,8 @@ impl AudioCaptureCli {
             .map(|t| t.elapsed().as_millis())
             .unwrap_or(0);
 
-        println!("[AUDIO_CLI] 🛑 Recording stopped after {}ms", elapsed);
-        println!(
+        crate::dev_log!("[AUDIO_CLI] 🛑 Recording stopped after {}ms", elapsed);
+        crate::dev_log!(
             "[AUDIO_CLI] 🛑 Buffer: {} samples = {:.2}s of audio",
             buffer.len(),
             buffer.len() as f32 / 16000.0
@@ -155,7 +155,7 @@ impl AudioCaptureCli {
 
         // Check for non-silent samples
         let non_silent = buffer.iter().filter(|&&s| s.abs() > 0.01).count();
-        println!(
+        crate::dev_log!(
             "[AUDIO_CLI] 📊 Non-silent samples: {}/{} ({:.1}%)",
             non_silent,
             buffer.len(),

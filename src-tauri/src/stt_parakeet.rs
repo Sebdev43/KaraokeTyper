@@ -146,13 +146,13 @@ pub fn resolve_model_path(model_name: &str) -> Option<String> {
         .join(&repo_folder)
         .join("snapshots");
 
-    println!(
+    crate::dev_log!(
         "[PARAKEET] Looking for model in: {}",
         snapshots_dir.display()
     );
 
     if !snapshots_dir.exists() {
-        println!(
+        crate::dev_log!(
             "[PARAKEET] Snapshots dir not found: {}",
             snapshots_dir.display()
         );
@@ -164,7 +164,7 @@ pub fn resolve_model_path(model_name: &str) -> Option<String> {
         if let Some(Ok(entry)) = entries.next() {
             let path = entry.path();
             if path.is_dir() {
-                println!("[PARAKEET] Resolved model path: {}", path.display());
+                crate::dev_log!("[PARAKEET] Resolved model path: {}", path.display());
                 return Some(path.to_string_lossy().to_string());
             }
         }
@@ -222,7 +222,7 @@ impl ParakeetSttEngine {
 
             for path in &dev_paths {
                 if path.exists() {
-                    println!("[PARAKEET] Found Python script (dev): {}", path.display());
+                    crate::dev_log!("[PARAKEET] Found Python script (dev): {}", path.display());
                     return Ok(path.clone());
                 }
             }
@@ -255,7 +255,7 @@ impl ParakeetSttEngine {
 
             for path in &prod_paths {
                 if path.exists() {
-                    println!("[PARAKEET] Found Python script (prod): {}", path.display());
+                    crate::dev_log!("[PARAKEET] Found Python script (prod): {}", path.display());
                     return Ok(path.clone());
                 }
             }
@@ -292,7 +292,7 @@ impl ParakeetSttEngine {
             )));
         }
 
-        println!(
+        crate::dev_log!(
             "[PARAKEET] Starting Python service: {}",
             python_script.display()
         );
@@ -302,7 +302,7 @@ impl ParakeetSttEngine {
 
         // Try venv Python first (has sherpa-onnx installed), then system Python
         let python_cmd: std::ffi::OsString = if venv_python.exists() {
-            println!("[PARAKEET] Using venv Python: {}", venv_python.display());
+            crate::dev_log!("[PARAKEET] Using venv Python: {}", venv_python.display());
             venv_python.into_os_string()
         } else if Command::new("python3").arg("--version").output().is_ok() {
             "python3".into()
@@ -358,19 +358,19 @@ impl ParakeetSttEngine {
             ));
         }
 
-        println!("[PARAKEET] ✓ Python service ready");
+        crate::dev_log!("[PARAKEET] ✓ Python service ready");
 
         // Log available providers
         if let Some(providers) = &ready_response.providers {
-            println!("[PARAKEET] Available providers: {:?}", providers.providers);
+            crate::dev_log!("[PARAKEET] Available providers: {:?}", providers.providers);
             if providers.has_cuda {
-                println!("[PARAKEET] ✓ CUDA available (NVIDIA GPU)");
+                crate::dev_log!("[PARAKEET] ✓ CUDA available (NVIDIA GPU)");
             }
             if providers.has_rocm {
-                println!("[PARAKEET] ✓ ROCm available (AMD GPU)");
+                crate::dev_log!("[PARAKEET] ✓ ROCm available (AMD GPU)");
             }
             if providers.has_coreml {
-                println!("[PARAKEET] ✓ CoreML available (Apple Silicon)");
+                crate::dev_log!("[PARAKEET] ✓ CoreML available (Apple Silicon)");
             }
         }
 
@@ -384,14 +384,14 @@ impl ParakeetSttEngine {
         let mut needs_model_load = false;
         // Start service if not running
         if service_lock.is_none() {
-            println!("[PARAKEET] Service not running, starting...");
+            crate::dev_log!("[PARAKEET] Service not running, starting...");
             *service_lock = Some(self.start_service()?);
             needs_model_load = true;
         }
 
         // If we just started the service and this isn't a load_model command, load the model first
         if needs_model_load && request.command != "load_model" && self.model_path.is_some() {
-            println!("[PARAKEET] Auto-loading model after service restart...");
+            crate::dev_log!("[PARAKEET] Auto-loading model after service restart...");
             drop(service_lock); // Release lock before calling initialize
             self.initialize()?;
             service_lock = self.service.lock().unwrap();
@@ -451,7 +451,7 @@ impl ParakeetSttEngine {
     /// Download model from HuggingFace
     #[allow(dead_code)]
     pub fn download_model(&self, model_name: &str) -> Result<String, ParakeetError> {
-        println!("[PARAKEET] Downloading model: {}", model_name);
+        crate::dev_log!("[PARAKEET] Downloading model: {}", model_name);
 
         let request = ParakeetRequest {
             command: "download_model".to_string(),
@@ -475,7 +475,7 @@ impl ParakeetSttEngine {
         }
 
         let cache_dir = response.cache_dir.unwrap_or_default();
-        println!("[PARAKEET] ✓ Model downloaded to: {}", cache_dir);
+        crate::dev_log!("[PARAKEET] ✓ Model downloaded to: {}", cache_dir);
         Ok(cache_dir)
     }
 
@@ -486,7 +486,7 @@ impl ParakeetSttEngine {
             .clone()
             .ok_or_else(|| ParakeetError::ModelLoadError("No model path specified".to_string()))?;
 
-        println!("[PARAKEET] Loading model from: {}", model_path);
+        crate::dev_log!("[PARAKEET] Loading model from: {}", model_path);
 
         let request = ParakeetRequest {
             command: "load_model".to_string(),
@@ -518,7 +518,7 @@ impl ParakeetSttEngine {
             return Err(ParakeetError::ModelLoadError(error_msg));
         }
 
-        println!(
+        crate::dev_log!(
             "[PARAKEET] ✓ Model loaded with provider: {}",
             response.provider.unwrap_or_else(|| "unknown".to_string())
         );
@@ -541,7 +541,7 @@ impl ParakeetSttEngine {
             sample_rate: Some(16000),
         };
 
-        println!("[STT_TIMING] Request built: {}ms", t0.elapsed().as_millis());
+        crate::dev_log!("[STT_TIMING] Request built: {}ms", t0.elapsed().as_millis());
 
         let response = self.send_command_timed(request)?;
 
@@ -552,7 +552,7 @@ impl ParakeetSttEngine {
             return Err(ParakeetError::TranscriptionError(error_msg));
         }
 
-        println!(
+        crate::dev_log!(
             "[STT_TIMING] Total transcribe(): {}ms",
             t0.elapsed().as_millis()
         );
@@ -570,14 +570,14 @@ impl ParakeetSttEngine {
 
         let mut needs_model_load = false;
         if service_lock.is_none() {
-            println!("[PARAKEET] Service not running, starting...");
+            crate::dev_log!("[PARAKEET] Service not running, starting...");
             *service_lock = Some(self.start_service()?);
             needs_model_load = true;
         }
 
         // If we just started the service, load the model first
         if needs_model_load && self.model_path.is_some() {
-            println!("[PARAKEET] Auto-loading model after service restart...");
+            crate::dev_log!("[PARAKEET] Auto-loading model after service restart...");
             drop(service_lock); // Release lock before calling initialize
             self.initialize()?;
             service_lock = self.service.lock().unwrap();
@@ -587,12 +587,12 @@ impl ParakeetSttEngine {
             .as_mut()
             .ok_or(ParakeetError::ServiceNotRunning)?;
 
-        println!("[STT_TIMING] Lock acquired: {}ms", t0.elapsed().as_millis());
+        crate::dev_log!("[STT_TIMING] Lock acquired: {}ms", t0.elapsed().as_millis());
 
         // Serialize
         let t1 = std::time::Instant::now();
         let request_json = serde_json::to_string(&request)?;
-        println!(
+        crate::dev_log!(
             "[STT_TIMING] JSON serialize ({}KB): {}ms",
             request_json.len() / 1024,
             t1.elapsed().as_millis()
@@ -602,7 +602,7 @@ impl ParakeetSttEngine {
         let t2 = std::time::Instant::now();
         writeln!(service.stdin, "{}", request_json)?;
         service.stdin.flush()?;
-        println!(
+        crate::dev_log!(
             "[STT_TIMING] Send to Python: {}ms",
             t2.elapsed().as_millis()
         );
@@ -611,7 +611,7 @@ impl ParakeetSttEngine {
         let t3 = std::time::Instant::now();
         let mut response_line = String::new();
         service.stdout.read_line(&mut response_line)?;
-        println!(
+        crate::dev_log!(
             "[STT_TIMING] Python processing (sherpa-onnx): {}ms",
             t3.elapsed().as_millis()
         );
@@ -619,7 +619,7 @@ impl ParakeetSttEngine {
         // Parse response
         let t4 = std::time::Instant::now();
         let response: ParakeetResponse = serde_json::from_str(response_line.trim())?;
-        println!(
+        crate::dev_log!(
             "[STT_TIMING] JSON parse response: {}ms",
             t4.elapsed().as_millis()
         );
@@ -655,7 +655,7 @@ impl ParakeetSttEngine {
         let mut service_lock = self.service.lock().unwrap();
 
         if let Some(mut service) = service_lock.take() {
-            println!("[PARAKEET] Shutting down service...");
+            crate::dev_log!("[PARAKEET] Shutting down service...");
 
             let request = ParakeetRequest {
                 command: "shutdown".to_string(),
@@ -678,7 +678,7 @@ impl ParakeetSttEngine {
             // Wait for process to exit (with timeout)
             let _ = service.child.wait();
 
-            println!("[PARAKEET] ✓ Service shutdown complete");
+            crate::dev_log!("[PARAKEET] ✓ Service shutdown complete");
         }
 
         Ok(())

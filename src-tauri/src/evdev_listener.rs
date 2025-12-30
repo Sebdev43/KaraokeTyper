@@ -60,7 +60,7 @@ impl HotkeyConfig {
             config.trigger_key = Some(Key::KEY_SPACE);
         }
 
-        println!("[EVDEV] Parsed hotkey config: {:?}", config);
+        crate::dev_log!("[EVDEV] Parsed hotkey config: {:?}", config);
         config
     }
 }
@@ -194,7 +194,7 @@ fn find_input_devices(hotkey: &HotkeyConfig) -> Result<Vec<PathBuf>, String> {
             // 1. It has the trigger key/button, OR
             // 2. It has modifiers (for keyboard+mouse combos, we need both devices)
             if has_trigger || has_modifiers {
-                println!(
+                crate::dev_log!(
                     "[EVDEV] Found input device: {} ({}) - trigger: {}, modifiers: {}",
                     path.display(),
                     device_name,
@@ -214,15 +214,15 @@ fn find_input_devices(hotkey: &HotkeyConfig) -> Result<Vec<PathBuf>, String> {
 }
 
 pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
-    println!("[EVDEV] Starting input listener for push-to-talk...");
+    crate::dev_log!("[EVDEV] Starting input listener for push-to-talk...");
 
     // Load hotkey configuration
     let config = AppConfig::load().unwrap_or_default();
     let hotkey = HotkeyConfig::parse(&config.shortcut);
-    println!("[EVDEV] Configured hotkey: {}", config.shortcut);
+    crate::dev_log!("[EVDEV] Configured hotkey: {}", config.shortcut);
 
     let input_devices = find_input_devices(&hotkey)?;
-    println!("[EVDEV] Monitoring {} input device(s)", input_devices.len());
+    crate::dev_log!("[EVDEV] Monitoring {} input device(s)", input_devices.len());
 
     let ctrl_pressed = Arc::new(AtomicBool::new(false));
     let alt_pressed = Arc::new(AtomicBool::new(false));
@@ -259,8 +259,8 @@ pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
         );
     }
 
-    println!("[EVDEV] ✅ Push-to-talk listener started!");
-    println!("[EVDEV] Hotkey: {}", config.shortcut);
+    crate::dev_log!("[EVDEV] ✅ Push-to-talk listener started!");
+    crate::dev_log!("[EVDEV] Hotkey: {}", config.shortcut);
 
     Ok(())
 }
@@ -309,7 +309,7 @@ fn monitor_device_with_reconnect(
 ) {
     loop {
         if !state.is_active.load(Ordering::SeqCst) {
-            println!(
+            crate::dev_log!(
                 "[EVDEV] Device {} marked inactive, stopping monitor",
                 device_path.display()
             );
@@ -327,7 +327,7 @@ fn monitor_device_with_reconnect(
             &hotkey_config,
         ) {
             Ok(()) => {
-                println!(
+                crate::dev_log!(
                     "[EVDEV] Device {} monitor exited cleanly",
                     device_path.display()
                 );
@@ -337,7 +337,7 @@ fn monitor_device_with_reconnect(
                 let attempts = state.reconnect_attempts.fetch_add(1, Ordering::SeqCst) + 1;
 
                 if attempts > MAX_RECONNECT_ATTEMPTS {
-                    eprintln!(
+                    crate::dev_log!(
                         "[EVDEV] Max reconnect attempts ({}) reached for {}, giving up",
                         MAX_RECONNECT_ATTEMPTS,
                         device_path.display()
@@ -347,7 +347,7 @@ fn monitor_device_with_reconnect(
                 }
 
                 let delay = RECONNECT_DELAY_MS * 2u64.pow(attempts - 1);
-                println!(
+                crate::dev_log!(
                     "[EVDEV] Device {} error: {}. Reconnecting in {}ms (attempt {}/{})",
                     device_path.display(),
                     e,
@@ -359,14 +359,14 @@ fn monitor_device_with_reconnect(
                 std::thread::sleep(Duration::from_millis(delay));
 
                 if !device_path.exists() {
-                    println!(
+                    crate::dev_log!(
                         "[EVDEV] Device {} no longer exists, waiting for reconnect...",
                         device_path.display()
                     );
                     continue;
                 }
 
-                println!(
+                crate::dev_log!(
                     "[EVDEV] Attempting to reconnect to {}...",
                     device_path.display()
                 );
@@ -389,7 +389,7 @@ fn monitor_input_device(
         .map_err(|e| format!("Failed to open {}: {}", device_path.display(), e))?;
 
     let device_name = device.name().unwrap_or("unknown").to_string();
-    println!(
+    crate::dev_log!(
         "[EVDEV] Connected to: {} ({})",
         device_path.display(),
         device_name
@@ -454,8 +454,8 @@ fn monitor_input_device(
 
                         if modifiers_ok && !is_recording.load(Ordering::SeqCst) {
                             let t0 = std::time::Instant::now();
-                            println!("[TIMING] ========== RECORDING SESSION START ==========");
-                            println!("[TIMING] T+0ms: Hotkey PRESSED");
+                            crate::dev_log!("[TIMING] ========== RECORDING SESSION START ==========");
+                            crate::dev_log!("[TIMING] T+0ms: Hotkey PRESSED");
                             is_recording.store(true, Ordering::SeqCst);
 
                             // Store t0 in AppState
@@ -469,22 +469,22 @@ fn monitor_input_device(
                                 let _ = overlay_win.show();
                                 let _ = overlay_win.set_focus();
                             }
-                            println!("[TIMING] T+{}ms: overlay shown", t0.elapsed().as_millis());
+                            crate::dev_log!("[TIMING] T+{}ms: overlay shown", t0.elapsed().as_millis());
 
                             // Start recording
                             let app_clone = app_handle.clone();
                             tauri::async_runtime::spawn(async move {
-                                println!(
+                                crate::dev_log!(
                                     "[TIMING] T+{}ms: async spawn started",
                                     t0.elapsed().as_millis()
                                 );
                                 let state = app_clone.state::<AppState>();
                                 match do_start_recording(app_clone.clone(), &state).await {
-                                    Ok(_) => println!(
+                                    Ok(_) => crate::dev_log!(
                                         "[TIMING] T+{}ms: do_start_recording() returned OK",
                                         t0.elapsed().as_millis()
                                     ),
-                                    Err(e) => println!(
+                                    Err(e) => crate::dev_log!(
                                         "[TIMING] T+{}ms: do_start_recording() FAILED: {}",
                                         t0.elapsed().as_millis(),
                                         e
@@ -501,7 +501,7 @@ fn monitor_input_device(
                                 let guard = state.recording_start_time.lock().unwrap();
                                 guard.unwrap_or_else(std::time::Instant::now)
                             };
-                            println!("[TIMING] T+{}ms: Hotkey RELEASED", t0.elapsed().as_millis());
+                            crate::dev_log!("[TIMING] T+{}ms: Hotkey RELEASED", t0.elapsed().as_millis());
                             is_recording.store(false, Ordering::SeqCst);
 
                             // Stop recording, transcribe, and type
@@ -514,13 +514,13 @@ fn monitor_input_device(
                                     .unwrap()
                                     .unwrap_or_else(std::time::Instant::now);
 
-                                println!(
+                                crate::dev_log!(
                                     "[TIMING] T+{}ms: calling do_stop_recording()",
                                     t0.elapsed().as_millis()
                                 );
                                 match do_stop_recording(app_clone.clone(), &state).await {
                                     Ok(transcription) => {
-                                        println!(
+                                        crate::dev_log!(
                                             "[TIMING] T+{}ms: transcription complete: '{}'",
                                             t0.elapsed().as_millis(),
                                             transcription
@@ -531,7 +531,7 @@ fn monitor_input_device(
                                             {
                                                 let _ = overlay_win.hide();
                                             }
-                                            println!(
+                                            crate::dev_log!(
                                                 "[TIMING] T+{}ms: waiting 400ms for focus",
                                                 t0.elapsed().as_millis()
                                             );
@@ -540,24 +540,24 @@ fn monitor_input_device(
                                             ))
                                             .await;
 
-                                            println!(
+                                            crate::dev_log!(
                                                 "[TIMING] T+{}ms: pasting text",
                                                 t0.elapsed().as_millis()
                                             );
                                             if let Err(e) = do_type_text(transcription).await {
-                                                println!(
+                                                crate::dev_log!(
                                                     "[TIMING] T+{}ms: paste FAILED: {}",
                                                     t0.elapsed().as_millis(),
                                                     e
                                                 );
                                             } else {
-                                                println!(
+                                                crate::dev_log!(
                                                     "[TIMING] T+{}ms: ========== SESSION COMPLETE ==========",
                                                     t0.elapsed().as_millis()
                                                 );
                                             }
                                         } else {
-                                            println!(
+                                            crate::dev_log!(
                                                 "[TIMING] T+{}ms: no speech detected",
                                                 t0.elapsed().as_millis()
                                             );
@@ -569,7 +569,7 @@ fn monitor_input_device(
                                         }
                                     }
                                     Err(e) => {
-                                        println!(
+                                        crate::dev_log!(
                                             "[TIMING] T+{}ms: stop_recording FAILED: {}",
                                             t0.elapsed().as_millis(),
                                             e

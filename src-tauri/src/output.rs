@@ -230,7 +230,7 @@ mod linux_output {
 
     impl UInputDevice {
         pub fn new() -> Result<Self, String> {
-            println!("[UINPUT] Opening /dev/uinput...");
+            crate::dev_log!("[UINPUT] Opening /dev/uinput...");
 
             let file = OpenOptions::new()
                 .write(true)
@@ -351,7 +351,7 @@ mod linux_output {
             // Wait for device to be recognized
             thread::sleep(Duration::from_millis(100));
 
-            println!("[UINPUT] ✅ Virtual keyboard created successfully");
+            crate::dev_log!("[UINPUT] ✅ Virtual keyboard created successfully");
 
             Ok(Self { fd })
         }
@@ -416,7 +416,7 @@ mod linux_output {
 
                 Ok(())
             } else {
-                println!("[UINPUT] Skipping unsupported character: {:?}", c);
+                crate::dev_log!("[UINPUT] Skipping unsupported character: {:?}", c);
                 Ok(())
             }
         }
@@ -430,13 +430,13 @@ mod linux_output {
         }
 
         pub fn ctrl_v(&self) -> Result<(), String> {
-            println!("[UINPUT] Sending Ctrl+V...");
+            crate::dev_log!("[UINPUT] Sending Ctrl+V...");
             self.press_key(KEY_LEFTCTRL)?;
             thread::sleep(Duration::from_millis(10));
             self.tap_key(KEY_V)?;
             thread::sleep(Duration::from_millis(10));
             self.release_key(KEY_LEFTCTRL)?;
-            println!("[UINPUT] ✅ Ctrl+V sent");
+            crate::dev_log!("[UINPUT] ✅ Ctrl+V sent");
             Ok(())
         }
     }
@@ -448,7 +448,7 @@ mod linux_output {
                     libc::ioctl(self.fd, UI_DEV_DESTROY, 0);
                     libc::close(self.fd);
                 }
-                println!("[UINPUT] Device closed");
+                crate::dev_log!("[UINPUT] Device closed");
             }
         }
     }
@@ -461,12 +461,12 @@ pub struct TextOutput {
 
 impl TextOutput {
     pub fn new(key_delay_ms: u64) -> Result<Self, String> {
-        println!("[OUTPUT] Initializing text output...");
+        crate::dev_log!("[OUTPUT] Initializing text output...");
 
         let clipboard =
             Clipboard::new().map_err(|e| format!("Failed to create clipboard: {}", e))?;
 
-        println!("[OUTPUT] ✅ Clipboard initialized");
+        crate::dev_log!("[OUTPUT] ✅ Clipboard initialized");
 
         Ok(Self {
             clipboard,
@@ -478,11 +478,11 @@ impl TextOutput {
         let t0 = std::time::Instant::now();
 
         if text.is_empty() {
-            println!("[OUTPUT] Text is empty, skipping");
+            crate::dev_log!("[OUTPUT] Text is empty, skipping");
             return Ok(());
         }
 
-        println!("[OUTPUT] Typing text: '{}'", text);
+        crate::dev_log!("[OUTPUT] Typing text: '{}'", text);
 
         // ALWAYS use clipboard + paste - this respects keyboard layout (AZERTY, QWERTZ, etc.)
         // ydotool type uses raw scancodes which breaks non-QWERTY layouts
@@ -490,30 +490,30 @@ impl TextOutput {
         self.clipboard
             .set_text(text)
             .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
-        println!(
+        crate::dev_log!(
             "[OUTPUT_TIMING] Clipboard set_text: {}ms",
             t1.elapsed().as_millis()
         );
 
-        println!("[OUTPUT] ✅ Text copied to clipboard");
+        crate::dev_log!("[OUTPUT] ✅ Text copied to clipboard");
 
         if self.key_delay_ms > 0 {
-            println!("[OUTPUT] Waiting {}ms before pasting...", self.key_delay_ms);
+            crate::dev_log!("[OUTPUT] Waiting {}ms before pasting...", self.key_delay_ms);
             thread::sleep(Duration::from_millis(self.key_delay_ms));
         }
 
         let t2 = std::time::Instant::now();
         self.simulate_paste()?;
-        println!(
+        crate::dev_log!(
             "[OUTPUT_TIMING] simulate_paste: {}ms",
             t2.elapsed().as_millis()
         );
 
-        println!(
+        crate::dev_log!(
             "[OUTPUT_TIMING] Total type_text: {}ms",
             t0.elapsed().as_millis()
         );
-        println!("[OUTPUT] ✅ Text pasted successfully");
+        crate::dev_log!("[OUTPUT] ✅ Text pasted successfully");
 
         Ok(())
     }
@@ -521,7 +521,7 @@ impl TextOutput {
     #[cfg(target_os = "linux")]
     #[allow(dead_code)] // Kept as alternative to clipboard+paste
     fn type_with_ydotool(&self, text: &str) -> Result<(), String> {
-        println!("[OUTPUT] Using ydotool type for Wayland...");
+        crate::dev_log!("[OUTPUT] Using ydotool type for Wayland...");
 
         // ydotool type with key-delay for reliability
         let output = std::process::Command::new("ydotool")
@@ -535,13 +535,13 @@ impl TextOutput {
             })?;
 
         if output.status.success() {
-            println!("[OUTPUT] ✅ ydotool typed text successfully");
+            crate::dev_log!("[OUTPUT] ✅ ydotool typed text successfully");
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            println!("[OUTPUT] ydotool stderr: {}", stderr);
-            println!("[OUTPUT] ydotool stdout: {}", stdout);
+            crate::dev_log!("[OUTPUT] ydotool stderr: {}", stderr);
+            crate::dev_log!("[OUTPUT] ydotool stdout: {}", stdout);
             Err(format!("ydotool type failed: {}", stderr))
         }
     }
@@ -564,7 +564,7 @@ impl TextOutput {
             Self::try_ydotool_paste(is_terminal)
         } else {
             // Use uinput for X11
-            println!("[OUTPUT] Using uinput for X11 paste...");
+            crate::dev_log!("[OUTPUT] Using uinput for X11 paste...");
             let device = linux_output::UInputDevice::new()?;
             device.ctrl_v()
         }
@@ -583,7 +583,7 @@ impl TextOutput {
         }
 
         // Default: assume not a terminal (use Ctrl+V)
-        println!("[OUTPUT] Could not detect window type, using Ctrl+V");
+        crate::dev_log!("[OUTPUT] Could not detect window type, using Ctrl+V");
         false
     }
 
@@ -621,10 +621,10 @@ impl TextOutput {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 // D-Bus returns "(true,)" or "(false,)"
                 if stdout.contains("true") {
-                    println!("[OUTPUT] 🖥️ Extension detected: terminal focused");
+                    crate::dev_log!("[OUTPUT] 🖥️ Extension detected: terminal focused");
                     return Some(true);
                 } else if stdout.contains("false") {
-                    println!("[OUTPUT] 📝 Extension detected: not a terminal");
+                    crate::dev_log!("[OUTPUT] 📝 Extension detected: not a terminal");
                     return Some(false);
                 }
             }
@@ -679,7 +679,7 @@ impl TextOutput {
 
                 for term in terminals {
                     if stdout.contains(term) {
-                        println!("[OUTPUT] 🖥️ GNOME Eval detected terminal: {}", term);
+                        crate::dev_log!("[OUTPUT] 🖥️ GNOME Eval detected terminal: {}", term);
                         return Some(true);
                     }
                 }
@@ -703,10 +703,10 @@ impl TextOutput {
             .unwrap_or(false)
         {
             let shortcut = if is_terminal {
-                println!("[OUTPUT] Using wtype for terminal paste (Ctrl+Shift+V)...");
+                crate::dev_log!("[OUTPUT] Using wtype for terminal paste (Ctrl+Shift+V)...");
                 vec!["-M", "ctrl", "-M", "shift", "-k", "v"]
             } else {
-                println!("[OUTPUT] Using wtype for paste (Ctrl+V)...");
+                crate::dev_log!("[OUTPUT] Using wtype for paste (Ctrl+V)...");
                 vec!["-M", "ctrl", "-k", "v"]
             };
 
@@ -716,11 +716,11 @@ impl TextOutput {
                 .map_err(|e| format!("Failed to run wtype: {}", e))?;
 
             if output.status.success() {
-                println!("[OUTPUT] ✅ wtype paste sent successfully");
+                crate::dev_log!("[OUTPUT] ✅ wtype paste sent successfully");
                 return Ok(true);
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                println!("[OUTPUT] ⚠️ wtype failed: {}, trying ydotool...", stderr);
+                crate::dev_log!("[OUTPUT] ⚠️ wtype failed: {}, trying ydotool...", stderr);
             }
         }
 
@@ -730,10 +730,10 @@ impl TextOutput {
     #[cfg(target_os = "linux")]
     fn try_ydotool_paste(is_terminal: bool) -> Result<(), String> {
         let shortcut = if is_terminal {
-            println!("[OUTPUT] Using ydotool for terminal paste (Ctrl+Shift+V)...");
+            crate::dev_log!("[OUTPUT] Using ydotool for terminal paste (Ctrl+Shift+V)...");
             "ctrl+shift+v"
         } else {
-            println!("[OUTPUT] Using ydotool for paste (Ctrl+V)...");
+            crate::dev_log!("[OUTPUT] Using ydotool for paste (Ctrl+V)...");
             "ctrl+v"
         };
 
@@ -748,7 +748,7 @@ impl TextOutput {
             })?;
 
         if output.status.success() {
-            println!("[OUTPUT] ✅ ydotool paste sent successfully");
+            crate::dev_log!("[OUTPUT] ✅ ydotool paste sent successfully");
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -763,7 +763,7 @@ impl TextOutput {
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| format!("Failed to create enigo instance: {}", e))?;
 
-        println!("[OUTPUT] Simulating paste shortcut with enigo...");
+        crate::dev_log!("[OUTPUT] Simulating paste shortcut with enigo...");
 
         #[cfg(target_os = "macos")]
         let modifier = Key::Meta;
@@ -791,7 +791,7 @@ impl TextOutput {
             return Ok(());
         }
 
-        println!("[OUTPUT] Typing text directly: '{}'", text);
+        crate::dev_log!("[OUTPUT] Typing text directly: '{}'", text);
 
         #[cfg(target_os = "linux")]
         {
@@ -809,7 +809,7 @@ impl TextOutput {
                 .map_err(|e| format!("Failed to type text: {}", e))?;
         }
 
-        println!("[OUTPUT] ✅ Text typed successfully");
+        crate::dev_log!("[OUTPUT] ✅ Text typed successfully");
         Ok(())
     }
 }

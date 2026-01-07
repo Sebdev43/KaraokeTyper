@@ -3,7 +3,7 @@
  * This uses navigator.mediaDevices.getUserMedia which works reliably with PipeWire
  */
 
-import { invoke } from "@tauri-apps/api/core";
+import { commands } from "@/bindings";
 
 export class WebAudioCapture {
   private audioContext: AudioContext | null = null;
@@ -191,15 +191,12 @@ export async function transcribeAudio(audioData: Float32Array): Promise<string> 
   const audioArray = Array.from(audioData);
   console.log(`[WebAudio] Sending ${audioArray.length} samples to backend for transcription`);
 
-  try {
-    const result = await invoke<string>("transcribe_audio", {
-      audioData: audioArray,
-    });
-    return result;
-  } catch (error) {
-    console.error("[WebAudio] Transcription failed:", error);
-    throw error;
+  const result = await commands.transcribeAudio(audioArray);
+  if (result.status === "ok") {
+    return result.data;
   }
+  console.error("[WebAudio] Transcription failed:", result.error);
+  throw new Error(result.error);
 }
 
 // Singleton instance

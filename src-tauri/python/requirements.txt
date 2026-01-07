@@ -1,8 +1,0 @@
-# sherpa-onnx for Whisper Speech Recognition
-sherpa-onnx>=1.10.0
-
-# Audio processing
-numpy>=1.24.0
-
-# ONNX Runtime (CPU by default, GPU optional)
-onnxruntime>=1.16.0

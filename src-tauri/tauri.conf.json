@@ -55,7 +55,6 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "python/*": "python/",
       "resources/focused-window-dbus/*": "focused-window-dbus/"
     },
     "linux": {

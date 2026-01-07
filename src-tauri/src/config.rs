@@ -1,18 +1,17 @@
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::fs;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct AppConfig {
     pub shortcut: String,
-    pub audio_device_index: usize,
+    pub audio_device_index: u32,
     #[serde(default)]
     pub audio_device_name: Option<String>,
     pub model: String,
-    pub key_delay_ms: u64,
+    pub key_delay_ms: u32,
     pub language: String,
-    #[serde(default)]
-    pub stt_provider: Option<String>,
     #[serde(default)]
     pub model_path: Option<String>,
 }
@@ -23,10 +22,9 @@ impl Default for AppConfig {
             shortcut: "CommandOrControl+Space".to_string(),
             audio_device_index: 0,
             audio_device_name: None,
-            model: "sherpa-onnx-whisper-tiny".to_string(),
+            model: "base".to_string(),
             key_delay_ms: 8,
             language: "fr".to_string(),
-            stt_provider: None,
             model_path: None,
         }
     }

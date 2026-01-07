@@ -1,6 +1,13 @@
+use ringbuf::{traits::*, HeapRb};
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+
+/// Pre-buffer duration in milliseconds (captures audio before PTT is pressed)
+const PRE_BUFFER_MS: usize = 500;
+/// Pre-buffer size in samples (16kHz * PRE_BUFFER_MS / 1000)
+const PRE_BUFFER_SAMPLES: usize = 16000 * PRE_BUFFER_MS / 1000; // 8000 samples = 500ms
 
 /// Get D-Bus environment variables needed for PulseAudio/PipeWire commands
 /// when launched from .desktop file (where these might not be inherited)
@@ -12,13 +19,27 @@ fn get_dbus_env() -> (String, String) {
     (xdg_runtime, dbus_addr)
 }
 
-/// Audio capture using CLI tools (parec/pw-record) - fallback for when cpal doesn't work.
-/// This is the approach used by nerd-dictation and other reliable Linux voice tools.
+/// Audio capture using CLI tools (parec/pw-record) with pre-buffering.
+///
+/// Uses a ring buffer to continuously capture audio, ensuring the beginning
+/// of speech is never lost when push-to-talk is pressed.
 pub struct AudioCaptureCli {
+    /// Whether we're actively recording (PTT pressed)
     pub is_recording: Arc<Mutex<bool>>,
+    /// The main audio buffer that accumulates during recording
     pub audio_buffer: Arc<Mutex<Vec<f32>>>,
-    recording_process: Arc<Mutex<Option<Child>>>,
+    /// Ring buffer for pre-capture (last 500ms of audio)
+    pre_buffer: Arc<Mutex<HeapRb<f32>>>,
+    /// The continuous capture process
+    capture_process: Arc<Mutex<Option<Child>>>,
+    /// Thread handle for the capture reader
+    capture_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Whether continuous capture is running
+    is_capturing: Arc<Mutex<bool>>,
+    /// Recording start time for logging
     recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
+    /// Device name for capture
+    device_name: Arc<Mutex<Option<String>>>,
 }
 
 impl AudioCaptureCli {
@@ -26,27 +47,34 @@ impl AudioCaptureCli {
         Self {
             is_recording: Arc::new(Mutex::new(false)),
             audio_buffer: Arc::new(Mutex::new(Vec::new())),
-            recording_process: Arc::new(Mutex::new(None)),
+            pre_buffer: Arc::new(Mutex::new(HeapRb::new(PRE_BUFFER_SAMPLES))),
+            capture_process: Arc::new(Mutex::new(None)),
+            capture_thread: Arc::new(Mutex::new(None)),
+            is_capturing: Arc::new(Mutex::new(false)),
             recording_start_time: Arc::new(Mutex::new(None)),
+            device_name: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// Start recording using parec (PulseAudio) or pw-record (PipeWire)
-    /// device_name: Optional PipeWire/PulseAudio source name (e.g., "bluez_input.XX_XX_XX")
-    pub fn start_recording(&self, device_name: Option<&str>) -> Result<(), String> {
+    /// Start continuous audio capture (runs in background, fills pre-buffer)
+    /// This should be called once at app startup or when device changes
+    pub fn start_continuous_capture(&self, device_name: Option<&str>) -> Result<(), String> {
+        // Check if already capturing
+        if *self.is_capturing.lock().unwrap() {
+            crate::dev_log!("[AUDIO_CLI] ⚠️ Continuous capture already running");
+            return Ok(());
+        }
+
+        // Store device name for potential restarts
+        *self.device_name.lock().unwrap() = device_name.map(|s| s.to_string());
+
         let is_recording = Arc::clone(&self.is_recording);
         let audio_buffer = Arc::clone(&self.audio_buffer);
-        let recording_process = Arc::clone(&self.recording_process);
-        let recording_start_time = Arc::clone(&self.recording_start_time);
+        let pre_buffer = Arc::clone(&self.pre_buffer);
+        let capture_process = Arc::clone(&self.capture_process);
+        let is_capturing = Arc::clone(&self.is_capturing);
 
-        // Clear buffer and set recording state
-        *is_recording.lock().unwrap() = true;
-        audio_buffer.lock().unwrap().clear();
-        *recording_start_time.lock().unwrap() = Some(std::time::Instant::now());
-
-        // Build parec command with optional device
-        // Format: signed 16-bit little-endian, mono, 16kHz
-        // Low latency settings for responsive push-to-talk
+        // Build parec command
         let mut args = vec![
             "--format=s16le".to_string(),
             "--rate=16000".to_string(),
@@ -55,11 +83,10 @@ impl AudioCaptureCli {
             "--raw".to_string(),
         ];
 
-        // Add device argument if specified
         if let Some(dev) = device_name {
             if dev != "pipewire" && dev != "default" {
                 args.push(format!("--device={}", dev));
-                crate::dev_log!("[AUDIO_CLI] 🎤 Recording from device: {}", dev);
+                crate::dev_log!("[AUDIO_CLI] 🎤 Continuous capture from device: {}", dev);
             }
         }
 
@@ -78,45 +105,109 @@ impl AudioCaptureCli {
                 )
             })?;
 
-        crate::dev_log!("[AUDIO_CLI] ✅ Started parec recording (16kHz mono S16LE)");
-
         let stdout = child.stdout.take().ok_or("Failed to get parec stdout")?;
-        *recording_process.lock().unwrap() = Some(child);
+        *capture_process.lock().unwrap() = Some(child);
+        *is_capturing.lock().unwrap() = true;
 
-        // Spawn thread to read audio data
-        // Use larger buffer for more reliable capture
-        std::thread::spawn(move || {
+        crate::dev_log!(
+            "[AUDIO_CLI] ✅ Started continuous capture (pre-buffer: {}ms = {} samples)",
+            PRE_BUFFER_MS,
+            PRE_BUFFER_SAMPLES
+        );
+
+        // Spawn thread to continuously read audio data
+        let handle = std::thread::spawn(move || {
             let mut reader = std::io::BufReader::with_capacity(4096, stdout);
-            let mut buf = [0u8; 4096]; // 2048 samples at 16-bit = 128ms chunks
+            let mut buf = [0u8; 4096];
 
-            // Read until EOF (when parec is killed, pipe closes)
-            // Don't check is_recording here - read ALL remaining data from pipe
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => {
-                        // EOF - pipe closed (parec killed)
+                        // EOF - pipe closed
                         break;
                     }
                     Ok(n) => {
+                        let recording = *is_recording.lock().unwrap();
+
                         // Convert S16LE bytes to f32 samples
-                        let mut buffer = audio_buffer.lock().unwrap();
                         for chunk in buf[..n].chunks_exact(2) {
                             let sample_i16 = i16::from_le_bytes([chunk[0], chunk[1]]);
                             let sample_f32 = sample_i16 as f32 / 32768.0;
-                            buffer.push(sample_f32);
+
+                            if recording {
+                                // If recording, add directly to audio buffer
+                                audio_buffer.lock().unwrap().push(sample_f32);
+                            } else {
+                                // If not recording, add to ring pre-buffer (overwrites oldest)
+                                let mut pb = pre_buffer.lock().unwrap();
+                                // Push to ring buffer - if full, oldest is automatically dropped
+                                let _ = pb.try_push(sample_f32);
+                            }
                         }
                     }
                     Err(e) => {
                         if e.kind() != std::io::ErrorKind::WouldBlock {
-                            crate::dev_log!("[AUDIO_CLI] ❌ Read error: {}", e);
+                            crate::dev_log!("[AUDIO_CLI] ❌ Capture read error: {}", e);
                             break;
                         }
                     }
                 }
             }
 
-            crate::dev_log!("[AUDIO_CLI] 📍 Reader thread finished");
+            *is_capturing.lock().unwrap() = false;
+            crate::dev_log!("[AUDIO_CLI] 📍 Continuous capture thread finished");
         });
+
+        *self.capture_thread.lock().unwrap() = Some(handle);
+
+        Ok(())
+    }
+
+    /// Stop continuous capture
+    pub fn stop_continuous_capture(&self) {
+        if let Some(mut child) = self.capture_process.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        *self.is_capturing.lock().unwrap() = false;
+        crate::dev_log!("[AUDIO_CLI] 🛑 Continuous capture stopped");
+    }
+
+    /// Start recording (PTT pressed)
+    /// Copies pre-buffer content to audio buffer and starts accumulating
+    pub fn start_recording(&self, device_name: Option<&str>) -> Result<(), String> {
+        // Ensure continuous capture is running
+        if !*self.is_capturing.lock().unwrap() {
+            self.start_continuous_capture(device_name)?;
+            // Give parec a moment to start
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        // Clear audio buffer and copy pre-buffer content
+        {
+            let mut audio_buf = self.audio_buffer.lock().unwrap();
+            let mut pre_buf = self.pre_buffer.lock().unwrap();
+
+            audio_buf.clear();
+
+            // Copy all samples from pre-buffer to audio buffer
+            let pre_samples: Vec<f32> = pre_buf.iter().copied().collect();
+            let pre_count = pre_samples.len();
+            audio_buf.extend(pre_samples);
+
+            // Clear pre-buffer
+            pre_buf.clear();
+
+            crate::dev_log!(
+                "[AUDIO_CLI] 🎙️ Recording started - copied {} pre-buffer samples ({:.0}ms)",
+                pre_count,
+                pre_count as f32 / 16.0
+            );
+        }
+
+        // Set recording state
+        *self.is_recording.lock().unwrap() = true;
+        *self.recording_start_time.lock().unwrap() = Some(std::time::Instant::now());
 
         Ok(())
     }
@@ -125,14 +216,8 @@ impl AudioCaptureCli {
     pub fn stop_recording(&self) -> Result<Vec<f32>, String> {
         *self.is_recording.lock().unwrap() = false;
 
-        // Kill the parec process
-        if let Some(mut child) = self.recording_process.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-
-        // Give the reader thread time to drain remaining data from pipe
-        std::thread::sleep(std::time::Duration::from_millis(150));
+        // Give a moment for any in-flight samples to be processed
+        std::thread::sleep(std::time::Duration::from_millis(50));
 
         let buffer = self.audio_buffer.lock().unwrap().clone();
         let elapsed = self
@@ -166,20 +251,30 @@ impl AudioCaptureCli {
     }
 
     /// Get the audio buffer (for compatibility with existing code)
-    #[allow(dead_code)] // Kept for API compatibility
+    #[allow(dead_code)]
     pub fn get_buffer(&self) -> Vec<f32> {
         self.audio_buffer.lock().unwrap().clone()
+    }
+
+    /// Check if continuous capture is running
+    #[allow(dead_code)]
+    pub fn is_capturing(&self) -> bool {
+        *self.is_capturing.lock().unwrap()
+    }
+}
+
+impl Drop for AudioCaptureCli {
+    fn drop(&mut self) {
+        self.stop_continuous_capture();
     }
 }
 
 /// Check if CLI audio tools are available
-#[allow(dead_code)] // Kept for runtime tool detection
+#[allow(dead_code)]
 pub fn check_cli_tools() -> Option<&'static str> {
-    // Try parec first (most common)
     if Command::new("parec").arg("--version").output().is_ok() {
         return Some("parec");
     }
-    // Try pw-record (PipeWire native)
     if Command::new("pw-record").arg("--version").output().is_ok() {
         return Some("pw-record");
     }

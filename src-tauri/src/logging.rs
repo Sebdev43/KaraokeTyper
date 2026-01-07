@@ -8,5 +8,5 @@ macro_rules! dev_log {
 #[cfg(not(debug_assertions))]
 #[macro_export]
 macro_rules! dev_log {
-    ($($arg:tt)*) => {}
+    ($($arg:tt)*) => { () }
 }

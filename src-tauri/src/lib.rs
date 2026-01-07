@@ -7,46 +7,99 @@ mod config;
 mod keyboard_listener;
 mod model_downloader;
 mod output;
-mod stt_parakeet;
+mod stt_whisper;
 
 // Linux-specific modules
 #[cfg(target_os = "linux")]
 mod evdev_listener;
 
-#[cfg(target_os = "linux")]
-mod audio_cli;
+// GStreamer on Linux (like Handy app), CPAL fallback for Windows/macOS
+// Key design: always_on_microphone=false - pipeline created on PTT press, destroyed on release
 
 use audio::AudioCapture;
 use config::AppConfig;
 use output::TextOutput;
+use serde::Serialize;
+use specta::Type;
 use std::sync::{Arc, Mutex};
-use stt_parakeet::ParakeetSttEngine;
+
+// ============================================================================
+// Types for tauri-specta typed commands
+// ============================================================================
+
+/// System information
+#[derive(Clone, Serialize, Type)]
+pub struct SystemInfo {
+    pub os: String,
+    pub arch: String,
+    pub display_server: String,
+    pub desktop_environment: String,
+}
+
+/// Single app data item info
+#[derive(Clone, Serialize, Type)]
+pub struct AppDataItem {
+    pub name: String,
+    pub path: String,
+    pub exists: bool,
+    pub size_mb: f64,
+}
+
+/// App data info for cleanup UI
+#[derive(Clone, Serialize, Type)]
+pub struct AppDataInfo {
+    pub items: Vec<AppDataItem>,
+    pub total_size_mb: f64,
+}
+
+/// GNOME extension status
+#[derive(Clone, Serialize, Type)]
+pub struct GnomeExtensionStatus {
+    pub installed: bool,
+    pub enabled: bool,
+    pub is_gnome: bool,
+    pub is_wayland: bool,
+    pub path: String,
+    pub needs_restart: bool,
+}
+use stt_whisper::WhisperSttEngine;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
-/// STT engine wrapper (now only Parakeet/sherpa-onnx)
+/// STT engine wrapper (native Rust whisper-rs)
 pub struct SttEngine {
-    engine: ParakeetSttEngine,
+    engine: WhisperSttEngine,
 }
 
 impl SttEngine {
     pub fn new(config: &AppConfig) -> Result<Self, String> {
-        // Use model_path if provided, otherwise resolve from model name
-        let resolved_path = config.model_path.clone().or_else(|| {
-            stt_parakeet::resolve_model_path(&config.model)
-        });
+        // Use model_path if provided AND it's a valid local file, otherwise resolve from model name
+        // This prevents using URLs or invalid paths that were incorrectly saved in config
+        let resolved_path = config.model_path.clone()
+            .filter(|p| {
+                // Reject URLs
+                if p.starts_with("http://") || p.starts_with("https://") {
+                    dev_log!("[STT] Ignoring URL in model_path: {}", p);
+                    return false;
+                }
+                // Check if file exists
+                let exists = std::path::Path::new(p).exists();
+                if !exists {
+                    dev_log!("[STT] model_path doesn't exist, will resolve from model name: {}", p);
+                }
+                exists
+            })
+            .or_else(|| {
+                model_downloader::get_model_path(&config.model)
+            });
 
-        let provider = config.stt_provider.as_deref();
-        let engine = ParakeetSttEngine::new(resolved_path.as_deref(), &config.language, provider);
+        let model_path = resolved_path.ok_or("No model downloaded. Download a model from Settings → STT Models.")?;
+        let engine = WhisperSttEngine::new(&model_path, &config.language);
 
-        // Initialize if we have a model path (either from config or resolved)
-        if resolved_path.is_some() {
-            engine.initialize().map_err(|e| e.to_string())?;
-        } else {
-            return Err("No model path specified".to_string());
-        }
+        // Initialize the Whisper context by loading the model
+        engine.initialize().map_err(|e| e.to_string())?;
 
         Ok(SttEngine { engine })
     }
@@ -58,24 +111,14 @@ impl SttEngine {
     }
 
     pub fn backend_name(&self) -> &'static str {
-        "sherpa-onnx Parakeet"
+        "whisper-rs"
     }
 }
 
-struct StreamHandle {
-    _stream: cpal::Stream,
-}
-
-unsafe impl Send for StreamHandle {}
-unsafe impl Sync for StreamHandle {}
-
+// GStreamer on Linux: audio_capture is created on-demand (always_on_microphone=false)
+// No persistent stream needed - mic is only active during recording
 pub(crate) struct AppState {
-    #[allow(dead_code)] // Used on non-Linux platforms
     audio_capture: Arc<Mutex<Option<AudioCapture>>>,
-    #[allow(dead_code)] // Used on non-Linux platforms
-    audio_stream: Arc<Mutex<Option<StreamHandle>>>,
-    #[cfg(target_os = "linux")]
-    audio_cli: Arc<Mutex<Option<audio_cli::AudioCaptureCli>>>,
     stt_engine: Arc<Mutex<Option<SttEngine>>>,
     config: Arc<Mutex<AppConfig>>,
     recording_ready: Arc<std::sync::atomic::AtomicBool>,
@@ -86,41 +129,12 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             audio_capture: Arc::new(Mutex::new(None)),
-            audio_stream: Arc::new(Mutex::new(None)),
-            #[cfg(target_os = "linux")]
-            audio_cli: Arc::new(Mutex::new(None)),
             stt_engine: Arc::new(Mutex::new(None)),
             config: Arc::new(Mutex::new(AppConfig::load().unwrap_or_default())),
             recording_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             recording_start_time: Arc::new(Mutex::new(None)),
         }
     }
-}
-
-/// Get path to Python scripts (works in dev and production)
-fn get_python_script_path(app_handle: &AppHandle, script_name: &str) -> Result<std::path::PathBuf, String> {
-    // Try production path first (bundled resources)
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        let prod_path = resource_dir.join("python").join(script_name);
-        if prod_path.exists() {
-            dev_log!("[PATH] Using production path: {}", prod_path.display());
-            return Ok(prod_path);
-        }
-    }
-
-    // Fallback to dev path
-    let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("python")
-        .join(script_name);
-    if dev_path.exists() {
-        dev_log!("[PATH] Using dev path: {}", dev_path.display());
-        return Ok(dev_path);
-    }
-
-    Err(format!(
-        "Python script '{}' not found in production or dev paths",
-        script_name
-    ))
 }
 
 /// Get D-Bus environment variables needed for PulseAudio/PipeWire/GNOME commands
@@ -161,6 +175,7 @@ fn save_debug_wav(audio_data: &[f32], path: &std::path::PathBuf) -> Result<(), S
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let config = {
         let config = state.config.lock().unwrap();
@@ -172,25 +187,23 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
             "status-changed",
             StatusEvent {
                 status: "initializing".to_string(),
-                message: "Loading sherpa-onnx Parakeet model...".to_string(),
+                message: "Loading Whisper model...".to_string(),
             },
         )
         .ok();
 
     dev_log!(
-        "[STT] Loading sherpa-onnx Parakeet model: {} (language: {})",
+        "[STT] Loading whisper-rs model: {} (language: {})",
         config.model, config.language
     );
 
     let engine = SttEngine::new(&config).map_err(|e| {
         let error_msg = e.to_string();
 
-        if error_msg.contains("Python not found") {
-            "Python 3.8+ not found. Please install Python:\n  Linux: sudo apt install python3\n  macOS: brew install python3\n  Windows: Download from python.org".to_string()
-        } else if error_msg.contains("sherpa") || error_msg.contains("onnx") {
-            "sherpa-onnx not installed. Install from Settings → GPU & STT Backend.".to_string()
-        } else if error_msg.contains("No model path") {
+        if error_msg.contains("No model downloaded") || error_msg.contains("Model not found") {
             "No model downloaded. Download a model from Settings → STT Models.".to_string()
+        } else if error_msg.contains("Failed to load model") {
+            format!("Failed to load Whisper model: {}", error_msg)
         } else {
             error_msg
         }
@@ -198,6 +211,10 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
 
     dev_log!("[STT] ✓ {} engine initialized", engine.backend_name());
     *state.stt_engine.lock().unwrap() = Some(engine);
+
+    // Audio stream will be opened on-demand when PTT is pressed
+    // This keeps the microphone inactive until actually recording
+    dev_log!("[AUDIO] Audio capture ready (will open on PTT press)");
 
     app_handle
         .emit(
@@ -213,11 +230,14 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn start_recording(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     do_start_recording(app_handle, &state).await
 }
 
 /// Helper function for start_recording - can be called from other modules
+/// GStreamer on Linux: Pipeline is created ON DEMAND (always_on_microphone=false)
+/// This means mic is only active while recording - no system tray indicator
 pub(crate) async fn do_start_recording(
     app_handle: AppHandle,
     state: &State<'_, AppState>,
@@ -244,42 +264,45 @@ pub(crate) async fn do_start_recording(
         )
         .ok();
 
-    // On Linux: use audio_cli (parec) which works better with PipeWire
-    #[cfg(target_os = "linux")]
+    // Get audio device name from config
+    let device_name = {
+        let config = state.config.lock().unwrap();
+        config.audio_device_name.clone()
+    };
+
+    // Create AudioCapture and start recording ON DEMAND
+    // GStreamer pipeline is created NOW (not pre-initialized)
+    // This keeps mic inactive until PTT is actually pressed
     {
-        let config = config::AppConfig::load()?;
-        let capture = audio_cli::AudioCaptureCli::new();
-        capture.start_recording(config.audio_device_name.as_deref())?;
-        *state.audio_cli.lock().unwrap() = Some(capture);
-        state.recording_ready.store(true, Ordering::SeqCst);
+        let mut audio_capture = state.audio_capture.lock().unwrap();
+
+        // Create new AudioCapture for this recording session
+        let capture = AudioCapture::new(16000); // 16kHz for Whisper
+
+        // Start recording - creates GStreamer pipeline (Linux) or CPAL stream (other platforms)
         dev_log!(
-            "[TIMING] T+{}ms: audio_cli started",
+            "[TIMING] T+{}ms: Creating audio pipeline...",
             t0.elapsed().as_millis()
         );
-        Ok(())
+        capture.start_recording(device_name.as_deref())?;
+        dev_log!(
+            "[TIMING] T+{}ms: Audio pipeline created and recording",
+            t0.elapsed().as_millis()
+        );
+
+        *audio_capture = Some(capture);
     }
 
-    // On Windows/macOS: use cpal
-    #[cfg(not(target_os = "linux"))]
-    {
-        let config = config::AppConfig::load()?;
-        let capture = AudioCapture::new(16000);
-        let stream = capture.start_recording_with_device_name(
-            config.audio_device_index,
-            config.audio_device_name.as_deref(),
-        )?;
-
-        *state.audio_capture.lock().unwrap() = Some(capture);
-        *state.audio_stream.lock().unwrap() = Some(StreamHandle { _stream: stream });
-
-        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
-        state.recording_ready.store(true, Ordering::SeqCst);
-        dev_log!("[RECORDING] ✅ cpal audio stream initialized and ready");
-        Ok(())
-    }
+    state.recording_ready.store(true, Ordering::SeqCst);
+    dev_log!(
+        "[TIMING] T+{}ms: Recording started",
+        t0.elapsed().as_millis()
+    );
+    Ok(())
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn stop_recording(
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -339,26 +362,23 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
-    // On Linux: use audio_cli (parec)
-    #[cfg(target_os = "linux")]
+    // GStreamer on Linux: Stop recording and DESTROY the pipeline
+    // This is the key to always_on_microphone=false - mic is released completely
     let audio_data = {
-        let mut audio_cli = state.audio_cli.lock().unwrap();
-        let capture = audio_cli.as_ref().ok_or("No active recording")?;
-        let data = capture.stop_recording()?;
-        *audio_cli = None;
-        data
-    };
-
-    // On Windows/macOS: use cpal
-    #[cfg(not(target_os = "linux"))]
-    let audio_data = {
-        let audio_capture = state.audio_capture.lock().unwrap();
+        let mut audio_capture = state.audio_capture.lock().unwrap();
         let capture = audio_capture.as_ref().ok_or("No active recording")?;
+
+        // Stop recording - destroys GStreamer pipeline (Linux) or stops CPAL stream (other platforms)
         capture.stop_recording();
-        let data = capture.get_buffer();
-        drop(audio_capture);
-        *state.audio_stream.lock().unwrap() = None;
-        data
+
+        // Get the captured audio buffer
+        let buffer = capture.get_buffer();
+
+        // Release the AudioCapture - mic is now completely inactive
+        // No system tray indicator, no mic access until next PTT press
+        *audio_capture = None;
+
+        buffer
     };
 
     dev_log!(
@@ -400,15 +420,28 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
-    // Add 0.5 second of silence at the END to prevent Whisper from cutting off last words
-    // This is a known issue with Whisper models - they can truncate the end of transcriptions
-    let padding_samples = 8000; // 0.5s at 16kHz
-    let mut padded_audio = audio_data.clone();
-    padded_audio.extend(std::iter::repeat_n(0.0f32, padding_samples));
+    // Add silence padding at START and END to prevent Whisper from cutting off words
+    // START padding: compensates for GStreamer pipeline startup delay (~100-150ms)
+    // END padding: prevents Whisper from truncating the last words
+    let start_padding_samples = 3200; // 200ms at 16kHz (covers pipeline startup delay)
+    let end_padding_samples = 8000;   // 500ms at 16kHz
+
+    let mut padded_audio = Vec::with_capacity(
+        start_padding_samples + audio_data.len() + end_padding_samples
+    );
+
+    // Add silence at START (compensates for pipeline startup delay)
+    padded_audio.extend(std::iter::repeat_n(0.0f32, start_padding_samples));
+    // Add actual audio
+    padded_audio.extend_from_slice(&audio_data);
+    // Add silence at END
+    padded_audio.extend(std::iter::repeat_n(0.0f32, end_padding_samples));
+
     dev_log!(
-        "[TIMING] T+{}ms: added {}ms padding at end ({} -> {} samples)",
+        "[TIMING] T+{}ms: added {}ms start + {}ms end padding ({} -> {} samples)",
         t0.elapsed().as_millis(),
-        padding_samples * 1000 / 16000,
+        start_padding_samples * 1000 / 16000,
+        end_padding_samples * 1000 / 16000,
         audio_data.len(),
         padded_audio.len()
     );
@@ -440,6 +473,7 @@ pub(crate) async fn do_stop_recording(
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn type_text(text: String) -> Result<(), String> {
     do_type_text(text).await
 }
@@ -452,6 +486,7 @@ pub(crate) async fn do_type_text(text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn show_settings(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("settings") {
         window.show().map_err(|e| e.to_string())?;
@@ -461,6 +496,7 @@ async fn show_settings(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn show_overlay(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("overlay") {
         window.show().map_err(|e| e.to_string())?;
@@ -470,6 +506,7 @@ async fn show_overlay(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn hide_overlay(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("overlay") {
         window.hide().map_err(|e| e.to_string())?;
@@ -478,6 +515,7 @@ async fn hide_overlay(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
     #[cfg(target_os = "linux")]
     {
@@ -528,7 +566,7 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut current_name: Option<String> = None;
     let mut current_description: Option<String> = None;
-    let mut index = 1; // Start at 1 since pipewire is 0
+    let mut index: u32 = 1; // Start at 1 since pipewire is 0
 
     for line in stdout.lines() {
         let line = line.trim();
@@ -611,7 +649,7 @@ fn get_audio_devices_generic() -> Result<Vec<AudioDevice>, String> {
             device.name().ok().map(|raw_name| AudioDevice {
                 name: raw_name.clone(), // On non-Linux, just use raw name as display
                 raw_name,
-                index,
+                index: index as u32,
             })
         })
         .collect();
@@ -623,26 +661,28 @@ fn get_audio_devices_generic() -> Result<Vec<AudioDevice>, String> {
     Ok(devices)
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Serialize, Type)]
 struct AudioDevice {
     name: String,     // Display name for UI
     raw_name: String, // Actual cpal device name for audio.rs
-    index: usize,     // Index in cpal device list
+    index: u32,       // Index in cpal device list
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Serialize, Type)]
 struct StatusEvent {
     status: String,
     message: String,
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn load_settings(state: State<'_, AppState>) -> Result<AppConfig, String> {
     let config = state.config.lock().unwrap();
     Ok(config.clone())
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn save_settings(
     app_handle: AppHandle,
     state: State<'_, AppState>,
@@ -714,6 +754,7 @@ fn update_global_shortcut(
 /// Transcribe audio data received from the frontend (Web Audio API)
 /// This is the new approach that works reliably with PipeWire
 #[tauri::command]
+#[specta::specta]
 async fn transcribe_audio(
     state: State<'_, AppState>,
     audio_data: Vec<f32>,
@@ -755,6 +796,7 @@ async fn transcribe_audio(
 }
 
 #[tauri::command]
+#[specta::specta]
 fn check_evdev_permissions() -> bool {
     use std::path::Path;
     let rules_file = Path::new("/etc/udev/rules.d/70-karaoketyper.rules");
@@ -762,6 +804,7 @@ fn check_evdev_permissions() -> bool {
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn install_evdev_permissions(app_handle: AppHandle) -> Result<String, String> {
     use tauri_plugin_shell::ShellExt;
 
@@ -813,6 +856,7 @@ async fn install_evdev_permissions(app_handle: AppHandle) -> Result<String, Stri
 
 /// Check if keyboard input permissions are available (cross-platform)
 #[tauri::command]
+#[specta::specta]
 fn check_keyboard_permissions() -> bool {
     // On Windows/macOS: always true (no special permissions needed)
     // On Linux: check if user has input group membership
@@ -829,6 +873,7 @@ fn check_keyboard_permissions() -> bool {
 
 /// Check if uinput is available for text output (Linux only)
 #[tauri::command]
+#[specta::specta]
 fn check_uinput_available() -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -846,400 +891,16 @@ fn check_uinput_available() -> bool {
 
 /// Log message from frontend to Rust console
 #[tauri::command]
+#[specta::specta]
 fn log_from_frontend(message: String) {
     dev_log!("[FRONTEND] {}", message);
 }
 
-/// Check if Python 3.8+ is installed
-#[tauri::command]
-fn check_python_available() -> bool {
-    use std::process::Command;
-
-    // Try python3 first, then python
-    for python_cmd in &["python3", "python"] {
-        if let Ok(output) = Command::new(python_cmd).args(["--version"]).output() {
-            if output.status.success() {
-                let version = String::from_utf8_lossy(&output.stdout);
-                dev_log!(
-                    "[PYTHON CHECK] {} --version: {}",
-                    python_cmd,
-                    version.trim()
-                );
-                // Check version >= 3.8
-                if version.contains("3.8")
-                    || version.contains("3.9")
-                    || version.contains("3.10")
-                    || version.contains("3.11")
-                    || version.contains("3.12")
-                    || version.contains("3.13")
-                {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-/// Check if sherpa-onnx is installed (for Parakeet STT)
-#[tauri::command]
-fn check_sherpa_onnx_installed() -> bool {
-    use std::process::Command;
-
-    let venv_python = get_venv_python();
-    if venv_python.exists() {
-        if let Ok(output) = Command::new(&venv_python)
-            .args(["-c", "import sherpa_onnx; print(sherpa_onnx.__version__)"])
-            .output()
-        {
-            if output.status.success() {
-                let version = String::from_utf8_lossy(&output.stdout);
-                dev_log!(
-                    "[SHERPA CHECK] sherpa-onnx version (venv): {}",
-                    version.trim()
-                );
-                return true;
-            }
-        }
-    }
-
-    // Fallback: check system Python
-    for python_cmd in &["python3", "python"] {
-        if let Ok(output) = Command::new(python_cmd)
-            .args(["-c", "import sherpa_onnx; print(sherpa_onnx.__version__)"])
-            .output()
-        {
-            if output.status.success() {
-                let version = String::from_utf8_lossy(&output.stdout);
-                dev_log!(
-                    "[SHERPA CHECK] sherpa-onnx version (system): {}",
-                    version.trim()
-                );
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Detect GPU hardware and recommend STT backend
-#[tauri::command]
-async fn detect_gpu(app_handle: AppHandle) -> Result<serde_json::Value, String> {
-    use std::process::Command;
-
-    // Get path to gpu_detector.py (works in dev and production)
-    let detector_path = get_python_script_path(&app_handle, "gpu_detector.py")?;
-
-    // Try venv python first, fallback to system
-    let python_cmd = {
-        let venv_python = get_venv_python();
-        if venv_python.exists() {
-            venv_python.to_string_lossy().to_string()
-        } else {
-            "python3".to_string()
-        }
-    };
-
-    let output = Command::new(&python_cmd)
-        .args([detector_path.to_str().unwrap(), "detect"])
-        .output()
-        .map_err(|e| format!("Failed to run GPU detector: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("GPU detection failed: {}", stderr));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let result: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse GPU detection result: {}", e))?;
-
-    dev_log!(
-        "[GPU DETECT] Result: {}",
-        serde_json::to_string_pretty(&result).unwrap_or_default()
-    );
-
-    Ok(result)
-}
-
-/// Get installation commands for a specific backend
-#[tauri::command]
-async fn get_stt_install_commands(
-    app_handle: AppHandle,
-    backend: String,
-) -> Result<serde_json::Value, String> {
-    use std::process::Command;
-
-    // Get path to gpu_detector.py (works in dev and production)
-    let detector_path = get_python_script_path(&app_handle, "gpu_detector.py")?;
-
-    let python_cmd = {
-        let venv_python = get_venv_python();
-        if venv_python.exists() {
-            venv_python.to_string_lossy().to_string()
-        } else {
-            "python3".to_string()
-        }
-    };
-
-    let output = Command::new(&python_cmd)
-        .args([
-            detector_path.to_str().unwrap(),
-            "install-commands",
-            &backend,
-        ])
-        .output()
-        .map_err(|e| format!("Failed to get install commands: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to get install commands: {}", stderr));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let result: serde_json::Value = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse install commands: {}", e))?;
-
-    Ok(result)
-}
-
-/// Install STT dependencies based on detected GPU (sherpa-onnx + appropriate runtime)
-#[tauri::command]
-async fn install_stt_dependencies(
-    app_handle: AppHandle,
-    backend: String,
-) -> Result<String, String> {
-    use std::process::Command;
-    use tauri::Emitter;
-
-    dev_log!(
-        "[STT INSTALL] Starting installation for backend: {}",
-        backend
-    );
-
-    let venv_path = get_venv_path();
-    let venv_python = get_venv_python();
-
-    #[cfg(target_os = "windows")]
-    let venv_pip = venv_path.join("Scripts").join("pip.exe");
-    #[cfg(not(target_os = "windows"))]
-    let venv_pip = venv_path.join("bin").join("pip");
-
-    // Find system Python command
-    let python_cmd = if Command::new("python3")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        "python3"
-    } else {
-        "python"
-    };
-
-    // Step 1: Create venv if needed
-    if !venv_python.exists() {
-        dev_log!("[STT INSTALL] Creating venv at: {}", venv_path.display());
-
-        app_handle
-            .emit(
-                "stt-install-progress",
-                serde_json::json!({
-                    "status": "installing",
-                    "step": 1,
-                    "total_steps": 4,
-                    "message": "Creating Python virtual environment..."
-                }),
-            )
-            .ok();
-
-        if let Some(parent) = venv_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create directory: {}", e))?;
-        }
-
-        let venv_output = Command::new(python_cmd)
-            .args(["-m", "venv", venv_path.to_str().unwrap()])
-            .output()
-            .map_err(|e| format!("Failed to create venv: {}", e))?;
-
-        if !venv_output.status.success() {
-            let stderr = String::from_utf8_lossy(&venv_output.stderr);
-            return Err(format!("Failed to create venv: {}", stderr));
-        }
-    }
-
-    // Step 2: Upgrade pip
-    app_handle
-        .emit(
-            "stt-install-progress",
-            serde_json::json!({
-                "status": "installing",
-                "step": 2,
-                "total_steps": 4,
-                "message": "Upgrading pip..."
-            }),
-        )
-        .ok();
-
-    let _ = Command::new(&venv_python)
-        .args(["-m", "pip", "install", "--upgrade", "pip"])
-        .output();
-
-    // Step 3: Install base packages
-    app_handle
-        .emit(
-            "stt-install-progress",
-            serde_json::json!({
-                "status": "installing",
-                "step": 3,
-                "total_steps": 4,
-                "message": "Installing base dependencies..."
-            }),
-        )
-        .ok();
-
-    let base_packages = ["numpy", "soundfile", "huggingface_hub"];
-    for pkg in &base_packages {
-        let _ = Command::new(&venv_pip).args(["install", pkg]).output();
-    }
-
-    // Step 4: Install backend-specific packages
-    let onnx_package = match backend.as_str() {
-        "CUDAExecutionProvider" => {
-            app_handle
-                .emit(
-                    "stt-install-progress",
-                    serde_json::json!({
-                        "status": "installing",
-                        "step": 4,
-                        "total_steps": 4,
-                        "message": "Installing ONNX Runtime GPU (CUDA)..."
-                    }),
-                )
-                .ok();
-            "onnxruntime-gpu"
-        }
-        "MIGraphXExecutionProvider" | "ROCMExecutionProvider" => {
-            app_handle
-                .emit(
-                    "stt-install-progress",
-                    serde_json::json!({
-                        "status": "installing",
-                        "step": 4,
-                        "total_steps": 4,
-                        "message": "Installing ONNX Runtime ROCm (AMD)..."
-                    }),
-                )
-                .ok();
-            // Note: onnxruntime-rocm might need special index
-            "onnxruntime" // Fallback to CPU for now, ROCm needs manual setup
-        }
-        "CoreMLExecutionProvider" => {
-            app_handle
-                .emit(
-                    "stt-install-progress",
-                    serde_json::json!({
-                        "status": "installing",
-                        "step": 4,
-                        "total_steps": 4,
-                        "message": "Installing ONNX Runtime (Apple Silicon)..."
-                    }),
-                )
-                .ok();
-            "onnxruntime" // CoreML is included in base onnxruntime on macOS
-        }
-        _ => {
-            app_handle
-                .emit(
-                    "stt-install-progress",
-                    serde_json::json!({
-                        "status": "installing",
-                        "step": 4,
-                        "total_steps": 4,
-                        "message": "Installing ONNX Runtime (CPU)..."
-                    }),
-                )
-                .ok();
-            "onnxruntime"
-        }
-    };
-
-    // Install ONNX Runtime
-    let onnx_output = Command::new(&venv_pip)
-        .args(["install", onnx_package])
-        .output()
-        .map_err(|e| format!("Failed to install {}: {}", onnx_package, e))?;
-
-    if !onnx_output.status.success() {
-        let stderr = String::from_utf8_lossy(&onnx_output.stderr);
-        dev_log!(
-            "[STT INSTALL] Warning: {} install issue: {}",
-            onnx_package, stderr
-        );
-    }
-
-    // Install sherpa-onnx
-    app_handle
-        .emit(
-            "stt-install-progress",
-            serde_json::json!({
-                "status": "installing",
-                "step": 4,
-                "total_steps": 4,
-                "message": "Installing sherpa-onnx..."
-            }),
-        )
-        .ok();
-
-    let sherpa_output = Command::new(&venv_pip)
-        .args(["install", "sherpa-onnx"])
-        .output()
-        .map_err(|e| format!("Failed to install sherpa-onnx: {}", e))?;
-
-    if sherpa_output.status.success() {
-        app_handle
-            .emit(
-                "stt-install-progress",
-                serde_json::json!({
-                    "status": "success",
-                    "message": "STT dependencies installed successfully!"
-                }),
-            )
-            .ok();
-
-        dev_log!(
-            "[STT INSTALL] ✅ Installation complete for backend: {}",
-            backend
-        );
-        Ok(format!(
-            "STT dependencies installed for {}! Restart to use.",
-            backend
-        ))
-    } else {
-        let stderr = String::from_utf8_lossy(&sherpa_output.stderr);
-        let stdout = String::from_utf8_lossy(&sherpa_output.stdout);
-
-        app_handle
-            .emit(
-                "stt-install-progress",
-                serde_json::json!({
-                    "status": "error",
-                    "message": format!("Installation failed: {}", stderr)
-                }),
-            )
-            .ok();
-
-        Err(format!(
-            "sherpa-onnx installation failed:\nstderr: {}\nstdout: {}",
-            stderr, stdout
-        ))
-    }
-}
 
 /// Get system information for Settings UI
 #[tauri::command]
-async fn get_system_info() -> Result<serde_json::Value, String> {
+#[specta::specta]
+async fn get_system_info() -> Result<SystemInfo, String> {
     let os_name = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
 
@@ -1255,31 +916,12 @@ async fn get_system_info() -> Result<serde_json::Value, String> {
     #[cfg(not(target_os = "linux"))]
     let desktop_env = "native".to_string();
 
-    Ok(serde_json::json!({
-        "os": os_name,
-        "arch": arch,
-        "display_server": display_server,
-        "desktop_environment": desktop_env,
-        "venv_path": get_venv_path().to_string_lossy(),
-        "venv_exists": get_venv_python().exists()
-    }))
-}
-
-/// Get the path to the app's Python venv
-pub fn get_venv_path() -> std::path::PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("karaoketyper")
-        .join("venv")
-}
-
-/// Get the path to the venv's Python executable
-pub fn get_venv_python() -> std::path::PathBuf {
-    let venv = get_venv_path();
-    #[cfg(target_os = "windows")]
-    return venv.join("Scripts").join("python.exe");
-    #[cfg(not(target_os = "windows"))]
-    venv.join("bin").join("python")
+    Ok(SystemInfo {
+        os: os_name.to_string(),
+        arch: arch.to_string(),
+        display_server,
+        desktop_environment: desktop_env,
+    })
 }
 
 /// Get all app data paths for cleanup
@@ -1324,7 +966,8 @@ fn get_app_data_paths() -> Vec<(String, std::path::PathBuf)> {
 
 /// Get app data info for display in UI
 #[tauri::command]
-fn get_app_data_info() -> Result<serde_json::Value, String> {
+#[specta::specta]
+fn get_app_data_info() -> Result<AppDataInfo, String> {
     let paths = get_app_data_paths();
     let mut total_size: u64 = 0;
     let mut items = Vec::new();
@@ -1338,18 +981,18 @@ fn get_app_data_info() -> Result<serde_json::Value, String> {
         };
         total_size += size;
 
-        items.push(serde_json::json!({
-            "name": name,
-            "path": path.to_string_lossy(),
-            "exists": exists,
-            "size_mb": size as f64 / 1024.0 / 1024.0
-        }));
+        items.push(AppDataItem {
+            name: name.clone(),
+            path: path.to_string_lossy().to_string(),
+            exists,
+            size_mb: size as f64 / 1024.0 / 1024.0,
+        });
     }
 
-    Ok(serde_json::json!({
-        "items": items,
-        "total_size_mb": total_size as f64 / 1024.0 / 1024.0
-    }))
+    Ok(AppDataInfo {
+        items,
+        total_size_mb: total_size as f64 / 1024.0 / 1024.0,
+    })
 }
 
 /// Calculate directory size recursively
@@ -1374,6 +1017,7 @@ fn calculate_dir_size(path: &std::path::Path) -> std::io::Result<u64> {
 
 /// Clean all app data (for uninstallation)
 #[tauri::command]
+#[specta::specta]
 async fn cleanup_app_data(app_handle: AppHandle) -> Result<String, String> {
     use std::fs;
 
@@ -1438,18 +1082,65 @@ async fn cleanup_app_data(app_handle: AppHandle) -> Result<String, String> {
 
 /// Get list of installed models with their metadata
 #[tauri::command]
+#[specta::specta]
 async fn get_installed_models() -> Result<Vec<model_downloader::ModelInfo>, String> {
     model_downloader::check_installed_models()
 }
 
 /// Download a model with progress events
 #[tauri::command]
-async fn download_model(app_handle: AppHandle, model_name: String) -> Result<(), String> {
-    model_downloader::download_model(app_handle, model_name).await
+#[specta::specta]
+async fn download_model(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    model_name: String,
+) -> Result<(), String> {
+    // Download the model
+    model_downloader::download_model(app_handle.clone(), model_name.clone()).await?;
+
+    // Auto-reinitialize STT engine with the new model
+    dev_log!(
+        "[STT] Model download complete, reinitializing STT engine with model: {}",
+        model_name
+    );
+
+    // Update config to use the new model and reinit
+    {
+        let mut config = state.config.lock().unwrap();
+        config.model = model_name.clone();
+        config.model_path = None; // Clear any stale model_path
+    }
+
+    // Reinitialize STT engine
+    let config = state.config.lock().unwrap().clone();
+    match SttEngine::new(&config) {
+        Ok(engine) => {
+            let mut stt = state.stt_engine.lock().unwrap();
+            *stt = Some(engine);
+            dev_log!("[STT] ✅ STT engine reinitialized with model: {}", model_name);
+
+            app_handle
+                .emit(
+                    "status-changed",
+                    StatusEvent {
+                        status: "idle".to_string(),
+                        message: "Model ready! Press shortcut to dictate".to_string(),
+                    },
+                )
+                .ok();
+        }
+        Err(e) => {
+            dev_log!("[STT] ⚠️ Failed to reinitialize STT engine: {}", e);
+            // Don't return error - model download succeeded, just init failed
+        }
+    }
+
+    Ok(())
 }
 
 /// Install system dependencies (Linux only - handles evdev permissions)
 #[tauri::command]
+#[specta::specta]
 async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, String> {
     dev_log!("[SETUP] 🚀 Checking system dependencies...");
 
@@ -1506,7 +1197,8 @@ fn get_gnome_extension_path() -> std::path::PathBuf {
 
 /// Check if the GNOME focused window extension is installed
 #[tauri::command]
-async fn check_focused_window_extension() -> Result<serde_json::Value, String> {
+#[specta::specta]
+async fn check_focused_window_extension() -> Result<GnomeExtensionStatus, String> {
     #[cfg(target_os = "linux")]
     {
         tokio::task::spawn_blocking(|| {
@@ -1539,14 +1231,14 @@ async fn check_focused_window_extension() -> Result<serde_json::Value, String> {
                 .map(|s| s == "wayland")
                 .unwrap_or(false);
 
-            serde_json::json!({
-                "installed": is_installed,
-                "enabled": is_enabled,
-                "is_gnome": is_gnome,
-                "is_wayland": is_wayland,
-                "path": extension_path.to_string_lossy(),
-                "needs_restart": is_installed && !is_enabled
-            })
+            GnomeExtensionStatus {
+                installed: is_installed,
+                enabled: is_enabled,
+                is_gnome,
+                is_wayland,
+                path: extension_path.to_string_lossy().to_string(),
+                needs_restart: is_installed && !is_enabled,
+            }
         })
         .await
         .map_err(|e| format!("Task failed: {}", e))
@@ -1554,19 +1246,20 @@ async fn check_focused_window_extension() -> Result<serde_json::Value, String> {
 
     #[cfg(not(target_os = "linux"))]
     {
-        Ok(serde_json::json!({
-            "installed": false,
-            "enabled": false,
-            "is_gnome": false,
-            "is_wayland": false,
-            "path": "",
-            "needs_restart": false
-        }))
+        Ok(GnomeExtensionStatus {
+            installed: false,
+            enabled: false,
+            is_gnome: false,
+            is_wayland: false,
+            path: String::new(),
+            needs_restart: false,
+        })
     }
 }
 
 /// Install the GNOME focused window extension
 #[tauri::command]
+#[specta::specta]
 async fn install_focused_window_extension(app_handle: AppHandle) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
@@ -1724,6 +1417,7 @@ async fn install_focused_window_extension(app_handle: AppHandle) -> Result<Strin
 
 /// Remove the GNOME focused window extension
 #[tauri::command]
+#[specta::specta]
 async fn remove_focused_window_extension() -> Result<String, String> {
     #[cfg(target_os = "linux")]
     {
@@ -1764,11 +1458,13 @@ async fn remove_focused_window_extension() -> Result<String, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 fn get_autostart_enabled() -> bool {
     autostart::is_autostart_enabled()
 }
 
 #[tauri::command]
+#[specta::specta]
 async fn set_autostart_enabled(enabled: bool) -> Result<String, String> {
     if enabled {
         autostart::enable_autostart()?;
@@ -1781,6 +1477,47 @@ async fn set_autostart_enabled(enabled: bool) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Build the invoke handler with tauri-specta for type-safe TypeScript bindings
+    let builder = tauri_specta::Builder::<tauri::Wry>::new()
+        .commands(tauri_specta::collect_commands![
+            init_stt,
+            start_recording,
+            stop_recording,
+            type_text,
+            show_settings,
+            show_overlay,
+            hide_overlay,
+            get_audio_devices,
+            load_settings,
+            save_settings,
+            check_evdev_permissions,
+            install_evdev_permissions,
+            check_keyboard_permissions,
+            check_uinput_available,
+            install_system_dependencies,
+            transcribe_audio,
+            log_from_frontend,
+            get_installed_models,
+            download_model,
+            get_system_info,
+            check_focused_window_extension,
+            install_focused_window_extension,
+            remove_focused_window_extension,
+            get_autostart_enabled,
+            set_autostart_enabled,
+            get_app_data_info,
+            cleanup_app_data
+        ]);
+
+    // Generate TypeScript bindings in development mode
+    #[cfg(debug_assertions)]
+    builder
+        .export(
+            specta_typescript::Typescript::default(),
+            "../src/bindings.ts",
+        )
+        .expect("Failed to export TypeScript bindings");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // When another instance tries to start, show the existing settings window
@@ -1797,21 +1534,6 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
         .setup(|app| {
-            // Auto-setup venv on first launch
-            let venv_python = get_venv_python();
-            if !venv_python.exists() {
-                dev_log!("[STARTUP] First launch detected - setting up Python venv...");
-                let app_handle_venv = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    match install_stt_dependencies(app_handle_venv, "CPU".to_string()).await {
-                        Ok(msg) => dev_log!("[STARTUP] ✅ Venv setup complete: {}", msg),
-                        Err(e) => dev_log!("[STARTUP] ⚠️  Venv setup failed: {}", e),
-                    }
-                });
-            } else {
-                dev_log!("[STARTUP] Venv already exists at: {}", venv_python.display());
-            }
-
             // Initialize STT engine at startup
             dev_log!("[STARTUP] Initializing STT engine...");
             let app_handle = app.handle().clone();
@@ -1968,40 +1690,7 @@ pub fn run() {
                 api.prevent_close();
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            init_stt,
-            start_recording,
-            stop_recording,
-            type_text,
-            show_settings,
-            show_overlay,
-            hide_overlay,
-            get_audio_devices,
-            load_settings,
-            save_settings,
-            check_evdev_permissions,
-            install_evdev_permissions,
-            check_keyboard_permissions,
-            check_uinput_available,
-            install_system_dependencies,
-            transcribe_audio,
-            log_from_frontend,
-            get_installed_models,
-            download_model,
-            check_python_available,
-            check_sherpa_onnx_installed,
-            detect_gpu,
-            get_stt_install_commands,
-            install_stt_dependencies,
-            get_system_info,
-            check_focused_window_extension,
-            install_focused_window_extension,
-            remove_focused_window_extension,
-            get_autostart_enabled,
-            set_autostart_enabled,
-            get_app_data_info,
-            cleanup_app_data
-        ])
+        .invoke_handler(builder.invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

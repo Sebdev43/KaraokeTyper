@@ -1,4 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
@@ -6,9 +5,7 @@ import { platform } from "@tauri-apps/plugin-os";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Brain,
-  Cpu,
   Download,
-  Gpu,
   Info,
   Keyboard,
   Maximize2,
@@ -18,9 +15,9 @@ import {
   RefreshCw,
   Settings,
   X,
-  Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { type AppConfig, commands } from "@/bindings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -38,33 +35,9 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
+import { useSettingsStore, useSystemStore } from "@/stores";
 
-interface AudioDevice {
-  name: string;
-  raw_name: string;
-  index: number;
-}
-
-interface AppConfig {
-  shortcut: string;
-  audio_device_index: number;
-  audio_device_name: string | null;
-  model: string;
-  key_delay_ms: number;
-  language: string;
-  stt_provider: string | null;
-  model_path: string | null;
-}
-
-interface ModelInfo {
-  name: string;
-  display_name: string;
-  size_mb: number;
-  url: string;
-  installed: boolean;
-  description: string;
-}
-
+// Event type for model download progress (not in generated bindings)
 interface DownloadProgress {
   model: string;
   downloaded_mb: number;
@@ -73,213 +46,166 @@ interface DownloadProgress {
   status: string;
 }
 
-interface GpuInfo {
-  vendor: string;
-  name: string;
-  vram_mb: number | null;
-  driver_version: string | null;
-}
-
-interface GpuDetectionResult {
-  success: boolean;
-  gpus: GpuInfo[];
-  recommended_backend: string;
-  install_commands: string[];
-  has_nvidia: boolean;
-  has_amd: boolean;
-  has_apple: boolean;
-  has_intel: boolean;
-}
-
-// Normalize ONNX Runtime provider names to short names
-function normalizeBackend(backend: string): "cuda" | "rocm" | "coreml" | "cpu" {
-  const b = backend.toLowerCase();
-  if (b.includes("cuda")) return "cuda";
-  if (b.includes("migraphx") || b.includes("rocm")) return "rocm";
-  if (b.includes("coreml")) return "coreml";
-  return "cpu";
-}
-
-// Get display name for backend
-function getBackendDisplayName(backend: string): string {
-  const normalized = normalizeBackend(backend);
-  switch (normalized) {
-    case "cuda":
-      return "NVIDIA CUDA";
-    case "rocm":
-      return "AMD ROCm";
-    case "coreml":
-      return "Apple CoreML";
-    default:
-      return "CPU (Universal)";
-  }
-}
-
-// Get short name for button labels
-function getBackendShortName(backend: string): string {
-  const normalized = normalizeBackend(backend);
-  switch (normalized) {
-    case "cuda":
-      return "NVIDIA";
-    case "rocm":
-      return "AMD";
-    case "coreml":
-      return "Apple";
-    default:
-      return "CPU";
-  }
-}
-
 function SettingsWindow() {
-  const [audioDevices, setAudioDevices] = useState<AudioDevice[]>([]);
-  const [selectedDevice, setSelectedDevice] = useState<number>(0);
-  const [shortcut, setShortcut] = useState("Ctrl+Space");
-  const [model, setModel] = useState("sherpa-onnx-whisper-tiny");
-  const [language, setLanguage] = useState("fr");
-  const [isCapturing, setIsCapturing] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<string>("");
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [permissionsInstalled, setPermissionsInstalled] = useState<boolean>(false);
-  const [uinputAvailable, setUinputAvailable] = useState<boolean>(false);
-  const [pythonAvailable, setPythonAvailable] = useState<boolean>(false);
-  const [isInstallingSystem, setIsInstallingSystem] = useState(false);
-  const [gnomeExtInstalled, setGnomeExtInstalled] = useState<boolean>(false);
-  const [gnomeExtEnabled, setGnomeExtEnabled] = useState<boolean>(false);
-  const [isGnomeWayland, setIsGnomeWayland] = useState<boolean>(false);
-  const [isInstallingGnomeExt, setIsInstallingGnomeExt] = useState(false);
-  const [installedModels, setInstalledModels] = useState<ModelInfo[]>([]);
-  const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState<number>(0);
-  const [currentPlatform, setCurrentPlatform] = useState<string>("linux");
-  const [autostart, setAutostart] = useState<boolean>(false);
-  const [isTogglingAutostart, setIsTogglingAutostart] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  // Settings store
+  const {
+    audioDevices,
+    setAudioDevices,
+    selectedDevice,
+    setSelectedDevice,
+    shortcut,
+    setShortcut,
+    model,
+    setModel,
+    language,
+    setLanguage,
+    installedModels,
+    setInstalledModels,
+    downloadingModel,
+    setDownloadingModel,
+    downloadProgress,
+    setDownloadProgress,
+    autostart,
+    setAutostart,
+    isRefreshing,
+    setIsRefreshing,
+    saveStatus,
+    setSaveStatus,
+  } = useSettingsStore();
 
-  // GPU & STT Backend state
-  const [gpuInfo, setGpuInfo] = useState<GpuDetectionResult | null>(null);
-  const [isDetectingGpu, setIsDetectingGpu] = useState(false);
-  const [sherpaInstalled, setSherpaInstalled] = useState(false);
-  const [isInstallingStt, setIsInstallingStt] = useState(false);
-  const [sttInstallProgress, setSttInstallProgress] = useState<string>("");
+  // System store
+  const {
+    currentPlatform,
+    setPlatform,
+    permissionsInstalled,
+    setPermissionsInstalled,
+    uinputAvailable,
+    setUinputAvailable,
+    gnomeExtInstalled,
+    setGnomeExtInstalled,
+    gnomeExtEnabled,
+    setGnomeExtEnabled,
+    isGnomeWayland,
+    setIsGnomeWayland,
+    isInstallingSystem,
+    setIsInstallingSystem,
+    isInstallingGnomeExt,
+    setIsInstallingGnomeExt,
+    isTogglingAutostart,
+    setIsTogglingAutostart,
+  } = useSystemStore();
+
+  // Local UI state
+  const [isCapturing, setIsCapturing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // Detect platform on mount
   useEffect(() => {
     try {
-      setCurrentPlatform(platform());
+      const p = platform();
+      setPlatform(p as "linux" | "windows" | "macos" | "unknown");
     } catch {
-      setCurrentPlatform("linux");
+      setPlatform("linux");
     }
-  }, []);
+  }, [setPlatform]);
 
   const loadAudioDevices = useCallback(async () => {
     try {
-      const devices = await invoke<AudioDevice[]>("get_audio_devices");
-      setAudioDevices(devices);
+      const result = await commands.getAudioDevices();
+      if (result.status === "ok") {
+        setAudioDevices(result.data);
+      } else {
+        console.error("Failed to load audio devices:", result.error);
+      }
     } catch (error) {
       console.error("Failed to load audio devices:", error);
     }
-  }, []);
+  }, [setAudioDevices]);
 
   const loadSettings = useCallback(async () => {
     try {
-      const config = await invoke<AppConfig>("load_settings");
-      setShortcut(config.shortcut);
-      setSelectedDevice(config.audio_device_index);
-      setModel(config.model);
-      setLanguage(config.language);
+      const result = await commands.loadSettings();
+      if (result.status === "ok") {
+        setShortcut(result.data.shortcut);
+        setSelectedDevice(result.data.audio_device_index);
+        setModel(result.data.model);
+        setLanguage(result.data.language);
+      } else {
+        console.error("Failed to load settings:", result.error);
+      }
     } catch (error) {
       console.error("Failed to load settings:", error);
     }
-  }, []);
+  }, [setShortcut, setSelectedDevice, setModel, setLanguage]);
 
   const checkPermissions = useCallback(async () => {
     try {
-      const installed = await invoke<boolean>("check_evdev_permissions");
+      // Returns boolean directly (no Result wrapper)
+      const installed = await commands.checkEvdevPermissions();
       setPermissionsInstalled(installed);
     } catch (error) {
       console.error("Failed to check permissions:", error);
     }
-  }, []);
+  }, [setPermissionsInstalled]);
 
   const checkUinput = useCallback(async () => {
     try {
-      const available = await invoke<boolean>("check_uinput_available");
+      // Returns boolean directly (no Result wrapper)
+      const available = await commands.checkUinputAvailable();
       setUinputAvailable(available);
     } catch (error) {
       console.error("Failed to check uinput:", error);
     }
-  }, []);
-
-  const checkPython = useCallback(async () => {
-    try {
-      const available = await invoke<boolean>("check_python_available");
-      setPythonAvailable(available);
-    } catch (error) {
-      console.error("Failed to check python:", error);
-    }
-  }, []);
+  }, [setUinputAvailable]);
 
   const loadInstalledModels = useCallback(async () => {
     try {
-      const models = await invoke<ModelInfo[]>("get_installed_models");
-      setInstalledModels(models);
-    } catch (error) {
-      console.error("Failed to load installed models:", error);
+      const result = await commands.getInstalledModels();
+      if (result.status === "ok") {
+        setInstalledModels(result.data);
+      }
+    } catch (_error) {
+      // Silent fail - models will show as empty
     }
-  }, []);
+  }, [setInstalledModels]);
 
   const checkGnomeExtension = useCallback(async () => {
     try {
-      const result = await invoke<{
-        installed: boolean;
-        enabled: boolean;
-        is_gnome: boolean;
-        is_wayland: boolean;
-      }>("check_focused_window_extension");
-      setGnomeExtInstalled(result.installed);
-      setGnomeExtEnabled(result.enabled);
-      setIsGnomeWayland(result.is_gnome && result.is_wayland);
+      const result = await commands.checkFocusedWindowExtension();
+      if (result.status === "ok") {
+        setGnomeExtInstalled(result.data.installed);
+        setGnomeExtEnabled(result.data.enabled);
+        setIsGnomeWayland(result.data.is_gnome && result.data.is_wayland);
+      } else {
+        console.error("Failed to check GNOME extension:", result.error);
+      }
     } catch (error) {
       console.error("Failed to check GNOME extension:", error);
     }
-  }, []);
-
-  const detectGpu = useCallback(async () => {
-    setIsDetectingGpu(true);
-    try {
-      const result = await invoke<GpuDetectionResult>("detect_gpu");
-      setGpuInfo(result);
-    } catch (error) {
-      console.error("Failed to detect GPU:", error);
-      setGpuInfo(null);
-    } finally {
-      setIsDetectingGpu(false);
-    }
-  }, []);
-
-  const checkSherpaOnnx = useCallback(async () => {
-    try {
-      const installed = await invoke<boolean>("check_sherpa_onnx_installed");
-      setSherpaInstalled(installed);
-    } catch (error) {
-      console.error("Failed to check sherpa-onnx:", error);
-    }
-  }, []);
+  }, [setGnomeExtInstalled, setGnomeExtEnabled, setIsGnomeWayland]);
 
   const loadAutostart = useCallback(async () => {
     try {
-      const enabled = await invoke<boolean>("get_autostart_enabled");
+      const enabled = await commands.getAutostartEnabled();
       setAutostart(enabled);
     } catch (error) {
       console.error("Failed to load autostart status:", error);
     }
-  }, []);
+  }, [setAutostart]);
 
   const handleToggleAutostart = async (enabled: boolean) => {
     setIsTogglingAutostart(true);
     try {
-      await invoke<string>("set_autostart_enabled", { enabled });
-      setAutostart(enabled);
+      const result = await commands.setAutostartEnabled(enabled);
+      if (result.status === "ok") {
+        setAutostart(enabled);
+      } else {
+        console.error("Failed to toggle autostart:", result.error);
+        await message(`Échec du changement d'autostart : ${result.error}`, {
+          title: "Erreur",
+          kind: "error",
+        });
+      }
     } catch (error) {
       console.error("Failed to toggle autostart:", error);
       await message(`Échec du changement d'autostart : ${error}`, {
@@ -306,11 +232,18 @@ function SettingsWindow() {
     setDownloadProgress(0);
 
     try {
-      await invoke("download_model", { modelName });
-      // Show 100% complete for 1.5 seconds
-      setDownloadProgress(100);
-      await new Promise((r) => setTimeout(r, 1500));
-      await loadInstalledModels();
+      const result = await commands.downloadModel(modelName);
+      if (result.status === "ok") {
+        // Show 100% complete for 1.5 seconds
+        setDownloadProgress(100);
+        await new Promise((r) => setTimeout(r, 1500));
+        await loadInstalledModels();
+      } else {
+        await message(`Échec du téléchargement : ${result.error}`, {
+          title: "Erreur",
+          kind: "error",
+        });
+      }
     } catch (error) {
       await message(`Échec du téléchargement : ${error}`, {
         title: "Erreur",
@@ -327,22 +260,16 @@ function SettingsWindow() {
     void loadSettings();
     void checkPermissions();
     void checkUinput();
-    void checkPython();
     void loadInstalledModels();
     void checkGnomeExtension();
-    void detectGpu();
-    void checkSherpaOnnx();
     void loadAutostart();
   }, [
     loadAudioDevices,
     loadSettings,
     checkPermissions,
     checkUinput,
-    checkPython,
     loadInstalledModels,
     checkGnomeExtension,
-    detectGpu,
-    checkSherpaOnnx,
     loadAutostart,
   ]);
 
@@ -356,19 +283,11 @@ function SettingsWindow() {
       void loadInstalledModels();
     });
 
-    const unlistenSttProgress = listen<{ status: string; message: string }>(
-      "stt-install-progress",
-      (event) => {
-        setSttInstallProgress(event.payload.message);
-      },
-    );
-
     return () => {
       void unlistenProgress.then((fn) => fn());
       void unlistenComplete.then((fn) => fn());
-      void unlistenSttProgress.then((fn) => fn());
     };
-  }, [loadInstalledModels]);
+  }, [loadInstalledModels, setDownloadProgress]);
 
   const handleShortcutCapture = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -477,16 +396,18 @@ function SettingsWindow() {
         model,
         key_delay_ms: 8,
         language,
-        stt_provider: null, // Auto-detect
         model_path: modelPath,
       };
 
-      await invoke("save_settings", { newConfig: config });
-
-      setSaveStatus("Settings saved!");
-      setTimeout(() => setSaveStatus(""), 2000);
-
-      await getCurrentWindow().hide();
+      const result = await commands.saveSettings(config);
+      if (result.status === "ok") {
+        setSaveStatus("Settings saved!");
+        setTimeout(() => setSaveStatus(""), 2000);
+        await getCurrentWindow().hide();
+      } else {
+        setSaveStatus(`Error: ${result.error}`);
+        console.error("Failed to save settings:", result.error);
+      }
     } catch (error) {
       setSaveStatus(`Error: ${error}`);
       console.error("Failed to save settings:", error);
@@ -504,14 +425,21 @@ function SettingsWindow() {
     setIsInstallingSystem(true);
 
     try {
-      const result = await invoke<string>("install_system_dependencies");
+      const result = await commands.installSystemDependencies();
 
-      if (result.includes("restart")) {
-        await relaunch();
+      if (result.status === "ok") {
+        if (result.data.includes("restart")) {
+          await relaunch();
+        } else {
+          await message(result.data, { title: "Succès", kind: "info" });
+          await checkPermissions();
+          await checkUinput();
+        }
       } else {
-        await message(result, { title: "Succès", kind: "info" });
-        await checkPermissions();
-        await checkUinput();
+        await message(`Échec de l'installation : ${result.error}`, {
+          title: "Erreur",
+          kind: "error",
+        });
       }
     } catch (error) {
       await message(`Échec de l'installation : ${error}`, {
@@ -520,45 +448,6 @@ function SettingsWindow() {
       });
     } finally {
       setIsInstallingSystem(false);
-    }
-  };
-
-  const handleInstallSttBackend = async () => {
-    if (!pythonAvailable) {
-      await message(
-        "Python 3.8+ n'est pas installé.\n\nInstallez Python d'abord:\n• Linux: sudo apt install python3 python3-pip python3-venv\n• macOS: brew install python3\n• Windows: Télécharger depuis python.org",
-        { title: "Python requis", kind: "warning" },
-      );
-      return;
-    }
-
-    const backend = gpuInfo?.recommended_backend || "CPUExecutionProvider";
-    const backendName = getBackendDisplayName(backend);
-
-    const confirmed = await confirm(
-      `Installer sherpa-onnx avec ${backendName} ?\n\nCela va installer:\n• sherpa-onnx (reconnaissance vocale)\n• ONNX Runtime optimisé pour ${backendName}\n\nL'installation peut prendre plusieurs minutes.`,
-      { title: "Installation STT", kind: "info" },
-    );
-
-    if (!confirmed) return;
-
-    setIsInstallingStt(true);
-    setSttInstallProgress("Préparation de l'installation...");
-
-    try {
-      const result = await invoke<string>("install_stt_dependencies", {
-        backend,
-      });
-      await message(result, { title: "Succès", kind: "info" });
-      await checkSherpaOnnx();
-    } catch (error) {
-      await message(`Échec de l'installation : ${error}`, {
-        title: "Erreur",
-        kind: "error",
-      });
-    } finally {
-      setIsInstallingStt(false);
-      setSttInstallProgress("");
     }
   };
 
@@ -573,8 +462,15 @@ function SettingsWindow() {
     setIsInstallingGnomeExt(true);
 
     try {
-      const result = await invoke<string>("install_focused_window_extension");
-      await message(result, { title: "Succès", kind: "info" });
+      const result = await commands.installFocusedWindowExtension();
+      if (result.status === "ok") {
+        await message(result.data, { title: "Succès", kind: "info" });
+      } else {
+        await message(`Échec de l'installation : ${result.error}`, {
+          title: "Erreur",
+          kind: "error",
+        });
+      }
     } catch (error) {
       await message(`Échec de l'installation : ${error}`, {
         title: "Erreur",
@@ -596,9 +492,16 @@ function SettingsWindow() {
     setIsInstallingGnomeExt(true);
 
     try {
-      const result = await invoke<string>("remove_focused_window_extension");
-      await message(result, { title: "Succès", kind: "info" });
-      await checkGnomeExtension();
+      const result = await commands.removeFocusedWindowExtension();
+      if (result.status === "ok") {
+        await message(result.data, { title: "Succès", kind: "info" });
+        await checkGnomeExtension();
+      } else {
+        await message(`Échec de la suppression : ${result.error}`, {
+          title: "Erreur",
+          kind: "error",
+        });
+      }
     } catch (error) {
       await message(`Échec de la suppression : ${error}`, {
         title: "Erreur",
@@ -745,142 +648,6 @@ function SettingsWindow() {
             </CardContent>
           </Card>
 
-          {/* GPU & STT Backend */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Gpu className="h-5 w-5 text-primary" />
-                GPU & STT Backend
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* GPU Detection */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <Label>Detected Hardware</Label>
-                  <Button variant="ghost" size="sm" onClick={detectGpu} disabled={isDetectingGpu}>
-                    <RefreshCw className={cn("h-4 w-4", isDetectingGpu && "animate-spin")} />
-                  </Button>
-                </div>
-
-                {isDetectingGpu ? (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <RefreshCw className="h-4 w-4 animate-spin" />
-                    Detecting GPU...
-                  </div>
-                ) : gpuInfo?.gpus && gpuInfo.gpus.length > 0 ? (
-                  <div className="space-y-2">
-                    {gpuInfo.gpus.map((gpu) => (
-                      <div
-                        key={`${gpu.vendor}-${gpu.name}`}
-                        className="flex items-center gap-3 p-3 rounded-lg border border-border bg-muted/30"
-                      >
-                        {gpu.vendor === "NVIDIA" ? (
-                          <Zap className="h-5 w-5 text-green-500" />
-                        ) : gpu.vendor === "AMD" ? (
-                          <Zap className="h-5 w-5 text-red-500" />
-                        ) : gpu.vendor === "Apple" ? (
-                          <Zap className="h-5 w-5 text-gray-400" />
-                        ) : (
-                          <Cpu className="h-5 w-5 text-blue-500" />
-                        )}
-                        <div className="flex-1">
-                          <div className="font-medium">{gpu.name}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {gpu.vendor}
-                            {gpu.vram_mb && ` • ${gpu.vram_mb} MB VRAM`}
-                            {gpu.driver_version && ` • Driver: ${gpu.driver_version}`}
-                          </div>
-                        </div>
-                        <Badge
-                          variant={
-                            gpu.vendor === "NVIDIA"
-                              ? "default"
-                              : gpu.vendor === "AMD"
-                                ? "secondary"
-                                : "outline"
-                          }
-                        >
-                          {gpu.vendor === "NVIDIA"
-                            ? "CUDA"
-                            : gpu.vendor === "AMD"
-                              ? "ROCm"
-                              : gpu.vendor === "Apple"
-                                ? "CoreML"
-                                : "CPU"}
-                        </Badge>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2 p-3 rounded-lg border border-border bg-muted/30">
-                    <Cpu className="h-5 w-5 text-blue-500" />
-                    <div>
-                      <div className="font-medium">CPU Only</div>
-                      <div className="text-xs text-muted-foreground">No dedicated GPU detected</div>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <Separator />
-
-              {/* Recommended Backend */}
-              <div className="space-y-3">
-                <Label>Recommended Backend</Label>
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="text-sm">
-                    {getBackendDisplayName(gpuInfo?.recommended_backend || "")}
-                  </Badge>
-                  {gpuInfo?.recommended_backend &&
-                    normalizeBackend(gpuInfo.recommended_backend) !== "cpu" && (
-                      <span className="text-xs text-green-500">GPU acceleration available</span>
-                    )}
-                </div>
-              </div>
-
-              <Separator />
-
-              {/* STT Installation Status */}
-              <div className="space-y-3">
-                <Label>Speech Recognition Engine (sherpa-onnx)</Label>
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-center gap-2">
-                    <Badge variant={sherpaInstalled ? "default" : "secondary"}>
-                      {sherpaInstalled ? "✓" : "○"}
-                    </Badge>
-                    <span className="text-sm">
-                      {sherpaInstalled ? "sherpa-onnx installed" : "sherpa-onnx not installed"}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant={pythonAvailable ? "default" : "secondary"}>
-                      {pythonAvailable ? "✓" : "○"}
-                    </Badge>
-                    <span className="text-sm">Python 3.8+</span>
-                  </div>
-                </div>
-
-                {sttInstallProgress && (
-                  <p className="text-sm text-muted-foreground">{sttInstallProgress}</p>
-                )}
-
-                <Button
-                  onClick={handleInstallSttBackend}
-                  disabled={isInstallingStt || sherpaInstalled}
-                  variant={sherpaInstalled ? "outline" : "default"}
-                  size="sm"
-                >
-                  {isInstallingStt
-                    ? "Installing..."
-                    : sherpaInstalled
-                      ? "Installed ✓"
-                      : `Install for ${getBackendShortName(gpuInfo?.recommended_backend || "")}`}
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-
           {/* Speech Recognition */}
           <Card>
             <CardHeader className="pb-3">
@@ -952,7 +719,7 @@ function SettingsWindow() {
             </CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Download speech recognition models (sherpa-onnx)
+                Download Whisper GGML models for speech recognition
               </p>
 
               {installedModels.map((modelInfo) => (
@@ -968,7 +735,7 @@ function SettingsWindow() {
                           Installed
                         </Badge>
                       )}
-                      {modelInfo.name === "sherpa-onnx-whisper-tiny" && (
+                      {modelInfo.name === "ggml-small" && (
                         <Badge variant="secondary" className="text-xs">
                           Recommended
                         </Badge>

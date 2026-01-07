@@ -1,7 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Loader2, Mic, Square } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { commands } from "@/bindings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,9 +24,14 @@ function App() {
   useEffect(() => {
     const initApp = async () => {
       try {
-        await invoke("init_stt");
-        setIsInitialized(true);
-        setMessage("Ready! Press Ctrl+Space to dictate");
+        const result = await commands.initStt();
+        if (result.status === "ok") {
+          setIsInitialized(true);
+          setMessage("Ready! Press Ctrl+Space to dictate");
+        } else {
+          setMessage(`Error: ${result.error}`);
+          console.error("Failed to initialize STT:", result.error);
+        }
       } catch (error) {
         setMessage(`Error: ${error}`);
         console.error("Failed to initialize STT:", error);
@@ -49,7 +54,13 @@ function App() {
     try {
       isRecordingRef.current = true;
       setIsRecording(true);
-      await invoke("start_recording");
+      const result = await commands.startRecording();
+      if (result.status === "error") {
+        setMessage(`Error starting recording: ${result.error}`);
+        console.error(result.error);
+        isRecordingRef.current = false;
+        setIsRecording(false);
+      }
     } catch (error) {
       setMessage(`Error starting recording: ${error}`);
       console.error(error);
@@ -60,13 +71,21 @@ function App() {
 
   const stopRecording = async () => {
     try {
-      const text = await invoke<string>("stop_recording");
-      setTranscription(text);
-      isRecordingRef.current = false;
-      setIsRecording(false);
+      const result = await commands.stopRecording();
+      if (result.status === "ok") {
+        const text = result.data;
+        setTranscription(text);
+        isRecordingRef.current = false;
+        setIsRecording(false);
 
-      if (text) {
-        await invoke("type_text", { text });
+        if (text) {
+          await commands.typeText(text);
+        }
+      } else {
+        setMessage(`Error: ${result.error}`);
+        console.error(result.error);
+        isRecordingRef.current = false;
+        setIsRecording(false);
       }
     } catch (error) {
       setMessage(`Error: ${error}`);

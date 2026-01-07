@@ -1,19 +1,29 @@
-use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
-use tauri::{AppHandle, Emitter};
+//! Model downloader for whisper-rs GGML models
+//!
+//! Downloads GGML models from ggerganov/whisper.cpp on HuggingFace.
+//! Uses native Rust (reqwest) instead of Python subprocess.
 
-#[derive(Clone, Serialize, Deserialize)]
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+use specta::Type;
+use std::path::PathBuf;
+use tauri::{AppHandle, Emitter};
+use tokio::io::AsyncWriteExt;
+
+/// Base URL for GGML models on HuggingFace
+const GGML_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
+
+#[derive(Clone, Serialize, Deserialize, Type)]
 pub struct ModelInfo {
     pub name: String,
     pub display_name: String,
-    pub size_mb: u64,
+    pub size_mb: u32,
     pub url: String,
     pub installed: bool,
     pub description: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Type)]
 pub struct DownloadProgress {
     pub model: String,
     pub downloaded_mb: f64,
@@ -22,86 +32,79 @@ pub struct DownloadProgress {
     pub status: String,
 }
 
-/// Get available Parakeet models (sherpa-onnx)
-fn get_parakeet_models() -> Vec<ModelInfo> {
+/// Get available Whisper GGML models
+fn get_whisper_models() -> Vec<ModelInfo> {
     vec![
-        // Whisper multilingual models - Support 99 languages including French
         ModelInfo {
-            name: "sherpa-onnx-whisper-tiny".to_string(),
-            display_name: "Whisper Tiny (Multilingual)".to_string(),
+            name: "ggml-tiny".to_string(),
+            display_name: "Whisper Tiny".to_string(),
             size_mb: 75,
-            url: "csukuangfj/sherpa-onnx-whisper-tiny".to_string(),
+            url: format!("{}/ggml-tiny.bin", GGML_BASE_URL),
             installed: false,
-            description: "75 MB • 99 langues (FR, EN, ES, DE...) • Rapide mais basique".to_string(),
+            description: "75 MB • 99 langues • Rapide mais basique".to_string(),
         },
         ModelInfo {
-            name: "sherpa-onnx-whisper-base".to_string(),
-            display_name: "Whisper Base (Multilingual)".to_string(),
-            size_mb: 150,
-            url: "csukuangfj/sherpa-onnx-whisper-base".to_string(),
+            name: "ggml-base".to_string(),
+            display_name: "Whisper Base".to_string(),
+            size_mb: 142,
+            url: format!("{}/ggml-base.bin", GGML_BASE_URL),
             installed: false,
-            description: "150 MB • 99 langues (FR, EN, ES, DE...) • Bon compromis vitesse/qualité"
-                .to_string(),
+            description: "142 MB • 99 langues • Bon compromis vitesse/qualité".to_string(),
         },
         ModelInfo {
-            name: "sherpa-onnx-whisper-small".to_string(),
-            display_name: "Whisper Small (Multilingual) ⭐ Recommandé".to_string(),
-            size_mb: 400,
-            url: "csukuangfj/sherpa-onnx-whisper-small".to_string(),
+            name: "ggml-small".to_string(),
+            display_name: "Whisper Small ⭐ Recommandé".to_string(),
+            size_mb: 466,
+            url: format!("{}/ggml-small.bin", GGML_BASE_URL),
             installed: false,
-            description:
-                "400 MB • 99 langues (FR, EN, ES, DE...) • Meilleure précision pour le français"
-                    .to_string(),
+            description: "466 MB • 99 langues • Meilleure précision pour le français".to_string(),
         },
         ModelInfo {
-            name: "sherpa-onnx-whisper-medium".to_string(),
-            display_name: "Whisper Medium (Multilingual)".to_string(),
-            size_mb: 1000,
-            url: "csukuangfj/sherpa-onnx-whisper-medium".to_string(),
+            name: "ggml-medium".to_string(),
+            display_name: "Whisper Medium".to_string(),
+            size_mb: 1500,
+            url: format!("{}/ggml-medium.bin", GGML_BASE_URL),
             installed: false,
-            description: "1 GB • 99 langues (FR, EN, ES, DE...) • Excellente qualité, plus lent"
-                .to_string(),
+            description: "1.5 GB • 99 langues • Excellente qualité, plus lent".to_string(),
         },
         ModelInfo {
-            name: "sherpa-onnx-whisper-large-v3".to_string(),
-            display_name: "Whisper Large-v3 (Multilingual)".to_string(),
-            size_mb: 3000,
-            url: "csukuangfj/sherpa-onnx-whisper-large-v3".to_string(),
+            name: "ggml-large-v3".to_string(),
+            display_name: "Whisper Large-v3".to_string(),
+            size_mb: 3100,
+            url: format!("{}/ggml-large-v3.bin", GGML_BASE_URL),
             installed: false,
-            description:
-                "3 GB • 99 langues (FR, EN, ES, DE...) • Meilleure précision maximale, très lent"
-                    .to_string(),
+            description: "3.1 GB • 99 langues • Précision maximale, très lent".to_string(),
         },
     ]
 }
 
-/// Get all available models
-pub fn get_available_models() -> Vec<ModelInfo> {
-    get_parakeet_models()
+/// Get the models directory path
+pub fn get_models_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("karaoketyper")
+        .join("models")
 }
 
-/// Get HuggingFace cache directory for a model
-fn get_model_cache_path(model: &ModelInfo) -> Option<std::path::PathBuf> {
-    let cache_dir = dirs::cache_dir()?;
-    let hf_cache = cache_dir.join("huggingface").join("hub");
+/// Get the path to a specific model file
+pub fn get_model_file_path(model_name: &str) -> PathBuf {
+    get_models_dir().join(format!("{}.bin", model_name))
+}
 
-    let parts: Vec<&str> = model.url.split('/').collect();
-    if parts.len() >= 2 {
-        let cache_name = format!("models--{}--{}", parts[0], parts[1]);
-        return Some(hf_cache.join(cache_name));
-    }
-
-    None
+/// Get all available models
+pub fn get_available_models() -> Vec<ModelInfo> {
+    get_whisper_models()
 }
 
 /// Check if a specific model is installed
 fn is_model_installed(model: &ModelInfo) -> bool {
-    if let Some(model_path) = get_model_cache_path(model) {
-        let snapshots = model_path.join("snapshots");
-        if snapshots.exists() && snapshots.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&snapshots) {
-                return entries.count() > 0;
-            }
+    let model_path = get_model_file_path(&model.name);
+    if model_path.exists() {
+        // Verify file size is reasonable (at least 50% of expected size)
+        if let Ok(metadata) = std::fs::metadata(&model_path) {
+            let expected_bytes = model.size_mb as u64 * 1024 * 1024;
+            let actual_bytes = metadata.len();
+            return actual_bytes >= expected_bytes / 2;
         }
     }
     false
@@ -118,27 +121,19 @@ pub fn check_installed_models() -> Result<Vec<ModelInfo>, String> {
     Ok(models)
 }
 
-/// Get the path to a downloaded model
-#[allow(dead_code)]
+/// Get the path to a downloaded model (returns None if not installed)
 pub fn get_model_path(model_name: &str) -> Option<String> {
     let models = get_available_models();
     let model = models.iter().find(|m| m.name == model_name)?;
 
-    if let Some(cache_path) = get_model_cache_path(model) {
-        let snapshots = cache_path.join("snapshots");
-        if snapshots.exists() {
-            if let Ok(mut entries) = std::fs::read_dir(&snapshots) {
-                if let Some(Ok(entry)) = entries.next() {
-                    return Some(entry.path().to_string_lossy().to_string());
-                }
-            }
-        }
+    if is_model_installed(model) {
+        Some(get_model_file_path(model_name).to_string_lossy().to_string())
+    } else {
+        None
     }
-
-    None
 }
 
-/// Download a model using parakeet_service.py
+/// Download a model using native Rust (reqwest)
 pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result<(), String> {
     let models = get_available_models();
     let model_info = models
@@ -148,9 +143,11 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
 
     crate::dev_log!(
         "[MODEL] 📥 Starting download of {} ({} MB)...",
-        model_name, model_info.size_mb
+        model_name,
+        model_info.size_mb
     );
 
+    // Emit starting progress
     let _ = app_handle.emit(
         "model-download-progress",
         DownloadProgress {
@@ -162,202 +159,154 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
         },
     );
 
-    let venv_python = crate::get_venv_python();
-    let python_cmd = if venv_python.exists() {
-        venv_python
-    } else {
-        std::path::PathBuf::from("python3")
-    };
+    // Ensure models directory exists
+    let models_dir = get_models_dir();
+    tokio::fs::create_dir_all(&models_dir)
+        .await
+        .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
-    let python_script = if cfg!(debug_assertions) {
-        // Development paths
-        let cwd = std::env::current_dir().unwrap();
-        let path1 = cwd
-            .join("src-tauri")
-            .join("python")
-            .join("parakeet_service.py");
-        let path2 = cwd.join("python").join("parakeet_service.py");
-        let path3 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("python")
-            .join("parakeet_service.py");
+    let model_path = get_model_file_path(&model_name);
+    let temp_path = model_path.with_extension("bin.tmp");
 
-        if path1.exists() {
-            path1
-        } else if path2.exists() {
-            path2
-        } else {
-            path3
-        }
-    } else {
-        // Production paths - check multiple locations
-        let prod_paths = [
-            // Linux .deb: /usr/lib/karaoketyper/python/
-            std::path::PathBuf::from("/usr/lib/karaoketyper/python/parakeet_service.py"),
-            // Linux alt: /usr/share/karaoketyper/python/
-            std::path::PathBuf::from("/usr/share/karaoketyper/python/parakeet_service.py"),
-            // macOS/Windows: resources next to executable
-            std::env::current_exe()
-                .unwrap_or_default()
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join("resources")
-                .join("python")
-                .join("parakeet_service.py"),
-            // AppImage: ../lib/karaoketyper/python/
-            std::env::current_exe()
-                .unwrap_or_default()
-                .parent()
-                .unwrap_or(std::path::Path::new("."))
-                .join("../lib/karaoketyper/python/parakeet_service.py"),
-        ];
+    // Create HTTP client
+    let client = reqwest::Client::builder()
+        .user_agent("KaraokeTyper/1.0")
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
-        prod_paths
-            .iter()
-            .find(|p| p.exists())
-            .cloned()
-            .unwrap_or_else(|| std::path::PathBuf::from("/usr/lib/karaoketyper/python/parakeet_service.py"))
-    };
+    // Start download
+    let response = client
+        .get(&model_info.url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to start download: {}", e))?;
 
-    if !python_script.exists() {
+    if !response.status().is_success() {
         return Err(format!(
-            "Python service not found at: {}",
-            python_script.display()
+            "Download failed with status: {}",
+            response.status()
         ));
     }
 
-    let mut child = Command::new(&python_cmd)
-        .arg(&python_script)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("Failed to start Python: {}", e))?;
+    // Get content length if available
+    let total_size = response
+        .content_length()
+        .unwrap_or(model_info.size_mb as u64 * 1024 * 1024);
 
-    let mut stdin = child.stdin.take().ok_or("Failed to get stdin")?;
-    let stdout = child.stdout.take().ok_or("Failed to get stdout")?;
-    let reader = BufReader::new(stdout);
+    // Create temp file for download
+    let mut file = tokio::fs::File::create(&temp_path)
+        .await
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
 
-    let mut lines = reader.lines();
-    if let Some(Ok(line)) = lines.next() {
-        let response: serde_json::Value =
-            serde_json::from_str(&line).map_err(|e| format!("Invalid ready signal: {}", e))?;
-        if !response
-            .get("ready")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            let error = response
-                .get("error")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Service not ready");
-            return Err(error.to_string());
+    let mut downloaded: u64 = 0;
+    let mut stream = response.bytes_stream();
+    let mut last_progress_percent: i32 = -1;
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| format!("Download error: {}", e))?;
+
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("Write error: {}", e))?;
+
+        downloaded += chunk.len() as u64;
+
+        // Calculate progress
+        let percent = (downloaded as f64 / total_size as f64 * 100.0).min(100.0);
+        let current_percent = percent as i32;
+
+        // Only emit progress every 1% to avoid flooding
+        if current_percent > last_progress_percent {
+            last_progress_percent = current_percent;
+
+            let _ = app_handle.emit(
+                "model-download-progress",
+                DownloadProgress {
+                    model: model_name.clone(),
+                    downloaded_mb: downloaded as f64 / (1024.0 * 1024.0),
+                    total_mb: total_size as f64 / (1024.0 * 1024.0),
+                    percent,
+                    status: "downloading".to_string(),
+                },
+            );
         }
     }
 
-    let cmd = serde_json::json!({
-        "command": "download_model",
-        "model_name": model_name
-    });
-    writeln!(stdin, "{}", cmd).map_err(|e| format!("Failed to send command: {}", e))?;
-    stdin
-        .flush()
-        .map_err(|e| format!("Failed to flush: {}", e))?;
+    // Flush and close temp file
+    file.flush()
+        .await
+        .map_err(|e| format!("Flush error: {}", e))?;
+    drop(file);
 
-    let mut final_result: Option<serde_json::Value> = None;
+    // Rename temp file to final path
+    tokio::fs::rename(&temp_path, &model_path)
+        .await
+        .map_err(|e| format!("Failed to rename temp file: {}", e))?;
 
-    for line in lines {
-        let line = line.map_err(|e| format!("Read error: {}", e))?;
-        if line.is_empty() {
-            continue;
-        }
+    crate::dev_log!(
+        "[MODEL] ✅ Downloaded {} successfully to {}",
+        model_name,
+        model_path.display()
+    );
 
-        let response: serde_json::Value = serde_json::from_str(&line)
-            .map_err(|e| format!("Invalid JSON: {} - line: {}", e, line))?;
+    // Emit completion
+    let _ = app_handle.emit(
+        "model-download-progress",
+        DownloadProgress {
+            model: model_name.clone(),
+            downloaded_mb: total_size as f64 / (1024.0 * 1024.0),
+            total_mb: total_size as f64 / (1024.0 * 1024.0),
+            percent: 100.0,
+            status: "complete".to_string(),
+        },
+    );
 
-        if let Some(msg_type) = response.get("type").and_then(|v| v.as_str()) {
-            if msg_type == "download_progress" {
-                let percent = response
-                    .get("percent")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                let downloaded = response
-                    .get("downloaded_bytes")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0)
-                    / (1024.0 * 1024.0);
-                let total = response
-                    .get("total_bytes")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0)
-                    / (1024.0 * 1024.0);
+    let _ = app_handle.emit(
+        "model-download-complete",
+        serde_json::json!({
+            "model": model_name,
+            "path": model_path.to_string_lossy()
+        }),
+    );
 
-                let _ = app_handle.emit(
-                    "model-download-progress",
-                    DownloadProgress {
-                        model: model_name.clone(),
-                        downloaded_mb: downloaded,
-                        total_mb: if total > 0.0 {
-                            total
-                        } else {
-                            model_info.size_mb as f64
-                        },
-                        percent,
-                        status: "downloading".to_string(),
-                    },
-                );
-            }
-        } else if response.get("success").is_some() {
-            final_result = Some(response);
-            break;
-        }
+    Ok(())
+}
+
+/// Delete a downloaded model
+#[allow(dead_code)]
+pub async fn delete_model(model_name: &str) -> Result<(), String> {
+    let model_path = get_model_file_path(model_name);
+    if model_path.exists() {
+        tokio::fs::remove_file(&model_path)
+            .await
+            .map_err(|e| format!("Failed to delete model: {}", e))?;
+        crate::dev_log!("[MODEL] 🗑️ Deleted model: {}", model_name);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_models_dir() {
+        let dir = get_models_dir();
+        assert!(dir.to_string_lossy().contains("karaoketyper"));
+        assert!(dir.to_string_lossy().contains("models"));
     }
 
-    let shutdown_cmd = serde_json::json!({"command": "shutdown"});
-    let _ = writeln!(stdin, "{}", shutdown_cmd);
-    let _ = child.wait();
+    #[test]
+    fn test_model_file_path() {
+        let path = get_model_file_path("ggml-base");
+        assert!(path.to_string_lossy().ends_with("ggml-base.bin"));
+    }
 
-    match final_result {
-        Some(result) => {
-            if result
-                .get("success")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
-                crate::dev_log!("[MODEL] ✅ Downloaded {} successfully", model_name);
-
-                let cache_dir = result
-                    .get("cache_dir")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-
-                let _ = app_handle.emit(
-                    "model-download-progress",
-                    DownloadProgress {
-                        model: model_name.clone(),
-                        downloaded_mb: model_info.size_mb as f64,
-                        total_mb: model_info.size_mb as f64,
-                        percent: 100.0,
-                        status: "complete".to_string(),
-                    },
-                );
-
-                let _ = app_handle.emit(
-                    "model-download-complete",
-                    serde_json::json!({
-                        "model": model_name,
-                        "cache_dir": cache_dir
-                    }),
-                );
-
-                Ok(())
-            } else {
-                let error = result
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown error");
-                Err(format!("Download failed: {}", error))
-            }
-        }
-        None => Err("No response from download service".to_string()),
+    #[test]
+    fn test_available_models() {
+        let models = get_available_models();
+        assert!(!models.is_empty());
+        assert!(models.iter().any(|m| m.name == "ggml-base"));
+        assert!(models.iter().any(|m| m.name == "ggml-small"));
     }
 }

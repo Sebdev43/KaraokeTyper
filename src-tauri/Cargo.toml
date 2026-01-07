@@ -26,6 +26,11 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Type-safe Tauri commands with auto-generated TypeScript bindings
+specta = { version = "=2.0.0-rc.22", features = ["derive"] }
+tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
+specta-typescript = "0.0.9"
+
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
@@ -39,8 +44,7 @@ libc = "0.2"
 # Cross-platform paths
 dirs = "5.0"
 
-# Audio capture (cross-platform: WASAPI/CoreAudio/ALSA)
-cpal = "0.15"
+# Audio capture - hound for WAV encoding
 hound = "3.5"
 
 # Zip archive for GNOME extension packaging
@@ -48,9 +52,6 @@ zip = "2.2"
 
 # Lock-free ring buffer for zero-latency audio capture
 ringbuf = "0.4"
-
-# Error handling
-thiserror = "2.0"
 
 # Clipboard (cross-platform: Windows/macOS/Linux+Wayland)
 arboard = "3.4"
@@ -61,10 +62,20 @@ enigo = "0.2"
 # Keyboard event listening (cross-platform)
 rdev = "0.5"
 
-# Linux-specific dependencies (conditional)
+# Speech-to-text (native Rust, cross-platform)
+whisper-rs = "0.14"
+
+# GStreamer for fast audio capture (Linux - like Handy app)
 [target.'cfg(target_os = "linux")'.dependencies]
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+gstreamer-audio = "0.23"
 # evdev for low-level keyboard access on Wayland (fallback)
 evdev = "0.12"
+
+# CPAL fallback for Windows/macOS
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+cpal = "0.15"
 
 [features]
 default = []

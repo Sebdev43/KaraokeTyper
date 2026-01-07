@@ -1,25 +1,26 @@
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Zap } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
+import { commands } from "@/bindings";
 import { getAudioCapture, transcribeAudio } from "@/lib/audioCapture";
+import { type AppStatus, useAppStore } from "@/stores";
 
 interface StatusEvent {
-  status: string;
+  status: AppStatus;
   message: string;
 }
 
 // Helper to log to Rust console
 const logToRust = (msg: string) => {
   console.log(msg);
-  invoke("log_from_frontend", { message: msg }).catch(() => {});
+  commands.logFromFrontend(msg).catch(() => {});
 };
 
 // Guard to prevent duplicate listener setup
 let listenersInitialized = false;
 
 function RecordingOverlay() {
-  const [status, setStatus] = useState<string>("idle");
+  const { status, setStatus } = useAppStore();
   const isRecordingRef = useRef<boolean>(false);
   const audioCapture = useRef(getAudioCapture());
 
@@ -42,7 +43,7 @@ function RecordingOverlay() {
       setStatus("idle");
       isRecordingRef.current = false;
     }
-  }, []);
+  }, [setStatus]);
 
   // Handle stop recording and transcription
   const handleStopRecording = useCallback(async () => {
@@ -68,8 +69,12 @@ function RecordingOverlay() {
 
       if (transcription?.trim()) {
         // Type the transcription
-        await invoke("type_text", { text: transcription.trim() });
-        logToRust("[Overlay] Text typed successfully");
+        const typeResult = await commands.typeText(transcription.trim());
+        if (typeResult.status === "ok") {
+          logToRust("[Overlay] Text typed successfully");
+        } else {
+          logToRust(`[Overlay] Failed to type text: ${typeResult.error}`);
+        }
       } else {
         logToRust("[Overlay] No speech detected");
       }
@@ -78,7 +83,7 @@ function RecordingOverlay() {
     } finally {
       setStatus("idle");
     }
-  }, []);
+  }, [setStatus]);
 
   useEffect(() => {
     // Guard against duplicate listener setup
@@ -125,7 +130,7 @@ function RecordingOverlay() {
       }
       listenersInitialized = false;
     };
-  }, [handleStartRecording, handleStopRecording]);
+  }, [handleStartRecording, handleStopRecording, setStatus]);
 
   return (
     <div className="inline-flex items-center gap-2 px-3 py-2 bg-zinc-900/80 backdrop-blur-md rounded-lg border border-zinc-700/40 shadow-lg">

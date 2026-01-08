@@ -215,8 +215,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          WHISPER_NO_METAL: '1'
-          WHISPER_NO_COREML: '1'
+          MACOSX_DEPLOYMENT_TARGET: '10.15'
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
 

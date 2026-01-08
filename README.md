@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.0.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/license-Polyform%20NC-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/platform-Linux%20|%20Windows%20|%20macOS-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/rust-1.70+-orange.svg" alt="Rust">
@@ -24,7 +24,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
-  <img src="https://img.shields.io/badge/STT-sherpa--onnx-ff6b6b.svg" alt="STT Engine">
+  <img src="https://img.shields.io/badge/STT-Whisper--rs-ff6b6b.svg" alt="STT Engine">
 </p>
 
 ---
@@ -33,33 +33,44 @@
 
 ## Overview
 
-**KaraokeTyper** is a privacy-first, cross-platform voice dictation application. All speech recognition happens **100% offline** using sherpa-onnx with Whisper models - no cloud, no telemetry, no data leaving your machine.
+**KaraokeTyper** is a privacy-first, cross-platform voice dictation application. All speech recognition happens **100% offline** using native Whisper-rs - no cloud, no telemetry, no data leaving your machine.
 
-Press `Ctrl+Space`, speak, release - your words appear instantly in any application.
+Press `Ctrl+Space` (or Mouse5), speak, release - your words appear instantly in any application.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
-| **Push-to-Talk** | Hold `Ctrl+Space` to record, release to transcribe |
+| **Push-to-Talk** | Hold `Ctrl+Space` or Mouse5 to record, release to transcribe |
 | **100% Offline** | All AI processing happens locally on your machine |
 | **Cross-Platform** | Native support for Linux, Windows, and macOS |
 | **Privacy-First** | Zero telemetry, zero cloud, zero data collection |
-| **Fast Transcription** | sherpa-onnx delivers high-accuracy results in seconds |
+| **On-Demand Mic** | Microphone only active during recording (no system tray mic icon) |
+| **Fast Transcription** | Native Whisper-rs delivers high-accuracy results in seconds |
 | **Auto-Type** | Text automatically injected into focused application |
-| **Multi-Language** | Support for French, English, German, Spanish (configurable) |
+| **Multi-Language** | Support for French, English, German, Spanish, and 95+ languages |
 | **Multiple Models** | Whisper Tiny/Base/Small/Medium/Large-v3 for quality/speed trade-offs |
+| **Gaming Mouse Support** | Configure Mouse4, Mouse5, or any mouse button as hotkey |
 | **Modern UI** | Clean dark theme with real-time status indicators |
 | **System Tray** | Runs quietly in the background |
 
 ## Installation
 
-### Prerequisites
+### Download
+
+Download the latest release for your platform:
+- **Linux**: `.deb` or `.AppImage`
+- **Windows**: `.msi` or `.exe`
+- **macOS**: `.dmg`
+
+👉 [Download v1.0.1](https://github.com/Sebdev43/KaraokeTyper/releases/tag/v1.0.1)
+
+### Build from Source
+
+#### Prerequisites
 
 - **Node.js** 18+ and npm
 - **Rust** 1.70+
-
-### Quick Start
 
 ```bash
 # Clone the repository
@@ -86,7 +97,7 @@ npm run tauri dev
 ### Basic Workflow
 
 1. **Focus** any text field (browser, editor, terminal...)
-2. **Hold** `Ctrl+Space` and speak clearly
+2. **Hold** `Ctrl+Space` (or Mouse5) and speak clearly
 3. **Release** to transcribe and auto-type
 
 ### Hotkeys
@@ -94,6 +105,7 @@ npm run tauri dev
 | Shortcut | Action |
 |----------|--------|
 | `Ctrl+Space` | Push-to-talk (hold to record) |
+| `Mouse5` | Alternative push-to-talk (configurable) |
 | `F10` | Open settings window |
 
 ### Status Indicators
@@ -136,6 +148,7 @@ npm run tauri build
 - **No telemetry**, analytics, or tracking of any kind
 - **No cloud services** - your voice data never leaves your machine
 - Audio is processed in memory and **never saved** to disk
+- Microphone only active when PTT key is held
 - Open source - audit the code yourself
 
 ## License
@@ -151,33 +164,44 @@ This project is licensed under the **Polyform Noncommercial License 1.0.0** - se
 
 ## Présentation
 
-**KaraokeTyper** est une application de dictée vocale multi-plateforme axée sur la confidentialité. Toute la reconnaissance vocale se fait **100% hors-ligne** avec sherpa-onnx et les modèles Whisper - pas de cloud, pas de télémétrie, aucune donnée ne quitte votre machine.
+**KaraokeTyper** est une application de dictée vocale multi-plateforme axée sur la confidentialité. Toute la reconnaissance vocale se fait **100% hors-ligne** avec Whisper-rs natif - pas de cloud, pas de télémétrie, aucune donnée ne quitte votre machine.
 
-Appuyez sur `Ctrl+Espace`, parlez, relâchez - vos mots apparaissent instantanément dans n'importe quelle application.
+Appuyez sur `Ctrl+Espace` (ou Mouse5), parlez, relâchez - vos mots apparaissent instantanément dans n'importe quelle application.
 
 ## Fonctionnalités
 
 | Fonctionnalité | Description |
 |----------------|-------------|
-| **Push-to-Talk** | Maintenez `Ctrl+Espace` pour enregistrer, relâchez pour transcrire |
+| **Push-to-Talk** | Maintenez `Ctrl+Espace` ou Mouse5 pour enregistrer, relâchez pour transcrire |
 | **100% Hors-ligne** | Tout le traitement IA se fait localement sur votre machine |
 | **Multi-plateforme** | Support natif pour Linux, Windows et macOS |
 | **Confidentialité** | Zéro télémétrie, zéro cloud, zéro collecte de données |
-| **Transcription rapide** | sherpa-onnx offre des résultats de haute précision en quelques secondes |
+| **Micro à la demande** | Microphone actif uniquement pendant l'enregistrement (pas d'icône micro dans la barre système) |
+| **Transcription rapide** | Whisper-rs natif offre des résultats de haute précision en quelques secondes |
 | **Frappe automatique** | Le texte est automatiquement injecté dans l'application active |
-| **Multi-langue** | Support du français, anglais, allemand, espagnol (configurable) |
+| **Multi-langue** | Support du français, anglais, allemand, espagnol et 95+ langues |
 | **Plusieurs modèles** | Whisper Tiny/Base/Small/Medium/Large-v3 pour différents compromis qualité/vitesse |
+| **Support souris gaming** | Configurez Mouse4, Mouse5 ou n'importe quel bouton comme raccourci |
 | **Interface moderne** | Thème sombre avec indicateurs de statut en temps réel |
 | **Barre système** | Fonctionne discrètement en arrière-plan |
 
 ## Installation
 
-### Prérequis
+### Téléchargement
+
+Téléchargez la dernière version pour votre plateforme :
+- **Linux** : `.deb` ou `.AppImage`
+- **Windows** : `.msi` ou `.exe`
+- **macOS** : `.dmg`
+
+👉 [Télécharger v1.0.1](https://github.com/Sebdev43/KaraokeTyper/releases/tag/v1.0.1)
+
+### Compiler depuis les sources
+
+#### Prérequis
 
 - **Node.js** 18+ et npm
 - **Rust** 1.70+
-
-### Démarrage rapide
 
 ```bash
 # Cloner le dépôt
@@ -204,7 +228,7 @@ npm run tauri dev
 ### Workflow de base
 
 1. **Focalisez** n'importe quel champ texte (navigateur, éditeur, terminal...)
-2. **Maintenez** `Ctrl+Espace` et parlez clairement
+2. **Maintenez** `Ctrl+Espace` (ou Mouse5) et parlez clairement
 3. **Relâchez** pour transcrire et taper automatiquement
 
 ### Raccourcis clavier
@@ -212,6 +236,7 @@ npm run tauri dev
 | Raccourci | Action |
 |-----------|--------|
 | `Ctrl+Espace` | Push-to-talk (maintenir pour enregistrer) |
+| `Mouse5` | Push-to-talk alternatif (configurable) |
 | `F10` | Ouvrir les paramètres |
 
 ### Indicateurs de statut
@@ -254,6 +279,7 @@ npm run tauri build
 - **Aucune télémétrie**, analytique ou suivi
 - **Aucun service cloud** - vos données vocales ne quittent jamais votre machine
 - L'audio est traité en mémoire et **jamais sauvegardé** sur le disque
+- Microphone actif uniquement quand la touche PTT est maintenue
 - Open source - auditez le code vous-même
 
 ## Licence
@@ -270,33 +296,32 @@ Ce projet est sous licence **Polyform Noncommercial License 1.0.0** - voir le fi
 ```
 KaraokeTyper/
 ├── src/                    # Frontend React/TypeScript
-│   ├── components/         # Composants UI (shadcn/ui)
-│   └── windows/            # Vues spécifiques aux fenêtres
+│   ├── components/         # UI components (shadcn/ui)
+│   ├── stores/             # State management (Zustand)
+│   └── bindings.ts         # Tauri TypeScript bindings
 ├── src-tauri/              # Backend Rust
 │   ├── src/
-│   │   ├── lib.rs          # Commandes Tauri & setup
-│   │   ├── audio.rs        # Capture audio (cpal)
-│   │   ├── audio_cli.rs    # Capture audio fallback (parec)
-│   │   ├── stt_parakeet.rs # Intégration sherpa-onnx STT
-│   │   ├── model_downloader.rs  # Gestionnaire de téléchargement
-│   │   ├── output.rs       # Injection de texte (enigo/uinput)
-│   │   └── keyboard_listener.rs # Gestionnaire push-to-talk
-│   └── python/
-│       ├── gpu_detector.py # Détection GPU pour optimisation
-│       └── parakeet_service.py  # Service Python fallback
+│   │   ├── lib.rs          # Tauri commands & setup
+│   │   ├── audio.rs        # Audio capture (GStreamer/cpal)
+│   │   ├── stt_whisper.rs  # Native Whisper-rs STT engine
+│   │   ├── model_downloader.rs  # Model download manager
+│   │   ├── output.rs       # Text injection (enigo/uinput)
+│   │   ├── evdev_listener.rs    # Linux input events
+│   │   └── keyboard_listener.rs # Push-to-talk handler
+│   └── Cargo.toml
 └── README.md
 ```
 
 ## Tech Stack
 
-| Couche | Technologie |
-|--------|-------------|
-| **Frontend** | React 18, TypeScript, Tailwind CSS, shadcn/ui |
+| Layer | Technology |
+|-------|------------|
+| **Frontend** | React 18, TypeScript, Tailwind CSS, shadcn/ui, Zustand |
 | **Backend** | Rust, Tauri 2.0 |
-| **Moteur STT** | sherpa-onnx (modèles Whisper) |
-| **Audio** | cpal (multi-plateforme), parec fallback (Linux) |
-| **Clavier** | rdev (Windows/macOS), evdev (Linux) |
-| **Sortie texte** | enigo, arboard, uinput |
+| **STT Engine** | Whisper-rs (native Rust bindings to whisper.cpp) |
+| **Audio** | GStreamer (Linux), cpal (Windows/macOS) |
+| **Keyboard** | rdev (Windows/macOS), evdev (Linux) |
+| **Text Output** | enigo, arboard, uinput |
 
 ---
 
@@ -318,11 +343,12 @@ We welcome contributions! / Les contributions sont les bienvenues !
 
 ## Credits / Crédits
 
-- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) - High-performance speech recognition
+- [whisper-rs](https://github.com/tazz4843/whisper-rs) - Rust bindings for whisper.cpp
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - High-performance C++ inference
 - [OpenAI Whisper](https://github.com/openai/whisper) - Speech recognition models
 - [Tauri](https://tauri.app) - Cross-platform app framework
 - [shadcn/ui](https://ui.shadcn.com) - Beautiful UI components
-- [cpal](https://github.com/RustAudio/cpal) - Cross-platform audio I/O
+- [GStreamer](https://gstreamer.freedesktop.org) - Multimedia framework
 - [rdev](https://github.com/Narsil/rdev) - Cross-platform input events
 - [enigo](https://github.com/enigo-rs/enigo) - Cross-platform input simulation
 

@@ -115,6 +115,7 @@ jobs:
             librsvg2-dev \
             libasound2-dev \
             libgtk-3-dev \
+            libunwind-dev \
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base \
@@ -180,7 +181,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-13
+          - runner: macos-15
             target: x86_64-apple-darwin
           - runner: macos-14
             target: aarch64-apple-darwin
@@ -188,6 +189,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install macOS dependencies
+        run: |
+          brew install cmake
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -210,6 +215,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WHISPER_NO_METAL: '1'
+          WHISPER_NO_COREML: '1'
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
 

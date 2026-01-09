@@ -60,16 +60,19 @@ mod linux_impl {
             *self.is_recording.lock().unwrap() = true;
 
             // Build GStreamer pipeline for audio capture
-            // Pipeline: pulsesrc -> audioconvert -> audioresample -> appsink
+            // Pipeline: pulsesrc -> queue -> audioconvert -> audioresample -> appsink
+            // Queue element buffers data to prevent sample loss during processing
             let pipeline_str = if let Some(name) = device_name {
                 format!(
-                    "pulsesrc device=\"{}\" ! audioconvert ! audioresample ! \
+                    "pulsesrc device=\"{}\" ! queue max-size-time=0 max-size-buffers=0 max-size-bytes=0 ! \
+                     audioconvert ! audioresample ! \
                      audio/x-raw,format=F32LE,channels=1,rate={} ! appsink name=sink",
                     name, self.target_sample_rate
                 )
             } else {
                 format!(
-                    "pulsesrc ! audioconvert ! audioresample ! \
+                    "pulsesrc ! queue max-size-time=0 max-size-buffers=0 max-size-bytes=0 ! \
+                     audioconvert ! audioresample ! \
                      audio/x-raw,format=F32LE,channels=1,rate={} ! appsink name=sink",
                     self.target_sample_rate
                 )
@@ -90,8 +93,9 @@ mod linux_impl {
                 .dynamic_cast::<AppSink>()
                 .map_err(|_| "sink is not an AppSink")?;
 
-            // Configure appsink for low latency
-            appsink.set_max_buffers(10);
+            // Configure appsink for reliable capture (no sample loss)
+            // max_buffers=0 means unlimited buffering
+            appsink.set_max_buffers(0);
             appsink.set_drop(false);
             appsink.set_sync(false);
 

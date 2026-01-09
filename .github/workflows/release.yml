@@ -119,7 +119,10 @@ jobs:
             libgstreamer1.0-dev \
             libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good
+            gstreamer1.0-plugins-good \
+            libvulkan-dev \
+            glslang-tools \
+            glslc
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -144,6 +147,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --features gpu-vulkan
 
   build-windows:
     needs: create-release
@@ -152,6 +156,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Vulkan SDK
+        uses: humbletim/install-vulkan-sdk@v1.1.1
+        with:
+          version: 1.3.290.0
+          cache: true
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -175,6 +185,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --features gpu-vulkan
 
   build-macos:
     needs: create-release
@@ -216,6 +227,7 @@ jobs:
           CXXFLAGS: '-mmacosx-version-min=10.15'
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --features gpu-metal
 
   publish-release:
     needs: [create-release, build-linux, build-windows, build-macos]

@@ -62,7 +62,7 @@ enigo = "0.2"
 # Keyboard event listening (cross-platform)
 rdev = "0.5"
 
-# Speech-to-text (native Rust, cross-platform)
+# Speech-to-text (CPU by default, GPU acceleration via features)
 whisper-rs = "0.14"
 
 # GStreamer for fast audio capture (Linux - like Handy app)
@@ -73,9 +73,14 @@ gstreamer-audio = "0.23"
 # evdev for low-level keyboard access on Wayland (fallback)
 evdev = "0.12"
 
-# CPAL fallback for Windows/macOS
+# CPAL fallback for Windows/macOS audio capture
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 cpal = "0.15"
 
 [features]
 default = []
+# GPU acceleration features (requires SDK installed for compilation)
+# Linux/Windows: cargo build --features gpu-vulkan
+# macOS: cargo build --features gpu-metal
+gpu-vulkan = ["whisper-rs/vulkan"]
+gpu-metal = ["whisper-rs/metal"]

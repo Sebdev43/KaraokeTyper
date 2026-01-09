@@ -121,8 +121,7 @@ jobs:
             gstreamer1.0-plugins-base \
             gstreamer1.0-plugins-good \
             libvulkan-dev \
-            glslang-tools \
-            libshaderc-dev
+            glslang-tools
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

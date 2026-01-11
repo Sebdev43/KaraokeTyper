@@ -4,6 +4,7 @@ mod logging;
 mod audio;
 mod autostart;
 mod config;
+mod gpu;
 mod keyboard_listener;
 mod model_downloader;
 mod output;
@@ -62,6 +63,32 @@ pub struct GnomeExtensionStatus {
     pub path: String,
     pub needs_restart: bool,
 }
+
+/// GPU acceleration status
+#[derive(Clone, Serialize, Type)]
+pub struct GpuInfo {
+    pub available: bool,
+    pub backend: String,
+    pub device_name: Option<String>,
+    /// Number of consecutive GPU initialization failures
+    pub failure_count: u32,
+    /// Whether GPU is auto-disabled due to too many failures
+    pub disabled_by_failures: bool,
+}
+
+/// GPU status for real-time monitoring and events
+#[derive(Clone, Serialize, Type)]
+pub struct GpuStatus {
+    /// Current mode: "gpu" or "cpu"
+    pub mode: String,
+    /// GPU device name if using GPU
+    pub device_name: Option<String>,
+    /// Reason for CPU fallback if applicable
+    pub fallback_reason: Option<String>,
+    /// Current failure count
+    pub failure_count: u32,
+}
+
 use stt_whisper::WhisperSttEngine;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
@@ -96,10 +123,11 @@ impl SttEngine {
             });
 
         let model_path = resolved_path.ok_or("No model downloaded. Download a model from Settings → STT Models.")?;
-        let engine = WhisperSttEngine::new(&model_path, &config.language);
+        let engine = WhisperSttEngine::new(&model_path, &config.language, config.use_gpu, config.gpu_device_index);
 
         // Initialize the Whisper context by loading the model
-        engine.initialize().map_err(|e| e.to_string())?;
+        // Returns GpuInitResult with info about which mode was actually used
+        let _init_result = engine.initialize().map_err(|e| e.to_string())?;
 
         Ok(SttEngine { engine })
     }
@@ -423,8 +451,8 @@ pub(crate) async fn do_stop_recording(
     // Add silence padding at START and END to prevent Whisper from cutting off words
     // START padding: compensates for GStreamer pipeline startup delay (~100-150ms)
     // END padding: prevents Whisper from truncating the last words
-    let start_padding_samples = 3200; // 200ms at 16kHz (covers pipeline startup delay)
-    let end_padding_samples = 8000;   // 500ms at 16kHz
+    let start_padding_samples = 3200;  // 200ms at 16kHz (covers pipeline startup delay)
+    let end_padding_samples = 16000;   // 1000ms at 16kHz (increased for better end capture)
 
     let mut padded_audio = Vec::with_capacity(
         start_padding_samples + audio_data.len() + end_padding_samples
@@ -446,12 +474,18 @@ pub(crate) async fn do_stop_recording(
         padded_audio.len()
     );
 
-    let stt_engine = state.stt_engine.lock().unwrap();
-    let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
+    // Clone Arc to move into spawn_blocking
+    let stt_engine_arc = Arc::clone(&state.stt_engine);
 
-    let transcription = engine
-        .transcribe(&padded_audio)
-        .map_err(|e| format!("Transcription error: {}", e))?;
+    // Use spawn_blocking to offload CPU-intensive Whisper transcription
+    // This prevents blocking the async executor (like Handy app does)
+    let transcription = tokio::task::spawn_blocking(move || {
+        let stt_engine = stt_engine_arc.lock().unwrap();
+        let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
+        engine.transcribe(&padded_audio)
+    })
+    .await
+    .map_err(|e| format!("Transcription task panicked: {}", e))??;
 
     dev_log!(
         "[TIMING] T+{}ms: transcription complete: '{}'",
@@ -771,8 +805,8 @@ async fn transcribe_audio(
     let duration = audio_data.len() as f32 / 16000.0;
     dev_log!("[TRANSCRIBE] Audio duration: {:.2}s", duration);
 
-    // Add 0.5 second of silence at the END to prevent Whisper from cutting off last words
-    let padding_samples = 8000; // 0.5s at 16kHz
+    // Add 1 second of silence at the END to prevent Whisper from cutting off last words
+    let padding_samples = 16000; // 1s at 16kHz (increased for better end capture)
     let mut padded_audio = audio_data.clone();
     padded_audio.extend(std::iter::repeat_n(0.0f32, padding_samples));
     dev_log!(
@@ -782,14 +816,18 @@ async fn transcribe_audio(
         padded_audio.len()
     );
 
-    // Get STT engine
-    let stt_engine = state.stt_engine.lock().unwrap();
-    let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
+    // Clone Arc to move into spawn_blocking
+    let stt_engine_arc = Arc::clone(&state.stt_engine);
 
-    // Transcribe the audio
-    let transcription = engine
-        .transcribe(&padded_audio)
-        .map_err(|e| format!("Transcription error: {}", e))?;
+    // Use spawn_blocking to offload CPU-intensive Whisper transcription
+    // This prevents blocking the async executor
+    let transcription = tokio::task::spawn_blocking(move || {
+        let stt_engine = stt_engine_arc.lock().unwrap();
+        let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
+        engine.transcribe(&padded_audio)
+    })
+    .await
+    .map_err(|e| format!("Transcription task panicked: {}", e))??;
 
     dev_log!("[TRANSCRIBE] Result: '{}'", transcription);
     Ok(transcription)
@@ -922,6 +960,59 @@ async fn get_system_info() -> Result<SystemInfo, String> {
         display_server,
         desktop_environment: desktop_env,
     })
+}
+
+/// Get GPU acceleration status for Settings UI
+#[tauri::command]
+#[specta::specta]
+fn get_gpu_info() -> Result<GpuInfo, String> {
+    let result = gpu::detect_gpu();
+    let failure_count = stt_whisper::get_gpu_failure_count();
+    let disabled_by_failures = stt_whisper::is_gpu_disabled_by_failures();
+
+    Ok(GpuInfo {
+        available: result.available,
+        backend: result.backend,
+        device_name: result.device_name,
+        failure_count,
+        disabled_by_failures,
+    })
+}
+
+/// Get current GPU status (mode, failures, etc.)
+#[tauri::command]
+#[specta::specta]
+fn get_gpu_status() -> Result<GpuStatus, String> {
+    let failure_count = stt_whisper::get_gpu_failure_count();
+    let disabled = stt_whisper::is_gpu_disabled_by_failures();
+
+    // Determine current mode based on failure state
+    let (mode, fallback_reason) = if disabled {
+        ("cpu".to_string(), Some(format!("GPU auto-disabled after {} consecutive failures", failure_count)))
+    } else {
+        // Without active engine context, we report based on compile-time features
+        let gpu_compiled = cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal");
+        if gpu_compiled {
+            ("gpu".to_string(), None)
+        } else {
+            ("cpu".to_string(), Some("GPU not compiled in this build".to_string()))
+        }
+    };
+
+    Ok(GpuStatus {
+        mode,
+        device_name: None,
+        fallback_reason,
+        failure_count,
+    })
+}
+
+/// Reset GPU failure counter (allows retrying GPU after fixes)
+#[tauri::command]
+#[specta::specta]
+fn reset_gpu_failure_count() -> Result<String, String> {
+    stt_whisper::reset_gpu_failures();
+    Ok("GPU failure counter reset. GPU will be tried again on next initialization.".to_string())
 }
 
 /// Get all app data paths for cleanup
@@ -1506,7 +1597,10 @@ pub fn run() {
             get_autostart_enabled,
             set_autostart_enabled,
             get_app_data_info,
-            cleanup_app_data
+            cleanup_app_data,
+            get_gpu_info,
+            get_gpu_status,
+            reset_gpu_failure_count
         ]);
 
     // Generate TypeScript bindings in development mode

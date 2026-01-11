@@ -303,11 +303,78 @@ karaoketyper/
 | Module | Cross-Platform | Status |
 |--------|---------------|--------|
 | `audio.rs` | ✅ Yes | Uses cpal |
-| `stt.rs` | ✅ Yes | Uses whisper-rs |
+| `stt_whisper.rs` | ✅ Yes | Uses whisper-rs with GPU support |
 | `config.rs` | ✅ Yes | Uses dirs crate |
+| `gpu.rs` | ✅ Yes | GPU detection (Vulkan/Metal) |
 | `output.rs` | ❌ No | Uses ydotool - MUST REFACTOR to enigo |
 | `evdev_listener.rs` | ❌ No | Uses evdev - MUST REFACTOR to rdev |
 | `gnome_shortcut.rs` | ❌ No | GNOME only - MUST REMOVE or make optional |
+
+---
+
+## GPU Acceleration
+
+### Overview
+
+KaraokeTyper supports GPU acceleration via Vulkan (Linux/Windows) or Metal (macOS) for faster Whisper inference.
+
+### Feature Flags
+
+```toml
+# In Cargo.toml
+[features]
+gpu-vulkan = ["whisper-rs/vulkan"]  # Linux/Windows
+gpu-metal = ["whisper-rs/metal"]    # macOS
+```
+
+### GPU Failure Management
+
+The app implements automatic GPU fallback with failure tracking:
+
+- **Automatic Fallback**: If GPU init fails, automatically falls back to CPU
+- **Failure Counter**: Tracks consecutive GPU failures (max 3)
+- **Auto-Disable**: GPU is disabled after 3 consecutive failures
+- **User Reset**: Users can reset the counter via Settings UI
+
+### Configuration
+
+```json
+{
+  "use_gpu": true,           // Enable GPU acceleration
+  "gpu_device_index": null   // GPU device index (null = auto, 0/1/2 for specific GPU)
+}
+```
+
+### Key Functions (`stt_whisper.rs`)
+
+```rust
+// GPU failure tracking
+pub fn record_gpu_failure() -> u32;      // Increment failure counter
+pub fn reset_gpu_failures();              // Reset counter (user action)
+pub fn get_gpu_failure_count() -> u32;   // Get current count
+pub fn is_gpu_disabled_by_failures() -> bool; // Check if auto-disabled
+
+// Initialization returns detailed status
+pub fn initialize(&self) -> Result<GpuInitResult, WhisperError>;
+```
+
+### Tauri Commands (`lib.rs`)
+
+```rust
+get_gpu_info()           // GPU detection info + failure count
+get_gpu_status()         // Current mode (gpu/cpu) + fallback reason
+reset_gpu_failure_count() // Reset failure counter
+```
+
+### VRAM Requirements
+
+| Model | Parameters | File Size | VRAM Required |
+|-------|------------|-----------|---------------|
+| tiny | 39M | 75 MB | ~1 GB |
+| base | 74M | 142 MB | ~1 GB |
+| small | 244M | 466 MB | ~2 GB |
+| medium | 769M | 1.5 GB | ~5 GB |
+| large-v3 | 1550M | 2.9 GB | ~10 GB |
 
 ---
 

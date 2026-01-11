@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { AudioDevice, ModelInfo } from "@/bindings";
+import type { AudioDevice, GpuInfo, GpuStatus, ModelInfo } from "@/bindings";
 
 interface SettingsState {
   // Audio settings
@@ -23,6 +23,12 @@ interface SettingsState {
   // App behavior
   autostart: boolean;
 
+  // GPU acceleration
+  gpuInfo: GpuInfo | null;
+  gpuStatus: GpuStatus | null;
+  gpuDeviceIndex: number | null;
+  useGpuAcceleration: boolean;
+
   // UI states
   isRefreshing: boolean;
   saveStatus: string;
@@ -37,6 +43,10 @@ interface SettingsState {
   setDownloadingModel: (model: string | null) => void;
   setDownloadProgress: (progress: number) => void;
   setAutostart: (enabled: boolean) => void;
+  setGpuInfo: (info: GpuInfo | null) => void;
+  setGpuStatus: (status: GpuStatus | null) => void;
+  setGpuDeviceIndex: (index: number | null) => void;
+  setUseGpuAcceleration: (enabled: boolean) => void;
   setIsRefreshing: (refreshing: boolean) => void;
   setSaveStatus: (status: string) => void;
   reset: () => void;
@@ -53,6 +63,10 @@ const initialState = {
   downloadingModel: null,
   downloadProgress: 0,
   autostart: false,
+  gpuInfo: null,
+  gpuStatus: null,
+  gpuDeviceIndex: null,
+  useGpuAcceleration: false, // CPU by default for safety
   isRefreshing: false,
   saveStatus: "",
 };
@@ -84,6 +98,14 @@ export const useSettingsStore = create<SettingsState>()(
 
       setAutostart: (enabled) => set({ autostart: enabled }),
 
+      setGpuInfo: (info) => set({ gpuInfo: info }),
+
+      setGpuStatus: (status) => set({ gpuStatus: status }),
+
+      setGpuDeviceIndex: (index) => set({ gpuDeviceIndex: index }),
+
+      setUseGpuAcceleration: (enabled) => set({ useGpuAcceleration: enabled }),
+
       setIsRefreshing: (refreshing) => set({ isRefreshing: refreshing }),
 
       setSaveStatus: (status) => set({ saveStatus: status }),
@@ -99,6 +121,8 @@ export const useSettingsStore = create<SettingsState>()(
         language: state.language,
         shortcut: state.shortcut,
         autostart: state.autostart,
+        useGpuAcceleration: state.useGpuAcceleration,
+        gpuDeviceIndex: state.gpuDeviceIndex,
       }),
     },
   ),

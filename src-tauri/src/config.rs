@@ -14,6 +14,12 @@ pub struct AppConfig {
     pub language: String,
     #[serde(default)]
     pub model_path: Option<String>,
+    /// Enable GPU acceleration for Whisper inference (default: false for safety)
+    #[serde(default)]
+    pub use_gpu: bool,
+    /// GPU device index for multi-GPU systems (default: None = use first available)
+    #[serde(default)]
+    pub gpu_device_index: Option<u32>,
 }
 
 impl Default for AppConfig {
@@ -26,6 +32,8 @@ impl Default for AppConfig {
             key_delay_ms: 8,
             language: "fr".to_string(),
             model_path: None,
+            use_gpu: false,
+            gpu_device_index: None,
         }
     }
 }

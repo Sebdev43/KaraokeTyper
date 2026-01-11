@@ -5,8 +5,43 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
+
+/// Maximum consecutive GPU failures before auto-disabling GPU
+const MAX_GPU_FAILURES: u32 = 3;
+
+/// Global counter for consecutive GPU initialization failures
+static GPU_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// Record a GPU failure and return the new failure count
+pub fn record_gpu_failure() -> u32 {
+    let count = GPU_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    eprintln!("[GPU] Failure recorded. Total consecutive failures: {}", count);
+    if count >= MAX_GPU_FAILURES {
+        eprintln!("[GPU] GPU auto-disabled after {} consecutive failures", count);
+    }
+    count
+}
+
+/// Reset GPU failure counter (called after successful GPU init)
+pub fn reset_gpu_failures() {
+    let previous = GPU_FAILURE_COUNT.swap(0, Ordering::Relaxed);
+    if previous > 0 {
+        println!("[GPU] Failure counter reset (was: {})", previous);
+    }
+}
+
+/// Get current GPU failure count
+pub fn get_gpu_failure_count() -> u32 {
+    GPU_FAILURE_COUNT.load(Ordering::Relaxed)
+}
+
+/// Check if GPU is disabled due to too many failures
+pub fn is_gpu_disabled_by_failures() -> bool {
+    GPU_FAILURE_COUNT.load(Ordering::Relaxed) >= MAX_GPU_FAILURES
+}
 
 /// Whisper STT error types
 #[derive(Debug)]
@@ -29,6 +64,57 @@ impl fmt::Display for WhisperError {
 }
 
 impl std::error::Error for WhisperError {}
+
+/// Result of GPU initialization attempt
+#[derive(Debug, Clone)]
+pub struct GpuInitResult {
+    /// Mode used: "gpu" or "cpu"
+    pub mode: String,
+    /// Device name if GPU was used
+    pub device_name: Option<String>,
+    /// Reason for fallback if GPU failed
+    pub fallback_reason: Option<String>,
+    /// Current GPU failure count
+    pub failure_count: u32,
+}
+
+impl GpuInitResult {
+    pub fn gpu_success(device_name: Option<String>) -> Self {
+        Self {
+            mode: "gpu".to_string(),
+            device_name,
+            fallback_reason: None,
+            failure_count: get_gpu_failure_count(),
+        }
+    }
+
+    pub fn cpu_by_choice() -> Self {
+        Self {
+            mode: "cpu".to_string(),
+            device_name: None,
+            fallback_reason: None,
+            failure_count: get_gpu_failure_count(),
+        }
+    }
+
+    pub fn cpu_fallback(reason: String) -> Self {
+        Self {
+            mode: "cpu".to_string(),
+            device_name: None,
+            fallback_reason: Some(reason),
+            failure_count: get_gpu_failure_count(),
+        }
+    }
+
+    pub fn cpu_disabled_by_failures() -> Self {
+        Self {
+            mode: "cpu".to_string(),
+            device_name: None,
+            fallback_reason: Some(format!("GPU auto-disabled after {} consecutive failures", MAX_GPU_FAILURES)),
+            failure_count: get_gpu_failure_count(),
+        }
+    }
+}
 
 /// Clean up Whisper transcription by removing artifacts and hallucinations
 fn clean_transcription(text: &str) -> String {
@@ -91,6 +177,8 @@ pub struct WhisperSttEngine {
     context: Mutex<Option<WhisperContext>>,
     model_path: PathBuf,
     language: String,
+    use_gpu: bool,
+    gpu_device_index: Option<u32>,
 }
 
 impl WhisperSttEngine {
@@ -99,45 +187,122 @@ impl WhisperSttEngine {
     /// # Arguments
     /// * `model_path` - Path to the GGML model file (.bin)
     /// * `language` - Language code (e.g., "fr", "en", "auto")
-    pub fn new(model_path: &str, language: &str) -> Self {
+    /// * `use_gpu` - Enable GPU acceleration (requires compile-time GPU features)
+    /// * `gpu_device_index` - Optional GPU device index for multi-GPU systems
+    pub fn new(model_path: &str, language: &str, use_gpu: bool, gpu_device_index: Option<u32>) -> Self {
         Self {
             context: Mutex::new(None),
             model_path: PathBuf::from(model_path),
             language: language.to_string(),
+            use_gpu,
+            gpu_device_index,
         }
     }
 
     /// Initialize the Whisper context by loading the model
-    pub fn initialize(&self) -> Result<(), WhisperError> {
+    ///
+    /// If GPU is enabled but fails to initialize, automatically falls back to CPU mode.
+    /// Returns information about which mode was actually used.
+    pub fn initialize(&self) -> Result<GpuInitResult, WhisperError> {
         if !self.model_path.exists() {
             return Err(WhisperError::ModelNotFound(
                 self.model_path.display().to_string(),
             ));
         }
 
-        #[cfg(not(debug_assertions))]
-        let params = WhisperContextParameters::default();
+        // Configure GPU acceleration based on user preference
+        // GPU is only used if:
+        // 1. User enabled it in settings (use_gpu = true)
+        // 2. App was compiled with GPU features (gpu-vulkan or gpu-metal)
+        // 3. GPU hasn't been auto-disabled due to failures
+        let gpu_available = cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal");
+        let gpu_disabled_by_failures = is_gpu_disabled_by_failures();
+        let should_use_gpu = self.use_gpu && gpu_available && !gpu_disabled_by_failures;
 
-        #[cfg(debug_assertions)]
-        let params = {
-            let p = WhisperContextParameters::default();
-            // In debug mode, we might want to enable GPU if available
-            p
+        println!(
+            "[Whisper] GPU: user_pref={}, compiled={}, disabled_by_failures={}, active={}",
+            self.use_gpu, gpu_available, gpu_disabled_by_failures, should_use_gpu
+        );
+
+        let model_path_str = self.model_path.to_str().unwrap_or_default();
+
+        // If GPU disabled by failures, use CPU directly
+        if self.use_gpu && gpu_available && gpu_disabled_by_failures {
+            println!("[Whisper] GPU requested but disabled due to {} consecutive failures", get_gpu_failure_count());
+
+            let mut cpu_params = WhisperContextParameters::default();
+            cpu_params.use_gpu(false);
+
+            let ctx = WhisperContext::new_with_params(model_path_str, cpu_params)
+                .map_err(|e| WhisperError::ModelLoadError(format!("{:?}", e)))?;
+
+            let mut guard = self.context.lock().unwrap();
+            *guard = Some(ctx);
+
+            println!("[Whisper] Model loaded (CPU - GPU disabled): {}", self.model_path.display());
+            return Ok(GpuInitResult::cpu_disabled_by_failures());
+        }
+
+        // Try to load with GPU if requested
+        let (ctx, init_result) = if should_use_gpu {
+            let mut gpu_params = WhisperContextParameters::default();
+            gpu_params.use_gpu(true);
+
+            // Set GPU device index if specified
+            if let Some(device_idx) = self.gpu_device_index {
+                gpu_params.gpu_device(device_idx as i32);
+                println!("[Whisper] Using GPU device index: {}", device_idx);
+            }
+
+            match WhisperContext::new_with_params(model_path_str, gpu_params) {
+                Ok(ctx) => {
+                    // GPU success - reset failure counter
+                    reset_gpu_failures();
+                    println!("[Whisper] ✓ GPU acceleration enabled successfully");
+                    (ctx, GpuInitResult::gpu_success(None))
+                }
+                Err(gpu_error) => {
+                    // GPU failed - record failure and fallback to CPU
+                    let failure_count = record_gpu_failure();
+                    let error_msg = format!("{:?}", gpu_error);
+
+                    eprintln!(
+                        "[Whisper] ⚠ GPU initialization failed (attempt {}): {}",
+                        failure_count, error_msg
+                    );
+                    eprintln!("[Whisper] → Falling back to CPU mode...");
+
+                    let mut cpu_params = WhisperContextParameters::default();
+                    cpu_params.use_gpu(false);
+
+                    let ctx = WhisperContext::new_with_params(model_path_str, cpu_params)
+                        .map_err(|e| {
+                            WhisperError::ModelLoadError(format!(
+                                "GPU failed ({}), CPU fallback also failed: {:?}",
+                                error_msg, e
+                            ))
+                        })?;
+
+                    (ctx, GpuInitResult::cpu_fallback(error_msg))
+                }
+            }
+        } else {
+            // CPU mode requested by user
+            let mut cpu_params = WhisperContextParameters::default();
+            cpu_params.use_gpu(false);
+
+            let ctx = WhisperContext::new_with_params(model_path_str, cpu_params)
+                .map_err(|e| WhisperError::ModelLoadError(format!("{:?}", e)))?;
+
+            (ctx, GpuInitResult::cpu_by_choice())
         };
-
-        let ctx = WhisperContext::new_with_params(
-            self.model_path.to_str().unwrap_or_default(),
-            params,
-        )
-        .map_err(|e| WhisperError::ModelLoadError(format!("{:?}", e)))?;
 
         let mut guard = self.context.lock().unwrap();
         *guard = Some(ctx);
 
-        #[cfg(debug_assertions)]
-        println!("[Whisper] Model loaded: {}", self.model_path.display());
+        println!("[Whisper] Model loaded ({}): {}", init_result.mode, self.model_path.display());
 
-        Ok(())
+        Ok(init_result)
     }
 
     /// Check if the engine is initialized
@@ -176,8 +341,11 @@ impl WhisperSttEngine {
             println!("[Whisper] Transcribing {:.2}s of audio ({} samples)", duration, audio_data.len());
         }
 
-        // Create inference parameters
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        // Create inference parameters (BeamSearch like Handy for better accuracy)
+        let mut params = FullParams::new(SamplingStrategy::BeamSearch {
+            beam_size: 3,
+            patience: -1.0,
+        });
 
         // Set language (empty string means auto-detect)
         if self.language != "auto" && !self.language.is_empty() {
@@ -191,7 +359,9 @@ impl WhisperSttEngine {
         params.set_print_timestamps(false);
         params.set_translate(false);
         params.set_no_context(true);
-        params.set_single_segment(true);
+        // Allow multiple segments for long audio (>30s)
+        // single_segment=true would truncate long dictations
+        params.set_single_segment(false);
 
         // Suppress non-speech tokens for cleaner output
         params.set_suppress_blank(true);
@@ -251,15 +421,35 @@ mod tests {
 
     #[test]
     fn test_engine_creation() {
-        let engine = WhisperSttEngine::new("/path/to/model.bin", "fr");
+        let engine = WhisperSttEngine::new("/path/to/model.bin", "fr", false, None);
         assert_eq!(engine.language(), "fr");
         assert!(!engine.is_initialized());
     }
 
     #[test]
     fn test_model_not_found() {
-        let engine = WhisperSttEngine::new("/nonexistent/model.bin", "fr");
+        let engine = WhisperSttEngine::new("/nonexistent/model.bin", "fr", false, None);
         let result = engine.initialize();
         assert!(matches!(result, Err(WhisperError::ModelNotFound(_))));
+    }
+
+    #[test]
+    fn test_gpu_failure_counter() {
+        reset_gpu_failures();
+        assert_eq!(get_gpu_failure_count(), 0);
+        assert!(!is_gpu_disabled_by_failures());
+
+        record_gpu_failure();
+        assert_eq!(get_gpu_failure_count(), 1);
+        assert!(!is_gpu_disabled_by_failures());
+
+        record_gpu_failure();
+        record_gpu_failure();
+        assert_eq!(get_gpu_failure_count(), 3);
+        assert!(is_gpu_disabled_by_failures());
+
+        reset_gpu_failures();
+        assert_eq!(get_gpu_failure_count(), 0);
+        assert!(!is_gpu_disabled_by_failures());
     }
 }

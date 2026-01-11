@@ -5,6 +5,7 @@ import { platform } from "@tauri-apps/plugin-os";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Brain,
+  Cpu,
   Download,
   Info,
   Keyboard,
@@ -67,6 +68,12 @@ function SettingsWindow() {
     setDownloadProgress,
     autostart,
     setAutostart,
+    gpuInfo,
+    setGpuInfo,
+    gpuStatus,
+    setGpuStatus,
+    useGpuAcceleration,
+    setUseGpuAcceleration,
     isRefreshing,
     setIsRefreshing,
     saveStatus,
@@ -130,13 +137,14 @@ function SettingsWindow() {
         setSelectedDevice(result.data.audio_device_index);
         setModel(result.data.model);
         setLanguage(result.data.language);
+        setUseGpuAcceleration(result.data.use_gpu ?? false);
       } else {
         console.error("Failed to load settings:", result.error);
       }
     } catch (error) {
       console.error("Failed to load settings:", error);
     }
-  }, [setShortcut, setSelectedDevice, setModel, setLanguage]);
+  }, [setShortcut, setSelectedDevice, setModel, setLanguage, setUseGpuAcceleration]);
 
   const checkPermissions = useCallback(async () => {
     try {
@@ -192,6 +200,44 @@ function SettingsWindow() {
       console.error("Failed to load autostart status:", error);
     }
   }, [setAutostart]);
+
+  const loadGpuInfo = useCallback(async () => {
+    try {
+      const result = await commands.getGpuInfo();
+      if (result.status === "ok") {
+        setGpuInfo(result.data);
+      }
+    } catch (error) {
+      console.error("Failed to load GPU info:", error);
+    }
+  }, [setGpuInfo]);
+
+  const loadGpuStatus = useCallback(async () => {
+    try {
+      const result = await commands.getGpuStatus();
+      if (result.status === "ok") {
+        setGpuStatus(result.data);
+      }
+    } catch (error) {
+      console.error("Failed to load GPU status:", error);
+    }
+  }, [setGpuStatus]);
+
+  const handleResetGpuFailures = async () => {
+    try {
+      const result = await commands.resetGpuFailureCount();
+      if (result.status === "ok") {
+        await message(result.data, { title: "GPU Reset", kind: "info" });
+        // Reload GPU info and status to reflect changes
+        await loadGpuInfo();
+        await loadGpuStatus();
+      } else {
+        console.error("Failed to reset GPU failures:", result.error);
+      }
+    } catch (error) {
+      console.error("Failed to reset GPU failures:", error);
+    }
+  };
 
   const handleToggleAutostart = async (enabled: boolean) => {
     setIsTogglingAutostart(true);
@@ -263,6 +309,8 @@ function SettingsWindow() {
     void loadInstalledModels();
     void checkGnomeExtension();
     void loadAutostart();
+    void loadGpuInfo();
+    void loadGpuStatus();
   }, [
     loadAudioDevices,
     loadSettings,
@@ -271,6 +319,8 @@ function SettingsWindow() {
     loadInstalledModels,
     checkGnomeExtension,
     loadAutostart,
+    loadGpuInfo,
+    loadGpuStatus,
   ]);
 
   useEffect(() => {
@@ -397,6 +447,7 @@ function SettingsWindow() {
         key_delay_ms: 8,
         language,
         model_path: modelPath,
+        use_gpu: useGpuAcceleration,
       };
 
       const result = await commands.saveSettings(config);
@@ -706,6 +757,111 @@ function SettingsWindow() {
                   </SelectContent>
                 </Select>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Performance / GPU Acceleration */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Cpu className="h-5 w-5 text-primary" />
+                Performance
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* GPU Info */}
+              <div className="flex items-center justify-between">
+                <div className="space-y-1">
+                  <Label>Detected GPU</Label>
+                  <p className="text-sm text-muted-foreground">
+                    {gpuInfo ? gpuInfo.device_name || "No GPU detected" : "Detecting..."}
+                  </p>
+                </div>
+                <Badge variant={gpuInfo?.available ? "default" : "secondary"}>
+                  {gpuInfo ? (gpuInfo.available ? gpuInfo.backend : "CPU Only") : "..."}
+                </Badge>
+              </div>
+
+              {/* Current Mode Status */}
+              {gpuStatus && (
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label>Current Mode</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {gpuStatus.fallback_reason || "Running normally"}
+                    </p>
+                  </div>
+                  <Badge
+                    variant={gpuStatus.mode === "gpu" ? "default" : "secondary"}
+                    className={cn(
+                      gpuStatus.mode === "gpu" && "bg-green-600",
+                      gpuStatus.mode === "cpu" && gpuStatus.fallback_reason && "bg-yellow-600",
+                    )}
+                  >
+                    {gpuStatus.mode === "gpu" ? "GPU Active" : "CPU Mode"}
+                  </Badge>
+                </div>
+              )}
+
+              {/* GPU Failure Warning */}
+              {gpuInfo && gpuInfo.failure_count > 0 && (
+                <div className="flex items-center justify-between p-2 rounded bg-yellow-500/10 border border-yellow-500/30">
+                  <div className="space-y-1">
+                    <p className="text-sm text-yellow-500 font-medium">
+                      {gpuInfo.disabled_by_failures
+                        ? `GPU auto-disabled after ${gpuInfo.failure_count} failures`
+                        : `${gpuInfo.failure_count} GPU failure(s) recorded`}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {gpuInfo.disabled_by_failures
+                        ? "GPU will not be used until you reset the counter"
+                        : "GPU will be auto-disabled after 3 consecutive failures"}
+                    </p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleResetGpuFailures}
+                    className="shrink-0"
+                  >
+                    <RefreshCw className="h-4 w-4 mr-1" />
+                    Retry GPU
+                  </Button>
+                </div>
+              )}
+
+              <Separator />
+
+              {/* GPU Toggle */}
+              <div className="flex items-center justify-between">
+                <div className="space-y-1">
+                  <Label>GPU Acceleration</Label>
+                  <p className="text-sm text-muted-foreground">
+                    {useGpuAcceleration
+                      ? "Using GPU for faster transcription"
+                      : "Using CPU (safer, more compatible)"}
+                  </p>
+                </div>
+                <Switch
+                  checked={useGpuAcceleration}
+                  onCheckedChange={setUseGpuAcceleration}
+                  disabled={!gpuInfo?.available || gpuInfo?.disabled_by_failures}
+                />
+              </div>
+
+              {/* Warning */}
+              {useGpuAcceleration && !gpuInfo?.disabled_by_failures && (
+                <p className="text-xs text-yellow-500">
+                  GPU acceleration requires app restart. If you experience crashes, disable this
+                  option.
+                </p>
+              )}
+              {!gpuInfo?.available && (
+                <p className="text-xs text-muted-foreground">
+                  GPU acceleration not available. App compiled without GPU support or no compatible
+                  GPU found.
+                </p>
+              )}
             </CardContent>
           </Card>
 

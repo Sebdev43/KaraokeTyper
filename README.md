@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.1-blue.svg" alt="Version">
+  <a href="https://github.com/Sebdev43/KaraokeTyper/releases/latest"><img src="https://img.shields.io/github/v/release/Sebdev43/KaraokeTyper?color=blue&label=version" alt="Version"></a>
   <img src="https://img.shields.io/badge/license-Polyform%20NC-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/platform-Linux%20|%20Windows%20|%20macOS-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/rust-1.70+-orange.svg" alt="Rust">
@@ -63,7 +63,7 @@ Download the latest release for your platform:
 - **Windows**: `.msi` or `.exe`
 - **macOS**: `.dmg`
 
-👉 [Download v1.0.1](https://github.com/Sebdev43/KaraokeTyper/releases/tag/v1.0.1)
+👉 [Download Latest Release](https://github.com/Sebdev43/KaraokeTyper/releases/latest)
 
 ### Install on Linux
 
@@ -275,7 +275,7 @@ Téléchargez la dernière version pour votre plateforme :
 - **Windows** : `.msi` ou `.exe`
 - **macOS** : `.dmg`
 
-👉 [Télécharger v1.0.1](https://github.com/Sebdev43/KaraokeTyper/releases/tag/v1.0.1)
+👉 [Télécharger la dernière version](https://github.com/Sebdev43/KaraokeTyper/releases/latest)
 
 ### Installer sur Linux
 

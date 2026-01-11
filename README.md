@@ -65,6 +65,87 @@ Download the latest release for your platform:
 
 👉 [Download v1.0.1](https://github.com/Sebdev43/KaraokeTyper/releases/tag/v1.0.1)
 
+### Install on Linux
+
+**Debian/Ubuntu (.deb):**
+```bash
+# Install
+sudo dpkg -i karaoketyper_*_amd64.deb
+sudo apt-get install -f  # Fix dependencies if needed
+
+# Launch
+karaoketyper
+```
+
+**AppImage:**
+```bash
+# Make executable and run
+chmod +x KaraokeTyper_*_amd64.AppImage
+./KaraokeTyper_*_amd64.AppImage
+```
+
+### Install on Windows
+
+**Installer (.exe):**
+1. Double-click `karaoketyper_*_x64-setup.exe`
+2. Follow the installation wizard
+3. Launch from Start Menu
+
+**MSI Package:**
+```powershell
+# Or via command line
+msiexec /i karaoketyper_*_x64_en-US.msi
+```
+
+### Install on macOS
+
+1. Open `karaoketyper_*_aarch64.dmg` (Apple Silicon) or `karaoketyper_*_x64.dmg` (Intel)
+2. Drag **KaraokeTyper** to the **Applications** folder
+3. On first launch: Right-click → Open (to bypass Gatekeeper)
+
+## Uninstallation
+
+### Uninstall on Linux
+
+**Debian/Ubuntu:**
+```bash
+sudo apt remove karaoketyper
+# Or completely remove with config:
+sudo apt purge karaoketyper
+```
+
+**AppImage:**
+```bash
+# Simply delete the file
+rm KaraokeTyper_*.AppImage
+# Remove user data (optional):
+rm -rf ~/.config/karaoketyper
+rm -rf ~/.local/share/karaoketyper
+```
+
+### Uninstall on Windows
+
+1. Open **Settings** → **Apps** → **Installed Apps**
+2. Find **KaraokeTyper** and click **Uninstall**
+
+Or via Control Panel → Programs → Uninstall a program
+
+**Remove user data (optional):**
+```powershell
+Remove-Item -Recurse "$env:APPDATA\karaoketyper"
+```
+
+### Uninstall on macOS
+
+1. Drag **KaraokeTyper** from Applications to Trash
+2. Empty Trash
+
+**Remove user data (optional):**
+```bash
+rm -rf ~/Library/Application\ Support/karaoketyper
+rm -rf ~/Library/Preferences/com.karaoketyper.app.plist
+```
+
 ### Build from Source
 
 #### Prerequisites
@@ -195,6 +276,87 @@ Téléchargez la dernière version pour votre plateforme :
 - **macOS** : `.dmg`
 
 👉 [Télécharger v1.0.1](https://github.com/Sebdev43/KaraokeTyper/releases/tag/v1.0.1)
+
+### Installer sur Linux
+
+**Debian/Ubuntu (.deb) :**
+```bash
+# Installer
+sudo dpkg -i karaoketyper_*_amd64.deb
+sudo apt-get install -f  # Corriger les dépendances si nécessaire
+
+# Lancer
+karaoketyper
+```
+
+**AppImage :**
+```bash
+# Rendre exécutable et lancer
+chmod +x KaraokeTyper_*_amd64.AppImage
+./KaraokeTyper_*_amd64.AppImage
+```
+
+### Installer sur Windows
+
+**Installateur (.exe) :**
+1. Double-cliquez sur `karaoketyper_*_x64-setup.exe`
+2. Suivez l'assistant d'installation
+3. Lancez depuis le menu Démarrer
+
+**Package MSI :**
+```powershell
+# Ou via ligne de commande
+msiexec /i karaoketyper_*_x64_en-US.msi
+```
+
+### Installer sur macOS
+
+1. Ouvrez `karaoketyper_*_aarch64.dmg` (Apple Silicon) ou `karaoketyper_*_x64.dmg` (Intel)
+2. Glissez **KaraokeTyper** vers le dossier **Applications**
+3. Au premier lancement : Clic droit → Ouvrir (pour contourner Gatekeeper)
+
+## Désinstallation
+
+### Désinstaller sur Linux
+
+**Debian/Ubuntu :**
+```bash
+sudo apt remove karaoketyper
+# Ou supprimer complètement avec la config :
+sudo apt purge karaoketyper
+```
+
+**AppImage :**
+```bash
+# Supprimez simplement le fichier
+rm KaraokeTyper_*.AppImage
+# Supprimer les données utilisateur (optionnel) :
+rm -rf ~/.config/karaoketyper
+rm -rf ~/.local/share/karaoketyper
+```
+
+### Désinstaller sur Windows
+
+1. Ouvrez **Paramètres** → **Applications** → **Applications installées**
+2. Trouvez **KaraokeTyper** et cliquez sur **Désinstaller**
+
+Ou via Panneau de configuration → Programmes → Désinstaller un programme
+
+**Supprimer les données utilisateur (optionnel) :**
+```powershell
+Remove-Item -Recurse "$env:APPDATA\karaoketyper"
+```
+
+### Désinstaller sur macOS
+
+1. Glissez **KaraokeTyper** depuis Applications vers la Corbeille
+2. Videz la Corbeille
+
+**Supprimer les données utilisateur (optionnel) :**
+```bash
+rm -rf ~/Library/Application\ Support/karaoketyper
+rm -rf ~/Library/Preferences/com.karaoketyper.app.plist
+```
 
 ### Compiler depuis les sources
 

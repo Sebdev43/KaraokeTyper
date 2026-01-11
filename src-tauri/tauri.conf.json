@@ -37,6 +37,7 @@
         "y": 80,
         "skipTaskbar": true,
         "transparent": true,
+        "backgroundColor": [0, 0, 0, 0],
         "visible": false
       }
     ],

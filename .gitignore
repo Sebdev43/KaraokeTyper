@@ -35,3 +35,8 @@ reference-nerd-dictation/
 # Models (downloaded at runtime)
 src-tauri/models/
 __pycache__/
+
+# Claude Code
+CLAUDE.md
+.claude/
+.agents/

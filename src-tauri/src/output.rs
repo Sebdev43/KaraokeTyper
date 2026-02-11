@@ -648,7 +648,7 @@ impl TextOutput {
                 "/org/gnome/Shell",
                 "--method",
                 "org.gnome.Shell.Eval",
-                "global.display.focus_window ? global.display.focus_window.get_wm_class() : ''",
+                "let w = global.display.focus_window; w ? w.get_wm_class() + '|' + w.get_title() : ''",
             ])
             .env("XDG_RUNTIME_DIR", &xdg_runtime)
             .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
@@ -668,19 +668,42 @@ impl TextOutput {
                     "tilix",
                     "terminator",
                     "urxvt",
-                    "st",
                     "foot",
                     "wezterm",
-                    "terminal",
-                    "term",
                     "blackbox",
                     "ptyxis",
+                    "ghostty",
                 ];
 
                 for term in terminals {
                     if stdout.contains(term) {
                         crate::dev_log!("[OUTPUT] 🖥️ GNOME Eval detected terminal: {}", term);
                         return Some(true);
+                    }
+                }
+
+                // Check for VS Code with terminal pane focused
+                let code_editors = ["code", "code-insiders", "code-oss", "codium", "cursor"];
+                for editor in code_editors {
+                    if stdout.contains(editor) {
+                        // Check window title for shell/process names
+                        let shell_names = [
+                            "bash", "zsh", "fish", "sh", "python", "node", "npm",
+                            "cargo", "claude", "htop", "vim", "nvim", "ssh", "docker",
+                        ];
+                        for shell in shell_names {
+                            // Title starts with shell name (before " - workspace")
+                            if let Some(title_start) = stdout.split('|').nth(1) {
+                                let first_segment = title_start.split(" - ").next().unwrap_or("").trim();
+                                if first_segment == shell || first_segment.starts_with(&format!("{}:", shell)) {
+                                    crate::dev_log!("[OUTPUT] 🖥️ GNOME Eval detected VS Code terminal: {}", shell);
+                                    return Some(true);
+                                }
+                            }
+                        }
+                        // VS Code but editor pane focused → not a terminal
+                        crate::dev_log!("[OUTPUT] 📝 GNOME Eval detected VS Code editor (not terminal)");
+                        return Some(false);
                     }
                 }
 

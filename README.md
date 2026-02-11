@@ -464,7 +464,7 @@ KaraokeTyper/
 ├── src-tauri/              # Backend Rust
 │   ├── src/
 │   │   ├── lib.rs          # Tauri commands & setup
-│   │   ├── audio.rs        # Audio capture (GStreamer/cpal)
+│   │   ├── audio.rs            # Audio capture (CPAL cross-platform)
 │   │   ├── stt_whisper.rs  # Native Whisper-rs STT engine
 │   │   ├── model_downloader.rs  # Model download manager
 │   │   ├── output.rs       # Text injection (enigo/uinput)
@@ -481,7 +481,7 @@ KaraokeTyper/
 | **Frontend** | React 18, TypeScript, Tailwind CSS, shadcn/ui, Zustand |
 | **Backend** | Rust, Tauri 2.0 |
 | **STT Engine** | Whisper-rs (native Rust bindings to whisper.cpp) |
-| **Audio** | GStreamer (Linux), cpal (Windows/macOS) |
+| **Audio** | CPAL (ALSA on Linux, WASAPI on Windows, CoreAudio on macOS) |
 | **Keyboard** | rdev (Windows/macOS), evdev (Linux) |
 | **Text Output** | enigo, arboard, uinput |
 
@@ -510,7 +510,6 @@ We welcome contributions! / Les contributions sont les bienvenues !
 - [OpenAI Whisper](https://github.com/openai/whisper) - Speech recognition models
 - [Tauri](https://tauri.app) - Cross-platform app framework
 - [shadcn/ui](https://ui.shadcn.com) - Beautiful UI components
-- [GStreamer](https://gstreamer.freedesktop.org) - Multimedia framework
 - [rdev](https://github.com/Narsil/rdev) - Cross-platform input events
 - [enigo](https://github.com/enigo-rs/enigo) - Cross-platform input simulation
 

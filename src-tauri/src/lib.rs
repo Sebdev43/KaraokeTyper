@@ -14,8 +14,8 @@ mod stt_whisper;
 #[cfg(target_os = "linux")]
 mod evdev_listener;
 
-// GStreamer on Linux (like Handy app), CPAL fallback for Windows/macOS
-// Key design: always_on_microphone=false - pipeline created on PTT press, destroyed on release
+// CPAL audio capture (cross-platform: ALSA on Linux, CoreAudio on macOS, WASAPI on Windows)
+// Key design: always_on_microphone=false - stream created on PTT press, destroyed on release
 
 use audio::AudioCapture;
 use config::AppConfig;
@@ -143,10 +143,9 @@ impl SttEngine {
     }
 }
 
-// GStreamer on Linux: audio_capture is created on-demand (always_on_microphone=false)
-// No persistent stream needed - mic is only active during recording
+// CPAL: stream is opened once at init (slow ~1-2s), PTT just toggles recording flag (instant)
 pub(crate) struct AppState {
-    audio_capture: Arc<Mutex<Option<AudioCapture>>>,
+    audio_capture: Arc<Mutex<AudioCapture>>,
     stt_engine: Arc<Mutex<Option<SttEngine>>>,
     config: Arc<Mutex<AppConfig>>,
     recording_ready: Arc<std::sync::atomic::AtomicBool>,
@@ -156,7 +155,7 @@ pub(crate) struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
-            audio_capture: Arc::new(Mutex::new(None)),
+            audio_capture: Arc::new(Mutex::new(AudioCapture::new(16000))),
             stt_engine: Arc::new(Mutex::new(None)),
             config: Arc::new(Mutex::new(AppConfig::load().unwrap_or_default())),
             recording_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -240,9 +239,19 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
     dev_log!("[STT] ✓ {} engine initialized", engine.backend_name());
     *state.stt_engine.lock().unwrap() = Some(engine);
 
-    // Audio stream will be opened on-demand when PTT is pressed
-    // This keeps the microphone inactive until actually recording
-    dev_log!("[AUDIO] Audio capture ready (will open on PTT press)");
+    // Open audio stream once (slow ~1-2s on ALSA, but done at init time)
+    // The stream stays alive — PTT just toggles the recording flag (instant)
+    {
+        let device_name = {
+            let config = state.config.lock().unwrap();
+            config.audio_device_name.clone()
+        };
+        let capture = state.audio_capture.lock().unwrap();
+        match capture.open_stream(device_name.as_deref()) {
+            Ok(_) => dev_log!("[AUDIO] Audio stream opened successfully"),
+            Err(e) => dev_log!("[AUDIO] Failed to open audio stream: {} (will retry on PTT)", e),
+        }
+    }
 
     app_handle
         .emit(
@@ -264,8 +273,7 @@ async fn start_recording(app_handle: AppHandle, state: State<'_, AppState>) -> R
 }
 
 /// Helper function for start_recording - can be called from other modules
-/// GStreamer on Linux: Pipeline is created ON DEMAND (always_on_microphone=false)
-/// This means mic is only active while recording - no system tray indicator
+/// Stream is already open — this just toggles the recording flag (instant)
 pub(crate) async fn do_start_recording(
     app_handle: AppHandle,
     state: &State<'_, AppState>,
@@ -292,33 +300,22 @@ pub(crate) async fn do_start_recording(
         )
         .ok();
 
-    // Get audio device name from config
-    let device_name = {
-        let config = state.config.lock().unwrap();
-        config.audio_device_name.clone()
-    };
-
-    // Create AudioCapture and start recording ON DEMAND
-    // GStreamer pipeline is created NOW (not pre-initialized)
-    // This keeps mic inactive until PTT is actually pressed
+    // Start recording on the already-open stream (instant — just toggles flag)
     {
-        let mut audio_capture = state.audio_capture.lock().unwrap();
+        let capture = state.audio_capture.lock().unwrap();
 
-        // Create new AudioCapture for this recording session
-        let capture = AudioCapture::new(16000); // 16kHz for Whisper
+        // If stream isn't open yet, try opening it now (fallback)
+        if !capture.is_stream_open() {
+            let device_name = {
+                let config = state.config.lock().unwrap();
+                config.audio_device_name.clone()
+            };
+            dev_log!("[TIMING] T+{}ms: Stream not open, opening now...", t0.elapsed().as_millis());
+            capture.open_stream(device_name.as_deref())?;
+            dev_log!("[TIMING] T+{}ms: Stream opened", t0.elapsed().as_millis());
+        }
 
-        // Start recording - creates GStreamer pipeline (Linux) or CPAL stream (other platforms)
-        dev_log!(
-            "[TIMING] T+{}ms: Creating audio pipeline...",
-            t0.elapsed().as_millis()
-        );
-        capture.start_recording(device_name.as_deref())?;
-        dev_log!(
-            "[TIMING] T+{}ms: Audio pipeline created and recording",
-            t0.elapsed().as_millis()
-        );
-
-        *audio_capture = Some(capture);
+        capture.start_recording()?;
     }
 
     state.recording_ready.store(true, Ordering::SeqCst);
@@ -390,23 +387,15 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
-    // GStreamer on Linux: Stop recording and DESTROY the pipeline
-    // This is the key to always_on_microphone=false - mic is released completely
+    // Stop recording — stream.pause() (instant), stream stays alive for next PTT
     let audio_data = {
-        let mut audio_capture = state.audio_capture.lock().unwrap();
-        let capture = audio_capture.as_ref().ok_or("No active recording")?;
+        let capture = state.audio_capture.lock().unwrap();
 
-        // Stop recording - destroys GStreamer pipeline (Linux) or stops CPAL stream (other platforms)
+        // Pause stream (instant — mic goes OFF, no more callbacks)
         capture.stop_recording();
 
         // Get the captured audio buffer
-        let buffer = capture.get_buffer();
-
-        // Release the AudioCapture - mic is now completely inactive
-        // No system tray indicator, no mic access until next PTT press
-        *audio_capture = None;
-
-        buffer
+        capture.get_buffer()
     };
 
     dev_log!(
@@ -449,7 +438,7 @@ pub(crate) async fn do_stop_recording(
     );
 
     // Add silence padding at START and END to prevent Whisper from cutting off words
-    // START padding: compensates for GStreamer pipeline startup delay (~100-150ms)
+    // START padding: compensates for CPAL stream startup delay
     // END padding: prevents Whisper from truncating the last words
     let start_padding_samples = 3200;  // 200ms at 16kHz (covers pipeline startup delay)
     let end_padding_samples = 16000;   // 1000ms at 16kHz (increased for better end capture)
@@ -564,77 +553,74 @@ async fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
 
 #[cfg(target_os = "linux")]
 async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
-    let mut devices = Vec::new();
+    // Hybrid approach:
+    // 1. /proc/asound/cards + lsusb → hardware devices with nice USB names
+    // 2. pactl list sources → Bluetooth and other PipeWire-only devices
+    // This ensures ALL input sources are visible (USB, PCI, Bluetooth, etc.)
 
-    // Always add PipeWire default first (index 0) - this works with any PipeWire source
+    let alsa_cards = read_alsa_card_names();
+    let usb_names = parse_lsusb();
+
+    let mut devices = Vec::new();
+    let mut seen_raw_names = std::collections::HashSet::new();
+
+    // Always add system default first (index 0)
     devices.push(AudioDevice {
-        name: "🎵 PipeWire Default".to_string(),
-        raw_name: "pipewire".to_string(),
+        name: "🎵 System Default".to_string(),
+        raw_name: "default".to_string(),
         index: 0,
     });
+    seen_raw_names.insert("default".to_string());
 
-    // Use pactl to get real PipeWire sources
-    // Ensure D-Bus session is available (needed when launched from .desktop)
+    // 1. Add hardware devices from /proc/asound/cards (reliable, always available)
+    let mut index: u32 = 1;
+    for (card_id, description) in &alsa_cards {
+        if description.to_lowercase().contains("hdmi") {
+            continue;
+        }
+
+        let raw_name = format!("plughw:CARD={},DEV=0", card_id);
+        let emoji = format_device_emoji(description);
+
+        devices.push(AudioDevice {
+            name: format!("{} {}", emoji, description),
+            raw_name: raw_name.clone(),
+            index,
+        });
+        seen_raw_names.insert(card_id.to_lowercase());
+        index += 1;
+    }
+
+    // 2. Add PipeWire-only devices from pactl (Bluetooth, virtual sources, etc.)
     let (xdg_runtime, dbus_addr) = get_dbus_env();
-
-    // IMPORTANT: Use tokio::process::Command instead of std::process::Command
-    // std::process::Command::output() can hang in async Tauri commands in production
-    // See: https://github.com/tauri-apps/tauri/issues/3505
-    // IMPORTANT: Force English locale (LC_ALL=C) because pactl output is localized
-    // When launched from .desktop, French locale causes "Nom :" instead of "Name:"
-    let output = tokio::process::Command::new("pactl")
+    if let Ok(output) = tokio::process::Command::new("pactl")
         .args(["list", "sources"])
         .env("XDG_RUNTIME_DIR", &xdg_runtime)
         .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
         .env("LC_ALL", "C")
         .output()
         .await
-        .map_err(|e| format!("Failed to run pactl: {}", e))?;
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut current_name: Option<String> = None;
+            let mut current_description: Option<String> = None;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        dev_log!("[DEVICES] pactl failed: {}", stderr);
-        return Ok(devices);
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut current_name: Option<String> = None;
-    let mut current_description: Option<String> = None;
-    let mut index: u32 = 1; // Start at 1 since pipewire is 0
-
-    for line in stdout.lines() {
-        let line = line.trim();
-
-        // New source block
-        if line.starts_with("Name:") {
-            // Save previous device if complete
-            if let (Some(name), Some(desc)) = (current_name.take(), current_description.take()) {
-                // Skip monitor sources (they capture output audio, not mic input)
-                if !name.contains(".monitor") {
-                    let display_name = format_pipewire_device_name(&name, &desc);
-                    devices.push(AudioDevice {
-                        name: display_name,
-                        raw_name: name,
-                        index,
-                    });
-                    index += 1;
+            for line in stdout.lines() {
+                let line = line.trim();
+                if line.starts_with("Name:") {
+                    if let (Some(name), Some(desc)) = (current_name.take(), current_description.take()) {
+                        add_pactl_device(&name, &desc, &seen_raw_names, &usb_names, &mut devices, &mut index);
+                    }
+                    current_name = Some(line.trim_start_matches("Name:").trim().to_string());
+                } else if line.starts_with("Description:") {
+                    current_description = Some(line.trim_start_matches("Description:").trim().to_string());
                 }
             }
-            current_name = Some(line.trim_start_matches("Name:").trim().to_string());
-        } else if line.starts_with("Description:") {
-            current_description = Some(line.trim_start_matches("Description:").trim().to_string());
-        }
-    }
-
-    // Don't forget the last device
-    if let (Some(name), Some(desc)) = (current_name, current_description) {
-        if !name.contains(".monitor") {
-            let display_name = format_pipewire_device_name(&name, &desc);
-            devices.push(AudioDevice {
-                name: display_name,
-                raw_name: name,
-                index,
-            });
+            // Don't forget the last device
+            if let (Some(name), Some(desc)) = (current_name, current_description) {
+                add_pactl_device(&name, &desc, &seen_raw_names, &usb_names, &mut devices, &mut index);
+            }
         }
     }
 
@@ -649,26 +635,144 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
     Ok(devices)
 }
 
+/// Add a pactl source to the device list if it's not a duplicate or monitor
 #[cfg(target_os = "linux")]
-fn format_pipewire_device_name(raw_name: &str, description: &str) -> String {
-    // Bluetooth devices
-    if raw_name.contains("bluez") {
-        return format!("🎧 {}", description);
+fn add_pactl_device(
+    raw_name: &str,
+    description: &str,
+    _seen: &std::collections::HashSet<String>,
+    _usb_names: &std::collections::HashMap<String, String>,
+    devices: &mut Vec<AudioDevice>,
+    index: &mut u32,
+) {
+    // Skip monitor sources (they capture output audio, not mic input)
+    if raw_name.contains(".monitor") {
+        return;
     }
-    // Webcams
-    if raw_name.contains("046d") || description.to_lowercase().contains("webcam") {
-        return format!("📷 {}", description);
+
+    // Skip ALSA-backed sources — these are PipeWire wrappers around hardware devices
+    // already listed from /proc/asound/cards (USB, PCI, etc.)
+    // Only keep truly PipeWire-native sources: Bluetooth (bluez_*), virtual, etc.
+    if raw_name.starts_with("alsa_input.") || raw_name.starts_with("alsa_output.") {
+        return;
     }
-    // USB microphones
-    if raw_name.contains("usb-") || raw_name.contains("USB") {
-        return format!("🎤 {}", description);
+
+    // This is a PipeWire-only source (Bluetooth, virtual, etc.) — add it
+    let emoji = format_device_emoji(description);
+    devices.push(AudioDevice {
+        name: format!("{} {}", emoji, description),
+        raw_name: raw_name.to_string(),
+        index: *index,
+    });
+    *index += 1;
+}
+
+/// Choose an emoji based on device description
+#[cfg(target_os = "linux")]
+fn format_device_emoji(description: &str) -> &'static str {
+    let lower = description.to_lowercase();
+    if lower.contains("bluetooth") || lower.contains("bluez") {
+        "🎧"
+    } else if lower.contains("046d") || lower.contains("0x46d") || lower.contains("webcam") || lower.contains("c270") {
+        "📷"
+    } else if lower.contains("usb") {
+        "🎤"
+    } else if lower.contains("hd-audio") || lower.contains("generic") || lower.contains("hda") {
+        "🔊"
+    } else {
+        "🎵"
     }
-    // Built-in audio
-    if raw_name.contains("pci-") || raw_name.contains("alsa_input") {
-        return format!("🔊 {}", description);
+}
+
+/// Read ALSA card names from /proc/asound/cards, enriched with USB product names from lsusb
+/// Returns ordered list of (card_id, description)
+/// Example: ("U0x46d0x825", "Webcam C270 (Logitech)")
+#[cfg(target_os = "linux")]
+fn read_alsa_card_names() -> Vec<(String, String)> {
+    let mut cards = Vec::new();
+    let content = match std::fs::read_to_string("/proc/asound/cards") {
+        Ok(c) => c,
+        Err(_) => return cards,
+    };
+
+    // Parse lsusb to get real USB product names
+    let usb_names = parse_lsusb();
+
+    let lines: Vec<&str> = content.lines().collect();
+    for chunk in lines.chunks(2) {
+        if let Some(first_line) = chunk.first() {
+            if let (Some(bracket_start), Some(bracket_end)) = (first_line.find('['), first_line.find(']')) {
+                let card_id = first_line[bracket_start + 1..bracket_end].trim().to_string();
+
+                // For USB cards, try to get a better name from lsusb
+                let description = if let Some(usb_name) = resolve_usb_card_name(&card_id, &usb_names) {
+                    usb_name
+                } else if let Some(dash_pos) = first_line.find(" - ") {
+                    first_line[dash_pos + 3..].trim().to_string()
+                } else {
+                    card_id.clone()
+                };
+
+                cards.push((card_id, description));
+            }
+        }
     }
-    // Fallback
-    format!("🎵 {}", description)
+
+    cards
+}
+
+/// Parse lsusb output into a map of "vendor_id:product_id" → "Product Name"
+/// Example: "046d:0825" → "Webcam C270"
+#[cfg(target_os = "linux")]
+fn parse_lsusb() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let output = match std::process::Command::new("lsusb").output() {
+        Ok(o) => o,
+        Err(_) => return map,
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Format: "Bus 001 Device 002: ID 046d:0825 Logitech, Inc. Webcam C270"
+    for line in stdout.lines() {
+        if let Some(id_pos) = line.find("ID ") {
+            let after_id = &line[id_pos + 3..];
+            if after_id.len() > 9 {
+                let usb_id = &after_id[..9]; // "046d:0825"
+                let product = after_id[10..].trim();
+                // Clean up vendor prefix: "Logitech, Inc. Webcam C270" → "Webcam C270 (Logitech)"
+                let friendly = if let Some(dot_pos) = product.find(". ") {
+                    let vendor = product[..dot_pos].trim_end_matches(',');
+                    let name = &product[dot_pos + 2..];
+                    format!("{} ({})", name, vendor)
+                } else {
+                    product.to_string()
+                };
+                map.insert(usb_id.to_lowercase(), friendly);
+            }
+        }
+    }
+    map
+}
+
+/// Try to resolve an ALSA USB card name (like "U0x46d0x825") to a lsusb product name
+#[cfg(target_os = "linux")]
+fn resolve_usb_card_name(card_id: &str, usb_names: &std::collections::HashMap<String, String>) -> Option<String> {
+    // ALSA USB card IDs look like "U0x46d0x825" → USB vendor 046d, product 0825
+    if !card_id.starts_with('U') {
+        return None;
+    }
+
+    let hex_part = &card_id[1..]; // "0x46d0x825"
+    // Split on "0x" boundaries: ["", "46d", "825"]
+    let parts: Vec<&str> = hex_part.split("0x").filter(|s| !s.is_empty()).collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let vendor = format!("{:0>4}", parts[0]); // "046d"
+    let product = format!("{:0>4}", parts[1]); // "0825"
+    let usb_id = format!("{}:{}", vendor, product);
+
+    usb_names.get(&usb_id).cloned()
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -722,9 +826,9 @@ async fn save_settings(
     state: State<'_, AppState>,
     new_config: AppConfig,
 ) -> Result<(), String> {
-    let old_shortcut = {
+    let (old_shortcut, old_device) = {
         let config = state.config.lock().unwrap();
-        config.shortcut.clone()
+        (config.shortcut.clone(), config.audio_device_name.clone())
     };
 
     new_config.save()?;
@@ -736,6 +840,15 @@ async fn save_settings(
 
     if old_shortcut != new_config.shortcut {
         update_global_shortcut(&app_handle, &old_shortcut, &new_config.shortcut)?;
+    }
+
+    // Re-open audio stream if device changed
+    if old_device != new_config.audio_device_name {
+        let capture = state.audio_capture.lock().unwrap();
+        match capture.open_stream(new_config.audio_device_name.as_deref()) {
+            Ok(_) => dev_log!("[AUDIO] Audio stream re-opened for new device"),
+            Err(e) => dev_log!("[AUDIO] Failed to re-open audio stream: {}", e),
+        }
     }
 
     Ok(())

@@ -104,8 +104,10 @@ class FocusedWindowDBus {
         const wmClassLower = wmClass.toLowerCase();
 
         // Check if WM_CLASS matches any known terminal
+        // Supports exact match and reverse-domain format (e.g. com.mitchellh.ghostty)
         for (const termClass of TERMINAL_CLASSES) {
-            if (wmClassLower === termClass.toLowerCase()) {
+            const tc = termClass.toLowerCase();
+            if (wmClassLower === tc || wmClassLower.endsWith('.' + tc)) {
                 return true;
             }
         }

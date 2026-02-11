@@ -2506,6 +2506,7 @@ dependencies = [
  "tauri-specta",
  "tokio",
  "whisper-rs",
+ "whisper-rs-sys",
  "zip",
 ]
 

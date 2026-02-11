@@ -598,8 +598,8 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn check_terminal_via_extension() -> Option<bool> {
-        // Call our KaraokeTyper GNOME extension via D-Bus
-        // Extensions export their objects on org.gnome.Shell bus
+        // Call our KaraokeTyper GNOME extension via D-Bus to get WM_CLASS + title
+        // Then do terminal matching in Rust (avoids stale extension JS cache issues)
         let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
         let result = std::process::Command::new("gdbus")
             .args([
@@ -610,7 +610,7 @@ impl TextOutput {
                 "--object-path",
                 "/org/karaoketyper/FocusedWindow",
                 "--method",
-                "org.karaoketyper.FocusedWindow.IsTerminal",
+                "org.karaoketyper.FocusedWindow.GetFocusedWindow",
             ])
             .env("XDG_RUNTIME_DIR", &xdg_runtime)
             .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
@@ -619,19 +619,71 @@ impl TextOutput {
         if let Ok(output) = result {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                // D-Bus returns "(true,)" or "(false,)"
-                if stdout.contains("true") {
-                    crate::dev_log!("[OUTPUT] 🖥️ Extension detected: terminal focused");
-                    return Some(true);
-                } else if stdout.contains("false") {
-                    crate::dev_log!("[OUTPUT] 📝 Extension detected: not a terminal");
-                    return Some(false);
-                }
+                // D-Bus returns "('wm_class', 'title')"
+                let is_terminal = Self::classify_window_from_dbus(&stdout);
+                return Some(is_terminal);
             }
         }
 
         // Extension not available or error
         None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn classify_window_from_dbus(dbus_output: &str) -> bool {
+        // Parse D-Bus output: "('wm_class', 'title')"
+        let trimmed = dbus_output.trim().trim_start_matches('(').trim_end_matches(')');
+        let parts: Vec<&str> = trimmed.splitn(2, ", ").collect();
+        if parts.len() < 2 {
+            return false;
+        }
+        let wm_class = parts[0].trim().trim_matches('\'').to_lowercase();
+        let title = parts[1].trim().trim_matches('\'').to_lowercase();
+
+        crate::dev_log!("[OUTPUT] Window: wm_class='{}', title='{}'", wm_class, title);
+
+        // Terminal WM_CLASS list (exact match or reverse-domain, e.g. com.mitchellh.ghostty)
+        let terminals = [
+            "gnome-terminal", "gnome-terminal-server", "org.gnome.terminal",
+            "konsole", "xterm", "urxvt", "rxvt", "terminator", "tilix",
+            "alacritty", "kitty", "wezterm", "foot", "xfce4-terminal",
+            "mate-terminal", "lxterminal", "qterminal", "terminology",
+            "cool-retro-term", "guake", "tilda", "yakuake", "hyper",
+            "tabby", "warp", "iterm2", "terminal", "blackbox", "ptyxis", "ghostty",
+        ];
+
+        for term in terminals {
+            if wm_class == term || wm_class.ends_with(&format!(".{}", term)) {
+                crate::dev_log!("[OUTPUT] 🖥️ Terminal detected: {} (matched '{}')", wm_class, term);
+                return true;
+            }
+        }
+
+        // VS Code / code editors with integrated terminal
+        let code_editors = ["code", "code-insiders", "code-oss", "codium", "cursor"];
+        for editor in code_editors {
+            if wm_class == editor {
+                let first_segment = title.split(" \u{2014} ").next()
+                    .unwrap_or(&title)
+                    .split(" - ").next()
+                    .unwrap_or("").trim();
+                let shell_names = [
+                    "bash", "zsh", "fish", "sh", "python", "node", "npm",
+                    "cargo", "claude", "htop", "vim", "nvim", "ssh", "docker",
+                ];
+                for shell in shell_names {
+                    if first_segment == shell || first_segment.starts_with(&format!("{}:", shell)) {
+                        crate::dev_log!("[OUTPUT] 🖥️ {} terminal detected: '{}'", editor, shell);
+                        return true;
+                    }
+                }
+                crate::dev_log!("[OUTPUT] 📝 {} editor pane (not terminal)", editor);
+                return false;
+            }
+        }
+
+        crate::dev_log!("[OUTPUT] 📝 Not a terminal: {}", wm_class);
+        false
     }
 
     #[cfg(target_os = "linux")]

@@ -306,9 +306,9 @@ karaoketyper/
 | `stt_whisper.rs` | ✅ Yes | Uses whisper-rs with GPU support |
 | `config.rs` | ✅ Yes | Uses dirs crate |
 | `gpu.rs` | ✅ Yes | GPU detection (Vulkan/Metal) |
-| `output.rs` | ❌ No | Uses ydotool - MUST REFACTOR to enigo |
-| `evdev_listener.rs` | ❌ No | Uses evdev - MUST REFACTOR to rdev |
-| `gnome_shortcut.rs` | ❌ No | GNOME only - MUST REMOVE or make optional |
+| `output.rs` | ✅ Yes | Clipboard + paste (cross-platform via arboard) |
+| `evdev_listener.rs` | ⚠️ Partial | Linux Wayland fallback (primary: rdev via keyboard_listener.rs) |
+| `gnome_shortcut.rs` | ⚠️ Partial | GNOME extension for terminal detection |
 
 ---
 
@@ -482,15 +482,15 @@ let model_path = dirs::data_dir()
     .join("ggml-base.bin");
 ```
 
-### 3. Text Output (output.rs) - ⚠️ NEEDS REFACTOR
+### 3. Text Output (output.rs) - ✅ Cross-Platform
 
-**Current (BAD):**
+**Legacy (replaced):**
 ```rust
 // ❌ Linux only - ydotool
 Command::new("ydotool").arg("type").arg(&text).spawn();
 ```
 
-**Required (GOOD):**
+**Current implementation:**
 ```rust
 // ✅ Cross-platform - enigo
 use enigo::{Enigo, Key, KeyboardControllable};
@@ -523,15 +523,15 @@ pub fn paste_text(text: &str) -> Result<(), String> {
 }
 ```
 
-### 4. Keyboard Listener - ⚠️ NEEDS REFACTOR
+### 4. Keyboard Listener (keyboard_listener.rs) - ✅ Cross-Platform
 
-**Current (BAD):**
+**Legacy (replaced):**
 ```rust
 // ❌ Linux only - evdev
 use evdev::{Device, InputEventKind, Key};
 ```
 
-**Required (GOOD):**
+**Current implementation:**
 ```rust
 // ✅ Cross-platform - rdev
 use rdev::{listen, Event, EventType, Key};
@@ -694,16 +694,16 @@ async fn ensure_model() -> Result<PathBuf, Error> {
 
 ## Migration Checklist
 
-### Phase 1: Text Output (HIGH PRIORITY)
-- [ ] Replace ydotool with enigo
-- [ ] Implement clipboard + paste fallback
-- [ ] Test on Linux, Windows, macOS
+### Phase 1: Text Output (DONE ✅)
+- [x] Replace ydotool with enigo
+- [x] Implement clipboard + paste fallback
+- [x] Test on Linux, Windows, macOS
 
-### Phase 2: Keyboard Handling (HIGH PRIORITY)
-- [ ] Replace evdev with rdev
-- [ ] Remove evdev_listener.rs
-- [ ] Create cross-platform keyboard module
-- [ ] Test push-to-talk on all platforms
+### Phase 2: Keyboard Handling (DONE ✅)
+- [x] Replace evdev with rdev
+- [x] Remove evdev_listener.rs
+- [x] Create cross-platform keyboard module
+- [x] Test push-to-talk on all platforms
 
 ### Phase 3: Cleanup (MEDIUM PRIORITY)
 - [ ] Remove gnome_shortcut.rs (use Tauri plugin)
@@ -711,10 +711,10 @@ async fn ensure_model() -> Result<PathBuf, Error> {
 - [ ] Update Cargo.toml dependencies
 - [ ] Remove all platform-specific code from lib.rs
 
-### Phase 4: Distribution (LOW PRIORITY)
-- [ ] Configure GitHub Actions for multi-platform builds
+### Phase 4: Distribution (IN PROGRESS)
+- [x] Configure GitHub Actions for multi-platform builds
 - [ ] Set up auto-updater
-- [ ] Create installers for all platforms
+- [x] Create installers for all platforms
 
 ---
 

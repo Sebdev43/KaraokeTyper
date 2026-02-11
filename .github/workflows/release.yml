@@ -47,7 +47,22 @@ jobs:
               repo: context.repo.repo,
               tag_name: `v${version}`,
               name: `KaraokeTyper v${version}`,
-              body: `## KaraokeTyper v${version}
+              body: `## What's New in v${version}
+
+            ### Audio: GStreamer → CPAL migration
+            - **Cross-platform audio capture** via CPAL (ALSA on Linux, CoreAudio on macOS, WASAPI on Windows)
+            - **Instant push-to-talk**: stream stays open, play()/pause() toggles recording (~0ms vs ~2s before)
+            - **Better device listing**: hardware devices via /proc/asound/cards + lsusb for readable USB names, Bluetooth via PipeWire
+            - **Removed GStreamer dependency** — no more gstreamer packages needed on Linux
+
+            ### VS Code terminal support
+            - GNOME extension now detects VS Code/Codium/Cursor integrated terminal via window title
+            - Uses Ctrl+Shift+V for terminal pane, Ctrl+V for editor pane
+
+            ### UI fixes
+            - Fixed overlay transparency (no more black square)
+
+            ---
 
             ### Downloads
 
@@ -57,7 +72,6 @@ jobs:
             | **Linux** | \`karaoketyper_${version}_amd64.AppImage\` | Portable AppImage |
             | **Windows** | \`karaoketyper_${version}_x64-setup.exe\` | Windows installer |
             | **Windows** | \`karaoketyper_${version}_x64_en-US.msi\` | Windows MSI package |
-            | **macOS** | \`karaoketyper_${version}_x64.dmg\` | macOS Intel DMG |
             | **macOS** | \`karaoketyper_${version}_aarch64.dmg\` | macOS Apple Silicon DMG |
 
             ### Installation
@@ -65,7 +79,7 @@ jobs:
             **Linux (Debian/Ubuntu):**
             \`\`\`bash
             sudo dpkg -i karaoketyper_${version}_amd64.deb
-            sudo apt-get install -f  # Install dependencies
+            sudo apt-get install -f
             \`\`\`
 
             **Linux (AppImage):**
@@ -77,13 +91,6 @@ jobs:
             **Windows:** Run the installer (.exe or .msi)
 
             **macOS:** Mount the DMG and drag to Applications
-
-            ### First Launch
-
-            1. Open Settings (F10 or system tray)
-            2. Download a Whisper model (Base recommended)
-            3. Select your microphone
-            4. Press Ctrl+Space to dictate!
 
             ---
             *100% offline voice dictation - no cloud, no telemetry*
@@ -115,11 +122,7 @@ jobs:
             librsvg2-dev \
             libasound2-dev \
             libgtk-3-dev \
-            libunwind-dev \
-            libgstreamer1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-plugins-base \
-            gstreamer1.0-plugins-good
+            libunwind-dev
 
       - name: Install Vulkan SDK
         run: |

@@ -49,7 +49,6 @@ const TERMINAL_CLASSES = [
     'lxterminal',
     'qterminal',
     'terminology',
-    'st',
     'cool-retro-term',
     'guake',
     'tilda',
@@ -62,6 +61,19 @@ const TERMINAL_CLASSES = [
     'blackbox',
     'ptyxis',
     'ghostty',
+];
+
+// Editors with integrated terminals — need title-based detection
+// When the terminal pane is focused, the window title starts with the shell/process name
+const CODE_EDITOR_CLASSES = ['code', 'code-insiders', 'code-oss', 'codium', 'cursor'];
+
+// Shell/process names that appear in VS Code title when terminal is focused
+const TERMINAL_TITLE_PATTERNS = [
+    'bash', 'zsh', 'fish', 'sh', 'csh', 'tcsh', 'ksh', 'dash',
+    'python', 'python3', 'node', 'npm', 'npx', 'cargo', 'ruby', 'perl',
+    'claude', 'claude code', 'htop', 'top', 'vim', 'nvim', 'nano',
+    'ssh', 'docker', 'podman', 'make', 'git',
+    'powershell', 'pwsh', 'cmd',
 ];
 
 class FocusedWindowDBus {
@@ -83,7 +95,7 @@ class FocusedWindowDBus {
     }
 
     IsTerminal() {
-        const [wmClass, _title] = this.GetFocusedWindow();
+        const [wmClass, title] = this.GetFocusedWindow();
 
         if (!wmClass) {
             return false;
@@ -93,8 +105,28 @@ class FocusedWindowDBus {
 
         // Check if WM_CLASS matches any known terminal
         for (const termClass of TERMINAL_CLASSES) {
-            if (wmClassLower.includes(termClass.toLowerCase())) {
+            if (wmClassLower === termClass.toLowerCase()) {
                 return true;
+            }
+        }
+
+        // Check if it's a code editor with integrated terminal
+        // Detect terminal focus via window title heuristic
+        for (const editorClass of CODE_EDITOR_CLASSES) {
+            if (wmClassLower === editorClass.toLowerCase()) {
+                // VS Code title format:
+                //   Editor: "filename.ext - workspace - Visual Studio Code"
+                //   Terminal: "bash - workspace - Visual Studio Code"
+                // Extract the first segment (before first " - ")
+                const firstSegment = (title || '').split(' \u2014 ')[0].split(' - ')[0].trim().toLowerCase();
+
+                for (const pattern of TERMINAL_TITLE_PATTERNS) {
+                    if (firstSegment === pattern || firstSegment.startsWith(pattern + ':')) {
+                        return true;
+                    }
+                }
+
+                return false;
             }
         }
 

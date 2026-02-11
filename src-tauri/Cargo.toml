@@ -65,17 +65,12 @@ rdev = "0.5"
 # Speech-to-text (CPU by default, GPU acceleration via features)
 whisper-rs = "0.14"
 
-# GStreamer for fast audio capture (Linux - like Handy app)
-[target.'cfg(target_os = "linux")'.dependencies]
-gstreamer = "0.23"
-gstreamer-app = "0.23"
-gstreamer-audio = "0.23"
-# evdev for low-level keyboard access on Wayland (fallback)
-evdev = "0.12"
-
-# CPAL fallback for Windows/macOS audio capture
-[target.'cfg(not(target_os = "linux"))'.dependencies]
+# Audio capture (cross-platform: ALSA on Linux via pipewire-alsa, CoreAudio on macOS, WASAPI on Windows)
 cpal = "0.15"
+
+# evdev for low-level keyboard access on Wayland (fallback)
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.12"
 
 [features]
 default = []

@@ -5,12 +5,10 @@
 //! - Windows: WASAPI backend
 //! - macOS: CoreAudio backend
 //!
-//! Architecture (same pattern as Discord, Mumble, etc.):
-//! - Stream is created ONCE at init via `open_stream()` (slow ~1-2s, but only once)
-//! - Stream starts PAUSED (mic is OFF, no callbacks)
-//! - `start_recording()` calls `stream.play()` → mic is ON (instant)
-//! - `stop_recording()` calls `stream.pause()` → mic is OFF (instant)
-//! - `close_stream()` drops the stream (on device change or app exit)
+//! Architecture (on-demand mic access):
+//! - `start_recording()` opens the stream + plays → mic is ON
+//! - `stop_recording()` pauses + closes the stream → mic is OFF, device released
+//! - Mic is NEVER held open when not recording (no system mic indicator)
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -201,7 +199,7 @@ impl AudioCapture {
         Ok(())
     }
 
-    /// Stop recording — calls stream.pause() (instant, ~0ms).
+    /// Stop recording — pauses and closes stream to release the mic device.
     pub fn stop_recording(&self) {
         if let Some(stream) = self.stream.lock().unwrap().as_ref() {
             if let Err(e) = stream.pause() {
@@ -215,12 +213,16 @@ impl AudioCapture {
         let elapsed_ms = start_time.map(|t| t.elapsed().as_millis()).unwrap_or(0);
 
         crate::dev_log!(
-            "[AUDIO/CPAL] Recording stopped (stream.pause): {}ms, {} samples ({:.2}s at {}Hz)",
+            "[AUDIO/CPAL] Recording stopped: {}ms, {} samples ({:.2}s at {}Hz)",
             elapsed_ms,
             buffer_size,
             buffer_size as f32 / actual_rate as f32,
             actual_rate
         );
+
+        // Close stream to fully release the mic device (no system mic indicator)
+        self.close_stream();
+        crate::dev_log!("[AUDIO/CPAL] Stream closed — mic released");
     }
 
     /// Get recorded audio buffer.

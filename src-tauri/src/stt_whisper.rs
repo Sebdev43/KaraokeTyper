@@ -9,6 +9,14 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+/// Suppress all whisper.cpp C library verbose output (beam search, model loading, etc.)
+/// Only called once at startup. Our own [Whisper] logs via println! are unaffected.
+pub fn suppress_whisper_cpp_logs() {
+    unsafe {
+        whisper_rs_sys::whisper_log_set(None, std::ptr::null_mut());
+    }
+}
+
 /// Maximum consecutive GPU failures before auto-disabling GPU
 const MAX_GPU_FAILURES: u32 = 3;
 

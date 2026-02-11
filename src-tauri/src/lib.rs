@@ -204,6 +204,9 @@ fn save_debug_wav(audio_data: &[f32], path: &std::path::PathBuf) -> Result<(), S
 #[tauri::command]
 #[specta::specta]
 async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    // Suppress whisper.cpp C library verbose output (beam search, model loading, etc.)
+    stt_whisper::suppress_whisper_cpp_logs();
+
     let config = {
         let config = state.config.lock().unwrap();
         config.clone()
@@ -239,19 +242,9 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
     dev_log!("[STT] ✓ {} engine initialized", engine.backend_name());
     *state.stt_engine.lock().unwrap() = Some(engine);
 
-    // Open audio stream once (slow ~1-2s on ALSA, but done at init time)
-    // The stream stays alive — PTT just toggles the recording flag (instant)
-    {
-        let device_name = {
-            let config = state.config.lock().unwrap();
-            config.audio_device_name.clone()
-        };
-        let capture = state.audio_capture.lock().unwrap();
-        match capture.open_stream(device_name.as_deref()) {
-            Ok(_) => dev_log!("[AUDIO] Audio stream opened successfully"),
-            Err(e) => dev_log!("[AUDIO] Failed to open audio stream: {} (will retry on PTT)", e),
-        }
-    }
+    // Audio stream is opened on-demand when PTT is pressed (not at init)
+    // This avoids holding the mic device open permanently (no system mic indicator)
+    dev_log!("[AUDIO] Audio stream will open on-demand (PTT press)");
 
     app_handle
         .emit(
@@ -300,20 +293,17 @@ pub(crate) async fn do_start_recording(
         )
         .ok();
 
-    // Start recording on the already-open stream (instant — just toggles flag)
+    // Open stream on-demand and start recording
     {
         let capture = state.audio_capture.lock().unwrap();
 
-        // If stream isn't open yet, try opening it now (fallback)
-        if !capture.is_stream_open() {
-            let device_name = {
-                let config = state.config.lock().unwrap();
-                config.audio_device_name.clone()
-            };
-            dev_log!("[TIMING] T+{}ms: Stream not open, opening now...", t0.elapsed().as_millis());
-            capture.open_stream(device_name.as_deref())?;
-            dev_log!("[TIMING] T+{}ms: Stream opened", t0.elapsed().as_millis());
-        }
+        let device_name = {
+            let config = state.config.lock().unwrap();
+            config.audio_device_name.clone()
+        };
+        dev_log!("[TIMING] T+{}ms: Opening audio stream...", t0.elapsed().as_millis());
+        capture.open_stream(device_name.as_deref())?;
+        dev_log!("[TIMING] T+{}ms: Stream opened", t0.elapsed().as_millis());
 
         capture.start_recording()?;
     }
@@ -387,11 +377,11 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
-    // Stop recording — stream.pause() (instant), stream stays alive for next PTT
+    // Stop recording and close stream (releases mic device completely)
     let audio_data = {
         let capture = state.audio_capture.lock().unwrap();
 
-        // Pause stream (instant — mic goes OFF, no more callbacks)
+        // Pause + close stream — mic is fully released
         capture.stop_recording();
 
         // Get the captured audio buffer
@@ -842,13 +832,11 @@ async fn save_settings(
         update_global_shortcut(&app_handle, &old_shortcut, &new_config.shortcut)?;
     }
 
-    // Re-open audio stream if device changed
+    // Close any existing stream if device changed (will re-open on next PTT)
     if old_device != new_config.audio_device_name {
         let capture = state.audio_capture.lock().unwrap();
-        match capture.open_stream(new_config.audio_device_name.as_deref()) {
-            Ok(_) => dev_log!("[AUDIO] Audio stream re-opened for new device"),
-            Err(e) => dev_log!("[AUDIO] Failed to re-open audio stream: {}", e),
-        }
+        capture.close_stream();
+        dev_log!("[AUDIO] Stream closed — new device will be used on next PTT");
     }
 
     Ok(())

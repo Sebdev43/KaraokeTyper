@@ -49,18 +49,18 @@ jobs:
               name: `KaraokeTyper v${version}`,
               body: `## What's New in v${version}
 
-            ### Audio: GStreamer → CPAL migration
-            - **Cross-platform audio capture** via CPAL (ALSA on Linux, CoreAudio on macOS, WASAPI on Windows)
-            - **Instant push-to-talk**: stream stays open, play()/pause() toggles recording (~0ms vs ~2s before)
-            - **Better device listing**: hardware devices via /proc/asound/cards + lsusb for readable USB names, Bluetooth via PipeWire
-            - **Removed GStreamer dependency** — no more gstreamer packages needed on Linux
+            ### On-demand microphone
+            - **Mic opens only during PTT** — no more permanent mic indicator in system tray
+            - Stream opens on press, closes on release (device fully released)
 
-            ### VS Code terminal support
-            - GNOME extension now detects VS Code/Codium/Cursor integrated terminal via window title
-            - Uses Ctrl+Shift+V for terminal pane, Ctrl+V for editor pane
+            ### Cleaner terminal output
+            - **Suppressed whisper.cpp verbose logs** (beam search flood eliminated)
+            - Only KaraokeTyper's own logs are shown
 
-            ### UI fixes
-            - Fixed overlay transparency (no more black square)
+            ### Ghostty & terminal paste fix
+            - **Ghostty terminal detected** via reverse-domain WM_CLASS (com.mitchellh.ghostty)
+            - Terminal detection moved to Rust side for reliability (no stale GNOME extension cache)
+            - Correct Ctrl+Shift+V paste in all terminals
 
             ---
 

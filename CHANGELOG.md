@@ -5,6 +5,15 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2025-02-11
+
+### Fixed
+
+- **On-demand microphone**: Mic opens only during PTT press, fully released on release (no permanent system mic indicator)
+- **Whisper.cpp log flood**: Suppressed verbose beam search output via whisper_log_set
+- **Ghostty terminal paste**: Reverse-domain WM_CLASS support (com.mitchellh.ghostty → ghostty)
+- **Terminal detection reliability**: Moved window classification to Rust side (no stale GNOME extension JS cache)
+
 ## [1.0.2] - 2025-02-11
 
 ### Changed

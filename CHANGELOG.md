@@ -5,27 +5,46 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2025-02-11
+
+### Changed
+
+- **Audio: CPAL Migration**: Replaced GStreamer with CPAL for cross-platform audio capture (ALSA on Linux, CoreAudio on macOS, WASAPI on Windows)
+- **Instant Push-to-Talk**: Stream stays open, play()/pause() toggles recording (~0ms latency vs ~2s before)
+- **Better Device Listing**: Hardware devices via /proc/asound/cards + lsusb for readable USB names, Bluetooth via PipeWire
+- **Removed GStreamer Dependency**: No more gstreamer packages needed on Linux
+
+### Fixed
+
+- **VS Code Terminal Paste**: GNOME extension now detects VS Code/Codium/Cursor integrated terminal via window title, uses Ctrl+Shift+V for terminal pane
+- **Overlay Transparency**: Fixed black square overlay issue with proper RGBA background
+
+### Removed
+
+- GStreamer dependencies (gstreamer, gstreamer-app, gstreamer-audio)
+- Unused shell scripts (download-model.sh, install-deps.sh)
+- Legacy audio_cli.rs (CLI-based audio capture)
+
 ## [1.0.1] - 2025-01-08
 
 ### Fixed
 
 - **Audio Clipping at Start**: Added 200ms silence padding at beginning of audio to prevent first words from being cut off (e.g., "c'est l'" no longer missing)
-- GStreamer pipeline startup delay (~106ms) now compensated with start padding
+- Audio pipeline startup delay (~106ms) compensated with start padding
 
 ## [1.0.0] - 2024-12-30
 
 ### Changed
 
 - **Complete STT Engine Rewrite**: Switched from Parakeet to native Whisper-rs for better performance and reliability
-- **GStreamer Audio Pipeline**: New on-demand audio capture (always_on_microphone=false) - mic only active when PTT pressed
+- **On-Demand Audio Capture**: Mic only active when PTT pressed (always_on_microphone=false)
 - **Optimized for Privacy**: Microphone icon no longer shows in system tray when not recording
 - **Production Build Optimization**: Disabled all debug logs in release builds
 
 ### Technical
 
 - Native Whisper-rs integration (no Python dependencies)
-- GStreamer pipeline: `pulsesrc ! audioconvert ! audioresample ! audio/x-raw,format=F32LE,channels=1,rate=16000 ! appsink`
-- Pipeline created on PTT press (~106ms), destroyed on release
+- Cross-platform audio capture via CPAL (ALSA, CoreAudio, WASAPI)
 - 500ms end padding to prevent Whisper from truncating last words
 
 ## [0.1.0] - 2024-12-27

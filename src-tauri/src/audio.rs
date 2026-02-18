@@ -47,6 +47,8 @@ pub struct AudioCapture {
     first_callback_fired: Arc<AtomicBool>,
     /// Counter incremented each stop_recording; auto-close thread checks this
     stop_generation: Arc<AtomicU64>,
+    /// Whether current stream is a Bluetooth device (auto-close only for BT)
+    is_bluetooth: Arc<AtomicBool>,
 }
 
 impl AudioCapture {
@@ -59,6 +61,7 @@ impl AudioCapture {
             stream: Arc::new(Mutex::new(None)),
             first_callback_fired: Arc::new(AtomicBool::new(false)),
             stop_generation: Arc::new(AtomicU64::new(0)),
+            is_bluetooth: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -73,6 +76,10 @@ impl AudioCapture {
     pub fn open_stream(&self, device_name: Option<&str>) -> Result<(), String> {
         // Close any existing stream first
         self.close_stream();
+
+        // Track if this is a Bluetooth device (for auto-close logic)
+        let is_bt = device_name.map(|n| n.starts_with("bluez_input.")).unwrap_or(false);
+        self.is_bluetooth.store(is_bt, Ordering::Relaxed);
 
         let host = cpal::default_host();
 
@@ -250,30 +257,35 @@ impl AudioCapture {
             actual_rate
         );
 
-        // Increment generation and schedule auto-close
-        let gen = self.stop_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        let gen_ref = Arc::clone(&self.stop_generation);
-        let stream_ref = Arc::clone(&self.stream);
+        // Auto-close only for Bluetooth devices (to release HFP profile → restore A2DP)
+        // Non-BT devices keep the stream open (paused) for instant next PTT
+        if self.is_bluetooth.load(Ordering::Relaxed) {
+            let gen = self.stop_generation.fetch_add(1, Ordering::SeqCst) + 1;
+            let gen_ref = Arc::clone(&self.stop_generation);
+            let stream_ref = Arc::clone(&self.stream);
 
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(STREAM_AUTO_CLOSE_SECS));
-            // Only close if no new recording happened since we scheduled this
-            if gen_ref.load(Ordering::SeqCst) == gen {
-                let mut guard = stream_ref.lock().unwrap();
-                if guard.is_some() {
-                    *guard = None;
-                    crate::dev_log!(
-                        "[AUDIO/CPAL] Stream auto-closed after {}s idle (mic released)",
-                        STREAM_AUTO_CLOSE_SECS
-                    );
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(STREAM_AUTO_CLOSE_SECS));
+                // Only close if no new recording happened since we scheduled this
+                if gen_ref.load(Ordering::SeqCst) == gen {
+                    let mut guard = stream_ref.lock().unwrap();
+                    if guard.is_some() {
+                        *guard = None;
+                        crate::dev_log!(
+                            "[AUDIO/CPAL] Stream auto-closed after {}s idle (BT mic released)",
+                            STREAM_AUTO_CLOSE_SECS
+                        );
+                    }
                 }
-            }
-        });
+            });
 
-        crate::dev_log!(
-            "[AUDIO/CPAL] Stream paused — will auto-close in {}s if idle",
-            STREAM_AUTO_CLOSE_SECS
-        );
+            crate::dev_log!(
+                "[AUDIO/CPAL] Stream paused — will auto-close in {}s if idle (BT device)",
+                STREAM_AUTO_CLOSE_SECS
+            );
+        } else {
+            crate::dev_log!("[AUDIO/CPAL] Stream paused — ready for next PTT (instant)");
+        }
     }
 
     /// Get recorded audio buffer.

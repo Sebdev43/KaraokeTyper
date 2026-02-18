@@ -5,10 +5,12 @@
 //! - Windows: WASAPI backend
 //! - macOS: CoreAudio backend
 //!
-//! Architecture (on-demand mic access):
-//! - `start_recording()` opens the stream + plays → mic is ON
-//! - `stop_recording()` pauses + closes the stream → mic is OFF, device released
-//! - Mic is NEVER held open when not recording (no system mic indicator)
+//! Architecture (persistent stream for instant PTT):
+//! - `open_stream()` creates the stream (slow ~1-2s) — done once on first PTT
+//! - `start_recording()` clears buffer + plays → mic is ON (instant)
+//! - `stop_recording()` pauses the stream → mic callbacks stop (instant)
+//! - Stream stays open (paused) between recordings for instant next PTT
+//! - `close_stream()` fully releases the device (on device change or app exit)
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -199,7 +201,9 @@ impl AudioCapture {
         Ok(())
     }
 
-    /// Stop recording — pauses and closes stream to release the mic device.
+    /// Stop recording — pauses the stream but keeps it open for instant next PTT.
+    /// The stream stays in paused state (mic callbacks stop firing).
+    /// Call `close_stream()` explicitly to fully release the mic device.
     pub fn stop_recording(&self) {
         if let Some(stream) = self.stream.lock().unwrap().as_ref() {
             if let Err(e) = stream.pause() {
@@ -220,9 +224,8 @@ impl AudioCapture {
             actual_rate
         );
 
-        // Close stream to fully release the mic device (no system mic indicator)
-        self.close_stream();
-        crate::dev_log!("[AUDIO/CPAL] Stream closed — mic released");
+        // Stream stays open (paused) — next PTT press is instant via play()
+        crate::dev_log!("[AUDIO/CPAL] Stream paused — ready for next PTT");
     }
 
     /// Get recorded audio buffer.

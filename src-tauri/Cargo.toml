@@ -73,6 +73,10 @@ cpal = "0.15"
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.12"
 
+# jemalloc - reduces virtual memory fragmentation with many threads (Linux/macOS)
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+
 [features]
 default = []
 # GPU acceleration features (requires SDK installed for compilation)

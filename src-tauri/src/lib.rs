@@ -15,7 +15,7 @@ mod stt_whisper;
 mod evdev_listener;
 
 // CPAL audio capture (cross-platform: ALSA on Linux, CoreAudio on macOS, WASAPI on Windows)
-// Key design: always_on_microphone=false - stream created on PTT press, destroyed on release
+// Key design: stream opened once on first PTT, kept paused between recordings for instant response
 
 use audio::AudioCapture;
 use config::AppConfig;
@@ -143,7 +143,7 @@ impl SttEngine {
     }
 }
 
-// CPAL: stream is opened once at init (slow ~1-2s), PTT just toggles recording flag (instant)
+// CPAL: stream opened on first PTT (slow ~1-2s), kept paused between recordings (instant PTT)
 pub(crate) struct AppState {
     audio_capture: Arc<Mutex<AudioCapture>>,
     stt_engine: Arc<Mutex<Option<SttEngine>>>,
@@ -242,9 +242,20 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
     dev_log!("[STT] ✓ {} engine initialized", engine.backend_name());
     *state.stt_engine.lock().unwrap() = Some(engine);
 
-    // Audio stream is opened on-demand when PTT is pressed (not at init)
-    // This avoids holding the mic device open permanently (no system mic indicator)
-    dev_log!("[AUDIO] Audio stream will open on-demand (PTT press)");
+    // Pre-open audio stream now (paused) so first PTT press is instant
+    // Without this, first open_stream() takes ~2s (ALSA enumeration) and loses speech
+    {
+        let capture = state.audio_capture.lock().unwrap();
+        let device_name = {
+            let config = state.config.lock().unwrap();
+            config.audio_device_name.clone()
+        };
+        dev_log!("[AUDIO] Pre-opening audio stream...");
+        match capture.open_stream(device_name.as_deref()) {
+            Ok(()) => dev_log!("[AUDIO] ✅ Stream pre-opened (paused) — first PTT will be instant"),
+            Err(e) => dev_log!("[AUDIO] ⚠️ Pre-open failed: {} — will retry on first PTT", e),
+        }
+    }
 
     app_handle
         .emit(
@@ -293,17 +304,21 @@ pub(crate) async fn do_start_recording(
         )
         .ok();
 
-    // Open stream on-demand and start recording
+    // Open stream if not already open, then start recording
     {
         let capture = state.audio_capture.lock().unwrap();
 
-        let device_name = {
-            let config = state.config.lock().unwrap();
-            config.audio_device_name.clone()
-        };
-        dev_log!("[TIMING] T+{}ms: Opening audio stream...", t0.elapsed().as_millis());
-        capture.open_stream(device_name.as_deref())?;
-        dev_log!("[TIMING] T+{}ms: Stream opened", t0.elapsed().as_millis());
+        if !capture.is_stream_open() {
+            let device_name = {
+                let config = state.config.lock().unwrap();
+                config.audio_device_name.clone()
+            };
+            dev_log!("[TIMING] T+{}ms: Opening audio stream...", t0.elapsed().as_millis());
+            capture.open_stream(device_name.as_deref())?;
+            dev_log!("[TIMING] T+{}ms: Stream opened", t0.elapsed().as_millis());
+        } else {
+            dev_log!("[TIMING] T+{}ms: Stream already open (instant)", t0.elapsed().as_millis());
+        }
 
         capture.start_recording()?;
     }
@@ -343,9 +358,9 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
-    // Wait for recording to be ready (max 500ms)
+    // Wait for recording to be ready (max 3000ms — open_stream can take ~2s on first PTT)
     let mut waited = 0;
-    while !state.recording_ready.load(Ordering::SeqCst) && waited < 500 {
+    while !state.recording_ready.load(Ordering::SeqCst) && waited < 3000 {
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         waited += 10;
     }
@@ -377,11 +392,11 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
-    // Stop recording and close stream (releases mic device completely)
+    // Stop recording (stream stays open/paused for instant next PTT)
     let audio_data = {
         let capture = state.audio_capture.lock().unwrap();
 
-        // Pause + close stream — mic is fully released
+        // Pause stream — mic stops capturing but stays ready
         capture.stop_recording();
 
         // Get the captured audio buffer

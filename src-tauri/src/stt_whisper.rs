@@ -355,6 +355,15 @@ impl WhisperSttEngine {
             patience: -1.0,
         });
 
+        // Scale whisper.cpp threads to CPU: use half the cores (min 1, max 8)
+        // Prevents virtual memory explosion from too many malloc arenas
+        // while still scaling with powerful CPUs for faster transcription
+        let cpu_count = std::thread::available_parallelism()
+            .map(|n| n.get() as i32)
+            .unwrap_or(2);
+        let n_threads = (cpu_count / 2).max(1).min(8);
+        params.set_n_threads(n_threads);
+
         // Set language (empty string means auto-detect)
         if self.language != "auto" && !self.language.is_empty() {
             params.set_language(Some(&self.language));

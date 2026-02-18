@@ -279,7 +279,10 @@ fn spawn_device_monitor(
 ) {
     let path_clone = device_path.clone();
 
-    tokio::task::spawn_blocking(move || {
+    // Use std::thread::spawn instead of tokio::task::spawn_blocking.
+    // These are infinite loops that never return — spawn_blocking is designed
+    // for tasks that "eventually finish" and would exhaust tokio's blocking pool.
+    std::thread::spawn(move || {
         monitor_device_with_reconnect(
             path_clone,
             app_handle,

@@ -13,7 +13,7 @@
 //! - `close_stream()` fully releases the device (on device change or app exit)
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Wrapper to make cpal::Stream usable across threads.
@@ -32,6 +32,9 @@ impl SendStream {
     }
 }
 
+/// Delay before auto-closing the stream after recording stops (releases mic device)
+const STREAM_AUTO_CLOSE_SECS: u64 = 10;
+
 /// Audio capture state and buffer
 pub struct AudioCapture {
     audio_buffer: Arc<Mutex<Vec<f32>>>,
@@ -42,6 +45,8 @@ pub struct AudioCapture {
     stream: Arc<Mutex<Option<SendStream>>>,
     /// Tracks first callback per recording session (for debug logging)
     first_callback_fired: Arc<AtomicBool>,
+    /// Counter incremented each stop_recording; auto-close thread checks this
+    stop_generation: Arc<AtomicU64>,
 }
 
 impl AudioCapture {
@@ -53,6 +58,7 @@ impl AudioCapture {
             recording_start_time: Arc::new(Mutex::new(None)),
             stream: Arc::new(Mutex::new(None)),
             first_callback_fired: Arc::new(AtomicBool::new(false)),
+            stop_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -100,6 +106,23 @@ impl AudioCapture {
                 // PipeWire source name (Bluetooth, virtual, etc.)
                 // Route it as PipeWire default, then open CPAL default device
                 crate::dev_log!("[AUDIO/CPAL] PipeWire source: {}, setting as default...", name);
+
+                // Bluetooth: switch card to headset profile (HFP) so mic source exists
+                // In A2DP mode there's no input source — we must switch to HFP first
+                if name.starts_with("bluez_input.") {
+                    let mac = name.strip_prefix("bluez_input.").unwrap_or("");
+                    // Remove trailing ".N" stream index to get MAC
+                    let mac = mac.rsplit('.').skip(1).collect::<Vec<_>>()
+                        .into_iter().rev().collect::<Vec<_>>().join(".");
+                    let card_name = format!("bluez_card.{}", mac);
+                    crate::dev_log!("[AUDIO/BT] Switching {} to headset-head-unit for mic access", card_name);
+                    let _ = std::process::Command::new("pactl")
+                        .args(["set-card-profile", &card_name, "headset-head-unit"])
+                        .output();
+                    // Wait for PipeWire to create the input source
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+
                 let _ = std::process::Command::new("pactl")
                     .args(["set-default-source", name])
                     .output();
@@ -186,6 +209,9 @@ impl AudioCapture {
 
     /// Start recording — calls stream.play() (instant, ~0ms).
     pub fn start_recording(&self) -> Result<(), String> {
+        // Cancel any pending auto-close timer
+        self.stop_generation.fetch_add(1, Ordering::SeqCst);
+
         let stream_guard = self.stream.lock().unwrap();
         let stream = stream_guard.as_ref().ok_or("Audio stream not open")?;
 
@@ -201,9 +227,9 @@ impl AudioCapture {
         Ok(())
     }
 
-    /// Stop recording — pauses the stream but keeps it open for instant next PTT.
-    /// The stream stays in paused state (mic callbacks stop firing).
-    /// Call `close_stream()` explicitly to fully release the mic device.
+    /// Stop recording — pauses the stream, then auto-closes it after a timeout.
+    /// If PTT is pressed again before the timeout, the stream is still open (instant).
+    /// After the timeout, the stream closes and releases the mic device (important for Bluetooth).
     pub fn stop_recording(&self) {
         if let Some(stream) = self.stream.lock().unwrap().as_ref() {
             if let Err(e) = stream.pause() {
@@ -224,8 +250,30 @@ impl AudioCapture {
             actual_rate
         );
 
-        // Stream stays open (paused) — next PTT press is instant via play()
-        crate::dev_log!("[AUDIO/CPAL] Stream paused — ready for next PTT");
+        // Increment generation and schedule auto-close
+        let gen = self.stop_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let gen_ref = Arc::clone(&self.stop_generation);
+        let stream_ref = Arc::clone(&self.stream);
+
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(STREAM_AUTO_CLOSE_SECS));
+            // Only close if no new recording happened since we scheduled this
+            if gen_ref.load(Ordering::SeqCst) == gen {
+                let mut guard = stream_ref.lock().unwrap();
+                if guard.is_some() {
+                    *guard = None;
+                    crate::dev_log!(
+                        "[AUDIO/CPAL] Stream auto-closed after {}s idle (mic released)",
+                        STREAM_AUTO_CLOSE_SECS
+                    );
+                }
+            }
+        });
+
+        crate::dev_log!(
+            "[AUDIO/CPAL] Stream paused — will auto-close in {}s if idle",
+            STREAM_AUTO_CLOSE_SECS
+        );
     }
 
     /// Get recorded audio buffer.

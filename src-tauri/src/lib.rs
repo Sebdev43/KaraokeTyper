@@ -629,6 +629,36 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
         }
     }
 
+    // 3. Add Bluetooth devices from pactl list cards (visible even in A2DP mode)
+    // In A2DP mode, BT devices have no input source, so step 2 misses them.
+    // We detect bluez_card.* with headset profiles and construct the source name.
+    if let Ok(output) = tokio::process::Command::new("pactl")
+        .args(["list", "cards"])
+        .env("XDG_RUNTIME_DIR", &xdg_runtime)
+        .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
+        .env("LC_ALL", "C")
+        .output()
+        .await
+    {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for bt_dev in parse_bt_cards_from_pactl(&stdout) {
+                // Skip if already listed (e.g. was in HFP mode and found via sources)
+                let already_listed = devices.iter().any(|d| d.raw_name.starts_with(&format!("bluez_input.{}", bt_dev.mac)));
+                if !already_listed {
+                    let raw_name = format!("bluez_input.{}.0", bt_dev.mac);
+                    devices.push(AudioDevice {
+                        name: format!("🎧 {}", bt_dev.description),
+                        raw_name,
+                        index,
+                    });
+                    index += 1;
+                    dev_log!("[DEVICES] Added BT device from card: {} ({})", bt_dev.description, bt_dev.mac);
+                }
+            }
+        }
+    }
+
     dev_log!("[DEVICES] Listed {} audio devices:", devices.len());
     for dev in &devices {
         dev_log!(
@@ -638,6 +668,61 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
     }
 
     Ok(devices)
+}
+
+/// Bluetooth card info parsed from pactl list cards
+#[cfg(target_os = "linux")]
+struct BtCardInfo {
+    mac: String,         // e.g. "40_58_99_49_68_8F"
+    description: String, // e.g. "G435 Bluetooth Gaming Headset"
+}
+
+/// Parse pactl list cards output to find Bluetooth cards with headset (mic) profiles
+#[cfg(target_os = "linux")]
+fn parse_bt_cards_from_pactl(output: &str) -> Vec<BtCardInfo> {
+    let mut results = Vec::new();
+    // Split into card blocks
+    let cards: Vec<&str> = output.split("\nCard #").collect();
+
+    for card in cards {
+        // Look for bluez card name
+        let card_name = card.lines()
+            .find(|l| l.contains("device.name") && l.contains("bluez_card."))
+            .and_then(|l| l.split('"').nth(1));
+
+        let card_name = match card_name {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+
+        // Check if headset-head-unit profile is available
+        let has_headset = card.lines().any(|l| {
+            let trimmed = l.trim();
+            trimmed.starts_with("headset-head-unit:")
+                || trimmed.starts_with("headset-head-unit-cvsd:")
+                || trimmed.starts_with("headset-head-unit-msbc:")
+        });
+
+        if !has_headset {
+            continue;
+        }
+
+        // Extract MAC from card name: "bluez_card.40_58_99_49_68_8F" → "40_58_99_49_68_8F"
+        let mac = card_name.strip_prefix("bluez_card.").unwrap_or("").to_string();
+        if mac.is_empty() {
+            continue;
+        }
+
+        // Get device description
+        let description = card.lines()
+            .find(|l| l.contains("device.description"))
+            .and_then(|l| l.split('"').nth(1))
+            .unwrap_or("Bluetooth Headset")
+            .to_string();
+
+        results.push(BtCardInfo { mac, description });
+    }
+    results
 }
 
 /// Add a pactl source to the device list if it's not a duplicate or monitor

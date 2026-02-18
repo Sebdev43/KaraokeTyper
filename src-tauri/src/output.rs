@@ -7,9 +7,27 @@ mod linux_output {
     use std::collections::HashMap;
     use std::fs::OpenOptions;
     use std::os::unix::io::AsRawFd;
-    use std::sync::OnceLock;
+    use std::sync::{Mutex, OnceLock};
     use std::thread;
     use std::time::Duration;
+
+    /// Singleton UInput device — created once, reused for all paste/type operations.
+    /// Avoids creating a new /dev/input/eventN on every paste.
+    static UINPUT_DEVICE: Mutex<Option<UInputDevice>> = Mutex::new(None);
+
+    /// Run a closure with the singleton UInputDevice (created lazily on first use).
+    pub fn with_uinput<F, R>(f: F) -> Result<R, String>
+    where
+        F: FnOnce(&UInputDevice) -> Result<R, String>,
+    {
+        let mut guard = UINPUT_DEVICE
+            .lock()
+            .map_err(|e| format!("UInput mutex poisoned: {}", e))?;
+        if guard.is_none() {
+            *guard = Some(UInputDevice::new()?);
+        }
+        f(guard.as_ref().unwrap())
+    }
 
     const UI_SET_EVBIT: u64 = 0x40045564;
     const UI_SET_KEYBIT: u64 = 0x40045565;
@@ -650,14 +668,15 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn try_uinput_paste(is_terminal: bool) -> Result<(), String> {
-        let device = linux_output::UInputDevice::new()?;
-        if is_terminal {
-            crate::dev_log!("[OUTPUT] Using uinput for terminal paste (Ctrl+Shift+V)...");
-            device.ctrl_shift_v()
-        } else {
-            crate::dev_log!("[OUTPUT] Using uinput for paste (Ctrl+V)...");
-            device.ctrl_v()
-        }
+        linux_output::with_uinput(|device| {
+            if is_terminal {
+                crate::dev_log!("[OUTPUT] Using uinput for terminal paste (Ctrl+Shift+V)...");
+                device.ctrl_shift_v()
+            } else {
+                crate::dev_log!("[OUTPUT] Using uinput for paste (Ctrl+V)...");
+                device.ctrl_v()
+            }
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -970,8 +989,7 @@ impl TextOutput {
 
         #[cfg(target_os = "linux")]
         {
-            let device = linux_output::UInputDevice::new()?;
-            device.type_text(text)?;
+            linux_output::with_uinput(|device| device.type_text(text))?;
         }
 
         #[cfg(not(target_os = "linux"))]

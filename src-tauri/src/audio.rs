@@ -16,6 +16,11 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Validate device names to prevent command injection via pactl
+fn is_valid_device_name(name: &str) -> bool {
+    name.chars().all(|c| c.is_alphanumeric() || "_.:-,=".contains(c))
+}
+
 /// Wrapper to make cpal::Stream usable across threads.
 /// cpal::Stream is !Send+!Sync as a conservative choice, but the stream handle
 /// is safe to move between threads — we only store it and call play/pause/drop.
@@ -69,7 +74,6 @@ impl AudioCapture {
     /// Call this once at init or when the user changes device in Settings.
     ///
     /// Device matching:
-    /// Device matching:
     /// - `None`, `"pipewire"`, `"default"`, `""` → system default (fast, no enumeration)
     /// - `"plughw:CARD=..."` → ALSA hardware device (direct CPAL open)
     /// - PipeWire source name (bluez, alsa_input, etc.) → route via pactl + CPAL default
@@ -100,12 +104,9 @@ impl AudioCapture {
                 match found {
                     Some(dev) => dev,
                     None => {
-                        crate::dev_log!(
-                            "[AUDIO/CPAL] ALSA device '{}' not found, falling back to default",
-                            name
-                        );
-                        host.default_input_device()
-                            .ok_or("No default input device available")?
+                        // Don't fallback to default — return error so pre-open fails cleanly
+                        // and first PTT retries (USB device may not be ready at startup)
+                        return Err(format!("ALSA device '{}' not found (not yet available?)", name));
                     }
                 }
             }
@@ -114,25 +115,38 @@ impl AudioCapture {
                 // Route it as PipeWire default, then open CPAL default device
                 crate::dev_log!("[AUDIO/CPAL] PipeWire source: {}, setting as default...", name);
 
+                if !is_valid_device_name(name) {
+                    return Err(format!("Invalid device name: '{}'", name));
+                }
+
                 // Bluetooth: switch card to headset profile (HFP) so mic source exists
                 // In A2DP mode there's no input source — we must switch to HFP first
                 if name.starts_with("bluez_input.") {
-                    let mac = name.strip_prefix("bluez_input.").unwrap_or("");
-                    // Remove trailing ".N" stream index to get MAC
-                    let mac = mac.rsplit('.').skip(1).collect::<Vec<_>>()
-                        .into_iter().rev().collect::<Vec<_>>().join(".");
+                    let mac = name.strip_prefix("bluez_input.")
+                        .and_then(|m| m.rsplitn(2, '.').last())
+                        .unwrap_or("");
                     let card_name = format!("bluez_card.{}", mac);
                     crate::dev_log!("[AUDIO/BT] Switching {} to headset-head-unit for mic access", card_name);
-                    let _ = std::process::Command::new("pactl")
+                    match std::process::Command::new("pactl")
                         .args(["set-card-profile", &card_name, "headset-head-unit"])
-                        .output();
+                        .output()
+                    {
+                        Ok(o) if !o.status.success() => crate::dev_log!("[AUDIO/BT] pactl set-card-profile failed: {}", String::from_utf8_lossy(&o.stderr)),
+                        Err(e) => crate::dev_log!("[AUDIO/BT] Failed to run pactl: {}", e),
+                        _ => {}
+                    }
                     // Wait for PipeWire to create the input source
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 }
 
-                let _ = std::process::Command::new("pactl")
+                match std::process::Command::new("pactl")
                     .args(["set-default-source", name])
-                    .output();
+                    .output()
+                {
+                    Ok(o) if !o.status.success() => crate::dev_log!("[AUDIO/CPAL] pactl set-default-source failed: {}", String::from_utf8_lossy(&o.stderr)),
+                    Err(e) => crate::dev_log!("[AUDIO/CPAL] Failed to run pactl: {}", e),
+                    _ => {}
+                }
                 // Small delay for PipeWire to switch
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 crate::dev_log!("[AUDIO/CPAL] Opening CPAL default (routed to PipeWire source)");
@@ -169,7 +183,7 @@ impl AudioCapture {
                         data.to_vec()
                     };
 
-                    let mut buf = audio_buffer.lock().unwrap();
+                    let Ok(mut buf) = audio_buffer.lock() else { return; };
                     buf.extend_from_slice(&samples);
 
                     if !first_callback_fired.swap(true, Ordering::Relaxed) {
@@ -268,7 +282,7 @@ impl AudioCapture {
                 std::thread::sleep(std::time::Duration::from_secs(STREAM_AUTO_CLOSE_SECS));
                 // Only close if no new recording happened since we scheduled this
                 if gen_ref.load(Ordering::SeqCst) == gen {
-                    let mut guard = stream_ref.lock().unwrap();
+                    let Ok(mut guard) = stream_ref.lock() else { return; };
                     if guard.is_some() {
                         *guard = None;
                         crate::dev_log!(

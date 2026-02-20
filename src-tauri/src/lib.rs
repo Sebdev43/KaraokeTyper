@@ -709,7 +709,7 @@ fn parse_bt_cards_from_pactl(output: &str) -> Vec<BtCardInfo> {
 
         // Extract MAC from card name: "bluez_card.40_58_99_49_68_8F" → "40_58_99_49_68_8F"
         let mac = card_name.strip_prefix("bluez_card.").unwrap_or("").to_string();
-        if mac.is_empty() {
+        if mac.is_empty() || !is_valid_bt_mac(&mac) {
             continue;
         }
 
@@ -723,6 +723,13 @@ fn parse_bt_cards_from_pactl(output: &str) -> Vec<BtCardInfo> {
         results.push(BtCardInfo { mac, description });
     }
     results
+}
+
+/// Validate Bluetooth MAC format: "40_58_99_49_68_8F" (6 hex pairs separated by _)
+#[cfg(target_os = "linux")]
+fn is_valid_bt_mac(mac: &str) -> bool {
+    let parts: Vec<&str> = mac.split('_').collect();
+    parts.len() == 6 && parts.iter().all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// Add a pactl source to the device list if it's not a duplicate or monitor
@@ -916,9 +923,15 @@ async fn save_settings(
     state: State<'_, AppState>,
     new_config: AppConfig,
 ) -> Result<(), String> {
-    let (old_shortcut, old_device) = {
+    let (old_shortcut, old_device, old_model, old_language, old_model_path) = {
         let config = state.config.lock().unwrap();
-        (config.shortcut.clone(), config.audio_device_name.clone())
+        (
+            config.shortcut.clone(),
+            config.audio_device_name.clone(),
+            config.model.clone(),
+            config.language.clone(),
+            config.model_path.clone(),
+        )
     };
 
     new_config.save()?;
@@ -932,11 +945,34 @@ async fn save_settings(
         update_global_shortcut(&app_handle, &old_shortcut, &new_config.shortcut)?;
     }
 
-    // Close any existing stream if device changed (will re-open on next PTT)
+    // Re-open audio stream immediately if device changed
     if old_device != new_config.audio_device_name {
-        let capture = state.audio_capture.lock().unwrap();
-        capture.close_stream();
-        dev_log!("[AUDIO] Stream closed — new device will be used on next PTT");
+        let device_name = new_config.audio_device_name.clone();
+        // Close old stream first (separate lock scope)
+        { state.audio_capture.lock().unwrap().close_stream(); }
+        // Re-open on new device (separate lock scope — open_stream can be slow for BT)
+        match state.audio_capture.lock().unwrap().open_stream(device_name.as_deref()) {
+            Ok(()) => dev_log!("[AUDIO] ✅ Stream re-opened on new device: {:?}", device_name),
+            Err(e) => dev_log!("[AUDIO] ⚠️ Stream re-open failed: {} — will retry on next PTT", e),
+        }
+    }
+
+    // Re-init STT engine if model or language changed
+    let stt_needs_reload = old_model != new_config.model
+        || old_language != new_config.language
+        || old_model_path != new_config.model_path;
+    if stt_needs_reload {
+        dev_log!("[STT] Settings changed — reloading engine (model: {}, lang: {})", new_config.model, new_config.language);
+        stt_whisper::suppress_whisper_cpp_logs();
+        match SttEngine::new(&new_config) {
+            Ok(engine) => {
+                *state.stt_engine.lock().unwrap() = Some(engine);
+                dev_log!("[STT] ✅ Engine reloaded successfully");
+            }
+            Err(e) => {
+                dev_log!("[STT] ⚠️ Engine reload failed: {} — keeping current engine", e);
+            }
+        }
     }
 
     Ok(())

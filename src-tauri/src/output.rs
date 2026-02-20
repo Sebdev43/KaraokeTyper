@@ -15,14 +15,14 @@ mod linux_output {
     /// Avoids creating a new /dev/input/eventN on every paste.
     static UINPUT_DEVICE: Mutex<Option<UInputDevice>> = Mutex::new(None);
 
-    /// Run a closure with the singleton UInputDevice (created lazily on first use).
+    /// Run a closure with the singleton UInputDevice. Recovers from Mutex poisoning.
     pub fn with_uinput<F, R>(f: F) -> Result<R, String>
     where
         F: FnOnce(&UInputDevice) -> Result<R, String>,
     {
         let mut guard = UINPUT_DEVICE
             .lock()
-            .map_err(|e| format!("UInput mutex poisoned: {}", e))?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if guard.is_none() {
             *guard = Some(UInputDevice::new()?);
         }
@@ -478,7 +478,11 @@ mod linux_output {
         fn drop(&mut self) {
             if self.fd >= 0 {
                 unsafe {
-                    libc::ioctl(self.fd, UI_DEV_DESTROY, 0);
+                    let ret = libc::ioctl(self.fd, UI_DEV_DESTROY, 0);
+                    if ret < 0 {
+                        // Don't panic in Drop — just log the failure
+                        eprintln!("[UINPUT] Warning: UI_DEV_DESTROY failed (fd={})", self.fd);
+                    }
                     libc::close(self.fd);
                 }
                 crate::dev_log!("[UINPUT] Device closed");

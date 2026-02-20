@@ -74,6 +74,7 @@ impl fmt::Display for WhisperError {
 impl std::error::Error for WhisperError {}
 
 /// Result of GPU initialization attempt
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GpuInitResult {
     /// Mode used: "gpu" or "cpu"
@@ -313,11 +314,6 @@ impl WhisperSttEngine {
         Ok(init_result)
     }
 
-    /// Check if the engine is initialized
-    pub fn is_initialized(&self) -> bool {
-        self.context.lock().unwrap().is_some()
-    }
-
     /// Transcribe audio data
     ///
     /// # Arguments
@@ -414,15 +410,6 @@ impl WhisperSttEngine {
         Ok(result)
     }
 
-    /// Get the model path
-    pub fn model_path(&self) -> &PathBuf {
-        &self.model_path
-    }
-
-    /// Get the configured language
-    pub fn language(&self) -> &str {
-        &self.language
-    }
 }
 
 impl Drop for WhisperSttEngine {

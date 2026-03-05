@@ -5,6 +5,53 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] - 2026-03-05
+
+### Added
+
+- **Accélération GPU Vulkan**: Auto-détection GPU au démarrage, activation automatique si compilé avec support GPU
+- **Détection VRAM**: Détection automatique de la mémoire vidéo (NVIDIA via nvidia-smi, AMD via sysfs, macOS via system_profiler)
+- **Recommandation de modèle**: Suggestion automatique du meilleur modèle Whisper selon la VRAM disponible (marge de sécurité 30%)
+- **Auto-désactivation GPU**: Fallback automatique vers CPU après 3 échecs GPU consécutifs
+- **Rechargement à chaud GPU**: Changement GPU/CPU sans redémarrage de l'application
+
+### Changed
+
+- **Greedy sur GPU**: Utilisation de Greedy decoding sur GPU (réduit VRAM ~60%) vs BeamSearch sur CPU
+- **Interface GPU en français**: Section GPU complète dans les paramètres (VRAM, recommandations, alertes)
+- **Migration config automatique**: Les anciennes configs avec `use_gpu: false` sont auto-migrées si GPU compilé
+
+### Fixed
+
+- **Build CI**: Correction du build TypeScript strict (`noUnusedLocals`) pour les bindings auto-générés
+
+## [1.0.7] - 2026-02-28
+
+### Fixed
+
+- **Validation d'entrée**: Validation des noms de périphériques avant les commandes pactl (prévention injection)
+- **Sécurité Mutex**: Gestion du poisoning Mutex dans le callback audio et UInput
+- **Ordre des locks**: Séparation des scopes dans save_settings pour éviter les deadlocks
+- **Rechargement à chaud**: Application des changements modèle/langue dans save_settings sans redémarrage
+
+## [1.0.6] - 2026-02-20
+
+### Fixed
+
+- **Détection Bluetooth A2DP**: Détection des casques BT via `pactl list cards` (visible même en mode A2DP)
+- **Fermeture auto stream BT**: Fermeture du stream audio après 10s d'inactivité uniquement pour le Bluetooth (libère le profil HFP)
+- **UInput singleton**: Prévention de l'accumulation de `/dev/input/eventN`
+- **PTT instantané**: Les périphériques non-BT (ALSA, USB) gardent le stream ouvert (en pause) pour un PTT sans délai
+
+## [1.0.5] - 2026-02-15
+
+### Fixed
+
+- **PTT instantané**: Stream audio maintenu ouvert (en pause) entre les enregistrements
+- **Pré-ouverture stream**: Le stream audio s'ouvre à l'init STT pour éviter le délai de 2s au premier appui
+- **Paste terminal VS Code**: Détection du terminal VS Code via `${focusedView}` dans le titre de fenêtre
+- **wl-copy non bloquant**: Utilisation de spawn non-bloquant pour éviter le freeze
+
 ## [1.0.4] - 2025-02-11
 
 ### Fixed

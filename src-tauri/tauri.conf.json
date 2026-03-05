@@ -1,13 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "karaoketyper",
-  "version": "1.0.4",
+  "version": "1.0.8",
   "identifier": "com.seb43.karaoketyper",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist",
+    "features": ["gpu-vulkan"]
   },
   "app": {
     "windows": [
@@ -15,8 +16,8 @@
         "label": "settings",
         "title": "KaraokeTyper Settings",
         "url": "settings.html",
-        "width": 600,
-        "height": 540,
+        "width": 820,
+        "height": 620,
         "resizable": true,
         "center": true,
         "visible": false,
@@ -56,7 +57,9 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "resources/focused-window-dbus/*": "focused-window-dbus/"
+      "resources/focused-window-dbus/*": "focused-window-dbus/",
+      "resources/models/silero_vad_v4.onnx": "models/silero_vad_v4.onnx",
+      "resources/sounds/*": "sounds/"
     },
     "linux": {
       "deb": {

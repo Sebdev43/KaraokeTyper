@@ -170,9 +170,6 @@ async getSystemInfo() : Promise<Result<SystemInfo, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Check if the GNOME focused window extension is installed
- */
 async checkFocusedWindowExtension() : Promise<Result<GnomeExtensionStatus, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("check_focused_window_extension") };
@@ -181,9 +178,6 @@ async checkFocusedWindowExtension() : Promise<Result<GnomeExtensionStatus, strin
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Install the GNOME focused window extension
- */
 async installFocusedWindowExtension() : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("install_focused_window_extension") };
@@ -192,9 +186,6 @@ async installFocusedWindowExtension() : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Remove the GNOME focused window extension
- */
 async removeFocusedWindowExtension() : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("remove_focused_window_extension") };
@@ -214,9 +205,6 @@ async setAutostartEnabled(enabled: boolean) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Get app data info for display in UI
- */
 async getAppDataInfo() : Promise<Result<AppDataInfo, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_app_data_info") };
@@ -225,9 +213,6 @@ async getAppDataInfo() : Promise<Result<AppDataInfo, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-/**
- * Clean all app data (for uninstallation)
- */
 async cleanupAppData() : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("cleanup_app_data") };
@@ -268,6 +253,14 @@ async resetGpuFailureCount() : Promise<Result<string, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async checkOllamaStatus() : Promise<Result<OllamaStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_ollama_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -281,27 +274,10 @@ async resetGpuFailureCount() : Promise<Result<string, string>> {
 
 /** user-defined types **/
 
-export type AppConfig = { shortcut: string; audio_device_index: number; audio_device_name?: string | null; model: string; key_delay_ms: number; language: string; model_path?: string | null; 
-/**
- * Enable GPU acceleration for Whisper inference (default: false for safety)
- */
-use_gpu?: boolean; 
-/**
- * GPU device index for multi-GPU systems (default: None = use first available)
- */
-gpu_device_index?: number | null }
-/**
- * App data info for cleanup UI
- */
+export type AppConfig = { shortcut: string; audio_device_index: number; audio_device_name?: string | null; model: string; key_delay_ms: number; language: string; model_path?: string | null; use_gpu?: boolean; gpu_device_index?: number | null; audio_feedback_enabled?: boolean; audio_feedback_volume?: number; model_unload_timeout?: ModelUnloadTimeout; ollama_url?: string | null; ollama_model?: string | null; ollama_enabled?: boolean }
 export type AppDataInfo = { items: AppDataItem[]; total_size_mb: number }
-/**
- * Single app data item info
- */
 export type AppDataItem = { name: string; path: string; exists: boolean; size_mb: number }
 export type AudioDevice = { name: string; raw_name: string; index: number }
-/**
- * GNOME extension status
- */
 export type GnomeExtensionStatus = { installed: boolean; enabled: boolean; is_gnome: boolean; is_wayland: boolean; path: string; needs_restart: boolean }
 /**
  * GPU acceleration status
@@ -314,7 +290,15 @@ failure_count: number;
 /**
  * Whether GPU is auto-disabled due to too many failures
  */
-disabled_by_failures: boolean }
+disabled_by_failures: boolean; 
+/**
+ * Detected VRAM in MB (None if detection failed)
+ */
+vram_mb: number | null; 
+/**
+ * Recommended model name based on VRAM
+ */
+recommended_model: string | null }
 /**
  * GPU status for real-time monitoring and events
  */
@@ -336,6 +320,8 @@ fallback_reason: string | null;
  */
 failure_count: number }
 export type ModelInfo = { name: string; display_name: string; size_mb: number; url: string; installed: boolean; description: string }
+export type ModelUnloadTimeout = "Never" | "Min5" | "Min15" | "Hour1"
+export type OllamaStatus = { available: boolean; model: string; url: string }
 /**
  * System information
  */
@@ -345,8 +331,58 @@ export type SystemInfo = { os: string; arch: string; display_server: string; des
 
 import {
 	invoke as TAURI_INVOKE,
+	Channel as TAURI_CHANNEL,
 } from "@tauri-apps/api/core";
+import * as TAURI_API_EVENT from "@tauri-apps/api/event";
+import { type WebviewWindow as __WebviewWindow__ } from "@tauri-apps/api/webviewWindow";
+
+type __EventObj__<T> = {
+	listen: (
+		cb: TAURI_API_EVENT.EventCallback<T>,
+	) => ReturnType<typeof TAURI_API_EVENT.listen<T>>;
+	once: (
+		cb: TAURI_API_EVENT.EventCallback<T>,
+	) => ReturnType<typeof TAURI_API_EVENT.once<T>>;
+	emit: null extends T
+		? (payload?: T) => ReturnType<typeof TAURI_API_EVENT.emit>
+		: (payload: T) => ReturnType<typeof TAURI_API_EVENT.emit>;
+};
 
 export type Result<T, E> =
 	| { status: "ok"; data: T }
 	| { status: "error"; error: E };
+
+function __makeEvents__<T extends Record<string, any>>(
+	mappings: Record<keyof T, string>,
+) {
+	return new Proxy(
+		{} as unknown as {
+			[K in keyof T]: __EventObj__<T[K]> & {
+				(handle: __WebviewWindow__): __EventObj__<T[K]>;
+			};
+		},
+		{
+			get: (_, event) => {
+				const name = mappings[event as keyof T];
+
+				return new Proxy((() => {}) as any, {
+					apply: (_, __, [window]: [__WebviewWindow__]) => ({
+						listen: (arg: any) => window.listen(name, arg),
+						once: (arg: any) => window.once(name, arg),
+						emit: (arg: any) => window.emit(name, arg),
+					}),
+					get: (_, command: keyof __EventObj__<any>) => {
+						switch (command) {
+							case "listen":
+								return (arg: any) => TAURI_API_EVENT.listen(name, arg);
+							case "once":
+								return (arg: any) => TAURI_API_EVENT.once(name, arg);
+							case "emit":
+								return (arg: any) => TAURI_API_EVENT.emit(name, arg);
+						}
+					},
+				});
+			},
+		},
+	);
+}

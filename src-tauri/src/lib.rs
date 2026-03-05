@@ -9,13 +9,19 @@ mod keyboard_listener;
 mod model_downloader;
 mod output;
 mod stt_whisper;
+mod vad;
+mod audio_devices;
+mod audio_feedback;
+mod gnome_extension;
+mod app_data;
+mod ollama_client;
 
 // Linux-specific modules
 #[cfg(target_os = "linux")]
 mod evdev_listener;
 
 // CPAL audio capture (cross-platform: ALSA on Linux, CoreAudio on macOS, WASAPI on Windows)
-// Key design: always_on_microphone=false - stream created on PTT press, destroyed on release
+// Key design: stream opened once on first PTT, kept paused between recordings for instant response
 
 use audio::AudioCapture;
 use config::AppConfig;
@@ -37,32 +43,6 @@ pub struct SystemInfo {
     pub desktop_environment: String,
 }
 
-/// Single app data item info
-#[derive(Clone, Serialize, Type)]
-pub struct AppDataItem {
-    pub name: String,
-    pub path: String,
-    pub exists: bool,
-    pub size_mb: f64,
-}
-
-/// App data info for cleanup UI
-#[derive(Clone, Serialize, Type)]
-pub struct AppDataInfo {
-    pub items: Vec<AppDataItem>,
-    pub total_size_mb: f64,
-}
-
-/// GNOME extension status
-#[derive(Clone, Serialize, Type)]
-pub struct GnomeExtensionStatus {
-    pub installed: bool,
-    pub enabled: bool,
-    pub is_gnome: bool,
-    pub is_wayland: bool,
-    pub path: String,
-    pub needs_restart: bool,
-}
 
 /// GPU acceleration status
 #[derive(Clone, Serialize, Type)]
@@ -74,6 +54,10 @@ pub struct GpuInfo {
     pub failure_count: u32,
     /// Whether GPU is auto-disabled due to too many failures
     pub disabled_by_failures: bool,
+    /// Detected VRAM in MB (None if detection failed)
+    pub vram_mb: Option<u32>,
+    /// Recommended model name based on VRAM
+    pub recommended_model: Option<String>,
 }
 
 /// GPU status for real-time monitoring and events
@@ -143,13 +127,15 @@ impl SttEngine {
     }
 }
 
-// CPAL: stream is opened once at init (slow ~1-2s), PTT just toggles recording flag (instant)
+// CPAL: stream opened on first PTT (slow ~1-2s), kept paused between recordings (instant PTT)
 pub(crate) struct AppState {
     audio_capture: Arc<Mutex<AudioCapture>>,
     stt_engine: Arc<Mutex<Option<SttEngine>>>,
     config: Arc<Mutex<AppConfig>>,
     recording_ready: Arc<std::sync::atomic::AtomicBool>,
     pub recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
+    last_stt_activity: Arc<std::sync::atomic::AtomicU64>,
+    idle_watcher_shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for AppState {
@@ -160,14 +146,76 @@ impl Default for AppState {
             config: Arc::new(Mutex::new(AppConfig::load().unwrap_or_default())),
             recording_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             recording_start_time: Arc::new(Mutex::new(None)),
+            last_stt_activity: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            idle_watcher_shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
+}
+
+fn start_idle_watcher(state: &AppState) {
+    use std::sync::atomic::Ordering;
+
+    let engine = state.stt_engine.clone();
+    let config = state.config.clone();
+    let last_activity = state.last_stt_activity.clone();
+    let shutdown = state.idle_watcher_shutdown.clone();
+
+    std::thread::spawn(move || {
+        dev_log!("[IDLE_WATCHER] Started");
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+
+            if shutdown.load(Ordering::Relaxed) {
+                dev_log!("[IDLE_WATCHER] Shutdown signal received");
+                break;
+            }
+
+            let timeout_secs = {
+                let cfg = config.lock().unwrap();
+                cfg.model_unload_timeout.to_seconds()
+            };
+
+            let timeout_secs = match timeout_secs {
+                Some(s) => s,
+                None => continue, // Never timeout
+            };
+
+            let last = last_activity.load(Ordering::Relaxed);
+            if last == 0 {
+                continue; // No activity yet
+            }
+
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            if now - last >= timeout_secs {
+                let guard = engine.lock().unwrap();
+                if let Some(ref engine) = *guard {
+                    if engine.engine.is_loaded() {
+                        engine.engine.unload();
+                        dev_log!("[IDLE_WATCHER] Model unloaded after {}s idle", timeout_secs);
+                    }
+                }
+            }
+        }
+    });
+}
+
+fn update_stt_activity(state: &AppState) {
+    use std::sync::atomic::Ordering;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    state.last_stt_activity.store(now, Ordering::Relaxed);
 }
 
 /// Get D-Bus environment variables needed for PulseAudio/PipeWire/GNOME commands
 /// when launched from .desktop file (where these might not be inherited)
 #[cfg(target_os = "linux")]
-fn get_dbus_env() -> (String, String) {
+pub(crate) fn get_dbus_env() -> (String, String) {
     let xdg_runtime = std::env::var("XDG_RUNTIME_DIR")
         .unwrap_or_else(|_| format!("/run/user/{}", unsafe { libc::getuid() }));
     let dbus_addr = std::env::var("DBUS_SESSION_BUS_ADDRESS")
@@ -242,9 +290,48 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
     dev_log!("[STT] ✓ {} engine initialized", engine.backend_name());
     *state.stt_engine.lock().unwrap() = Some(engine);
 
-    // Audio stream is opened on-demand when PTT is pressed (not at init)
-    // This avoids holding the mic device open permanently (no system mic indicator)
-    dev_log!("[AUDIO] Audio stream will open on-demand (PTT press)");
+    // Initialize Voice Activity Detection (Silero VAD v4)
+    {
+        let vad_model_path = app_handle
+            .path()
+            .resolve("models/silero_vad_v4.onnx", tauri::path::BaseDirectory::Resource)
+            .map_err(|e| format!("Failed to resolve VAD model path: {}", e))?;
+
+        if vad_model_path.exists() {
+            match vad::SileroVad::new(&vad_model_path, 0.3) {
+                Ok(silero) => {
+                    let smoothed = vad::SmoothedVad::new(Box::new(silero), 15, 15, 2);
+                    let capture = state.audio_capture.lock().unwrap();
+                    capture.set_vad(smoothed);
+                    dev_log!("[VAD] ✓ Silero VAD v4 initialized (threshold: 0.3)");
+                }
+                Err(e) => {
+                    dev_log!("[VAD] ⚠️ Failed to init VAD: {} — recording without VAD", e);
+                }
+            }
+        } else {
+            dev_log!("[VAD] ⚠️ VAD model not found at {:?} — recording without VAD", vad_model_path);
+        }
+    }
+
+    // Pre-open audio stream now (paused) so first PTT press is instant
+    // Without this, first open_stream() takes ~2s (ALSA enumeration) and loses speech
+    {
+        let capture = state.audio_capture.lock().unwrap();
+        let device_name = {
+            let config = state.config.lock().unwrap();
+            config.audio_device_name.clone()
+        };
+        dev_log!("[AUDIO] Pre-opening audio stream...");
+        match capture.open_stream(device_name.as_deref()) {
+            Ok(()) => dev_log!("[AUDIO] ✅ Stream pre-opened (paused) — first PTT will be instant"),
+            Err(e) => dev_log!("[AUDIO] ⚠️ Pre-open failed: {} — will retry on first PTT", e),
+        }
+    }
+
+    // Start idle watcher for model unloading
+    update_stt_activity(&state);
+    start_idle_watcher(&state);
 
     app_handle
         .emit(
@@ -257,6 +344,31 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
         .ok();
 
     Ok(())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn check_ollama_status(state: State<'_, AppState>) -> Result<ollama_client::OllamaStatus, String> {
+    let (url, model, enabled) = {
+        let cfg = state.config.lock().unwrap();
+        (
+            cfg.ollama_url.clone().unwrap_or_else(|| "http://localhost:11434".to_string()),
+            cfg.ollama_model.clone().unwrap_or_else(|| "mistral".to_string()),
+            cfg.ollama_enabled,
+        )
+    };
+
+    let available = if enabled {
+        ollama_client::check_ollama_available(&url).await
+    } else {
+        false
+    };
+
+    Ok(ollama_client::OllamaStatus {
+        available,
+        model,
+        url,
+    })
 }
 
 #[tauri::command]
@@ -293,22 +405,36 @@ pub(crate) async fn do_start_recording(
         )
         .ok();
 
-    // Open stream on-demand and start recording
+    // Open stream if not already open, then start recording
     {
         let capture = state.audio_capture.lock().unwrap();
 
-        let device_name = {
-            let config = state.config.lock().unwrap();
-            config.audio_device_name.clone()
-        };
-        dev_log!("[TIMING] T+{}ms: Opening audio stream...", t0.elapsed().as_millis());
-        capture.open_stream(device_name.as_deref())?;
-        dev_log!("[TIMING] T+{}ms: Stream opened", t0.elapsed().as_millis());
+        if !capture.is_stream_open() {
+            let device_name = {
+                let config = state.config.lock().unwrap();
+                config.audio_device_name.clone()
+            };
+            dev_log!("[TIMING] T+{}ms: Opening audio stream...", t0.elapsed().as_millis());
+            capture.open_stream(device_name.as_deref())?;
+            dev_log!("[TIMING] T+{}ms: Stream opened", t0.elapsed().as_millis());
+        } else {
+            dev_log!("[TIMING] T+{}ms: Stream already open (instant)", t0.elapsed().as_millis());
+        }
 
         capture.start_recording()?;
     }
 
     state.recording_ready.store(true, Ordering::SeqCst);
+
+    // Play start sound (non-blocking, in separate thread)
+    {
+        let cfg = state.config.lock().unwrap();
+        if cfg.audio_feedback_enabled {
+            let vol = cfg.audio_feedback_volume;
+            audio_feedback::play_start_sound(vol);
+        }
+    }
+
     dev_log!(
         "[TIMING] T+{}ms: Recording started",
         t0.elapsed().as_millis()
@@ -343,9 +469,9 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
-    // Wait for recording to be ready (max 500ms)
+    // Wait for recording to be ready (max 3000ms — open_stream can take ~2s on first PTT)
     let mut waited = 0;
-    while !state.recording_ready.load(Ordering::SeqCst) && waited < 500 {
+    while !state.recording_ready.load(Ordering::SeqCst) && waited < 3000 {
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         waited += 10;
     }
@@ -377,11 +503,20 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
-    // Stop recording and close stream (releases mic device completely)
+    // Play stop sound (non-blocking, in separate thread)
+    {
+        let cfg = state.config.lock().unwrap();
+        if cfg.audio_feedback_enabled {
+            let vol = cfg.audio_feedback_volume;
+            audio_feedback::play_stop_sound(vol);
+        }
+    }
+
+    // Stop recording (stream stays open/paused for instant next PTT)
     let audio_data = {
         let capture = state.audio_capture.lock().unwrap();
 
-        // Pause + close stream — mic is fully released
+        // Pause stream — mic stops capturing but stays ready
         capture.stop_recording();
 
         // Get the captured audio buffer
@@ -453,24 +588,82 @@ pub(crate) async fn do_stop_recording(
         padded_audio.len()
     );
 
-    // Clone Arc to move into spawn_blocking
+    // Update STT activity timestamp (for idle watcher)
+    update_stt_activity(state);
+
+    // Clone Arcs to move into spawn_blocking
     let stt_engine_arc = Arc::clone(&state.stt_engine);
+    let config_arc = Arc::clone(&state.config);
 
     // Use spawn_blocking to offload CPU-intensive Whisper transcription
-    // This prevents blocking the async executor (like Handy app does)
+    // Lazy reload is done INSIDE the lock to prevent race with idle watcher
     let transcription = tokio::task::spawn_blocking(move || {
-        let stt_engine = stt_engine_arc.lock().unwrap();
+        let mut stt_engine = stt_engine_arc.lock().unwrap();
+
+        // Lazy reload: if model was unloaded by idle watcher, re-initialize while holding lock
+        let needs_reload = match stt_engine.as_ref() {
+            Some(engine) => !engine.engine.is_loaded(),
+            None => false,
+        };
+        if needs_reload {
+            dev_log!("[STT] Model was unloaded by idle watcher, reloading...");
+            let config = config_arc.lock().unwrap().clone();
+            match SttEngine::new(&config) {
+                Ok(engine) => {
+                    *stt_engine = Some(engine);
+                    dev_log!("[STT] ✅ Model reloaded successfully");
+                }
+                Err(e) => {
+                    dev_log!("[STT] ❌ Failed to reload model: {}", e);
+                    return Err(format!("Failed to reload model: {}", e));
+                }
+            }
+        }
+
         let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
         engine.transcribe(&padded_audio)
     })
     .await
     .map_err(|e| format!("Transcription task panicked: {}", e))??;
 
+    // Update activity again after transcription
+    update_stt_activity(state);
+
     dev_log!(
         "[TIMING] T+{}ms: transcription complete: '{}'",
         t0.elapsed().as_millis(),
         transcription
     );
+
+    // Optional Ollama post-processing for spelling/grammar correction
+    let final_text = {
+        let (ollama_enabled, ollama_url, ollama_model, language) = {
+            let cfg = state.config.lock().unwrap();
+            (
+                cfg.ollama_enabled,
+                cfg.ollama_url.clone().unwrap_or_else(|| "http://localhost:11434".to_string()),
+                cfg.ollama_model.clone().unwrap_or_else(|| "mistral".to_string()),
+                cfg.language.clone(),
+            )
+        };
+        if ollama_enabled && !transcription.is_empty() {
+            dev_log!("[OLLAMA] Correcting text with model '{}'...", ollama_model);
+            match ollama_client::correct_text(&ollama_url, &ollama_model, &language, &transcription).await {
+                Ok(corrected) => {
+                    if corrected != transcription {
+                        dev_log!("[OLLAMA] Corrected: '{}' -> '{}'", transcription, corrected);
+                    }
+                    corrected
+                }
+                Err(e) => {
+                    dev_log!("[OLLAMA] ⚠️ Correction failed: {} — using original text", e);
+                    transcription.clone()
+                }
+            }
+        } else {
+            transcription.clone()
+        }
+    };
 
     app_handle
         .emit(
@@ -482,7 +675,7 @@ pub(crate) async fn do_stop_recording(
         )
         .ok();
 
-    Ok(transcription)
+    Ok(final_text)
 }
 
 #[tauri::command]
@@ -527,274 +720,6 @@ async fn hide_overlay(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-#[specta::specta]
-async fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
-    #[cfg(target_os = "linux")]
-    {
-        get_audio_devices_linux().await
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        get_audio_devices_generic()
-    }
-}
-
-#[cfg(target_os = "linux")]
-async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
-    // Hybrid approach:
-    // 1. /proc/asound/cards + lsusb → hardware devices with nice USB names
-    // 2. pactl list sources → Bluetooth and other PipeWire-only devices
-    // This ensures ALL input sources are visible (USB, PCI, Bluetooth, etc.)
-
-    let alsa_cards = read_alsa_card_names();
-    let usb_names = parse_lsusb();
-
-    let mut devices = Vec::new();
-    let mut seen_raw_names = std::collections::HashSet::new();
-
-    // Always add system default first (index 0)
-    devices.push(AudioDevice {
-        name: "🎵 System Default".to_string(),
-        raw_name: "default".to_string(),
-        index: 0,
-    });
-    seen_raw_names.insert("default".to_string());
-
-    // 1. Add hardware devices from /proc/asound/cards (reliable, always available)
-    let mut index: u32 = 1;
-    for (card_id, description) in &alsa_cards {
-        if description.to_lowercase().contains("hdmi") {
-            continue;
-        }
-
-        let raw_name = format!("plughw:CARD={},DEV=0", card_id);
-        let emoji = format_device_emoji(description);
-
-        devices.push(AudioDevice {
-            name: format!("{} {}", emoji, description),
-            raw_name: raw_name.clone(),
-            index,
-        });
-        seen_raw_names.insert(card_id.to_lowercase());
-        index += 1;
-    }
-
-    // 2. Add PipeWire-only devices from pactl (Bluetooth, virtual sources, etc.)
-    let (xdg_runtime, dbus_addr) = get_dbus_env();
-    if let Ok(output) = tokio::process::Command::new("pactl")
-        .args(["list", "sources"])
-        .env("XDG_RUNTIME_DIR", &xdg_runtime)
-        .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-        .env("LC_ALL", "C")
-        .output()
-        .await
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut current_name: Option<String> = None;
-            let mut current_description: Option<String> = None;
-
-            for line in stdout.lines() {
-                let line = line.trim();
-                if line.starts_with("Name:") {
-                    if let (Some(name), Some(desc)) = (current_name.take(), current_description.take()) {
-                        add_pactl_device(&name, &desc, &seen_raw_names, &usb_names, &mut devices, &mut index);
-                    }
-                    current_name = Some(line.trim_start_matches("Name:").trim().to_string());
-                } else if line.starts_with("Description:") {
-                    current_description = Some(line.trim_start_matches("Description:").trim().to_string());
-                }
-            }
-            // Don't forget the last device
-            if let (Some(name), Some(desc)) = (current_name, current_description) {
-                add_pactl_device(&name, &desc, &seen_raw_names, &usb_names, &mut devices, &mut index);
-            }
-        }
-    }
-
-    dev_log!("[DEVICES] Listed {} audio devices:", devices.len());
-    for dev in &devices {
-        dev_log!(
-            "[DEVICES]   [{}] {} -> {}",
-            dev.index, dev.name, dev.raw_name
-        );
-    }
-
-    Ok(devices)
-}
-
-/// Add a pactl source to the device list if it's not a duplicate or monitor
-#[cfg(target_os = "linux")]
-fn add_pactl_device(
-    raw_name: &str,
-    description: &str,
-    _seen: &std::collections::HashSet<String>,
-    _usb_names: &std::collections::HashMap<String, String>,
-    devices: &mut Vec<AudioDevice>,
-    index: &mut u32,
-) {
-    // Skip monitor sources (they capture output audio, not mic input)
-    if raw_name.contains(".monitor") {
-        return;
-    }
-
-    // Skip ALSA-backed sources — these are PipeWire wrappers around hardware devices
-    // already listed from /proc/asound/cards (USB, PCI, etc.)
-    // Only keep truly PipeWire-native sources: Bluetooth (bluez_*), virtual, etc.
-    if raw_name.starts_with("alsa_input.") || raw_name.starts_with("alsa_output.") {
-        return;
-    }
-
-    // This is a PipeWire-only source (Bluetooth, virtual, etc.) — add it
-    let emoji = format_device_emoji(description);
-    devices.push(AudioDevice {
-        name: format!("{} {}", emoji, description),
-        raw_name: raw_name.to_string(),
-        index: *index,
-    });
-    *index += 1;
-}
-
-/// Choose an emoji based on device description
-#[cfg(target_os = "linux")]
-fn format_device_emoji(description: &str) -> &'static str {
-    let lower = description.to_lowercase();
-    if lower.contains("bluetooth") || lower.contains("bluez") {
-        "🎧"
-    } else if lower.contains("046d") || lower.contains("0x46d") || lower.contains("webcam") || lower.contains("c270") {
-        "📷"
-    } else if lower.contains("usb") {
-        "🎤"
-    } else if lower.contains("hd-audio") || lower.contains("generic") || lower.contains("hda") {
-        "🔊"
-    } else {
-        "🎵"
-    }
-}
-
-/// Read ALSA card names from /proc/asound/cards, enriched with USB product names from lsusb
-/// Returns ordered list of (card_id, description)
-/// Example: ("U0x46d0x825", "Webcam C270 (Logitech)")
-#[cfg(target_os = "linux")]
-fn read_alsa_card_names() -> Vec<(String, String)> {
-    let mut cards = Vec::new();
-    let content = match std::fs::read_to_string("/proc/asound/cards") {
-        Ok(c) => c,
-        Err(_) => return cards,
-    };
-
-    // Parse lsusb to get real USB product names
-    let usb_names = parse_lsusb();
-
-    let lines: Vec<&str> = content.lines().collect();
-    for chunk in lines.chunks(2) {
-        if let Some(first_line) = chunk.first() {
-            if let (Some(bracket_start), Some(bracket_end)) = (first_line.find('['), first_line.find(']')) {
-                let card_id = first_line[bracket_start + 1..bracket_end].trim().to_string();
-
-                // For USB cards, try to get a better name from lsusb
-                let description = if let Some(usb_name) = resolve_usb_card_name(&card_id, &usb_names) {
-                    usb_name
-                } else if let Some(dash_pos) = first_line.find(" - ") {
-                    first_line[dash_pos + 3..].trim().to_string()
-                } else {
-                    card_id.clone()
-                };
-
-                cards.push((card_id, description));
-            }
-        }
-    }
-
-    cards
-}
-
-/// Parse lsusb output into a map of "vendor_id:product_id" → "Product Name"
-/// Example: "046d:0825" → "Webcam C270"
-#[cfg(target_os = "linux")]
-fn parse_lsusb() -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    let output = match std::process::Command::new("lsusb").output() {
-        Ok(o) => o,
-        Err(_) => return map,
-    };
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Format: "Bus 001 Device 002: ID 046d:0825 Logitech, Inc. Webcam C270"
-    for line in stdout.lines() {
-        if let Some(id_pos) = line.find("ID ") {
-            let after_id = &line[id_pos + 3..];
-            if after_id.len() > 9 {
-                let usb_id = &after_id[..9]; // "046d:0825"
-                let product = after_id[10..].trim();
-                // Clean up vendor prefix: "Logitech, Inc. Webcam C270" → "Webcam C270 (Logitech)"
-                let friendly = if let Some(dot_pos) = product.find(". ") {
-                    let vendor = product[..dot_pos].trim_end_matches(',');
-                    let name = &product[dot_pos + 2..];
-                    format!("{} ({})", name, vendor)
-                } else {
-                    product.to_string()
-                };
-                map.insert(usb_id.to_lowercase(), friendly);
-            }
-        }
-    }
-    map
-}
-
-/// Try to resolve an ALSA USB card name (like "U0x46d0x825") to a lsusb product name
-#[cfg(target_os = "linux")]
-fn resolve_usb_card_name(card_id: &str, usb_names: &std::collections::HashMap<String, String>) -> Option<String> {
-    // ALSA USB card IDs look like "U0x46d0x825" → USB vendor 046d, product 0825
-    if !card_id.starts_with('U') {
-        return None;
-    }
-
-    let hex_part = &card_id[1..]; // "0x46d0x825"
-    // Split on "0x" boundaries: ["", "46d", "825"]
-    let parts: Vec<&str> = hex_part.split("0x").filter(|s| !s.is_empty()).collect();
-    if parts.len() != 2 {
-        return None;
-    }
-
-    let vendor = format!("{:0>4}", parts[0]); // "046d"
-    let product = format!("{:0>4}", parts[1]); // "0825"
-    let usb_id = format!("{}:{}", vendor, product);
-
-    usb_names.get(&usb_id).cloned()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn get_audio_devices_generic() -> Result<Vec<AudioDevice>, String> {
-    use cpal::traits::{DeviceTrait, HostTrait};
-    let host = cpal::default_host();
-    let input_devices = host.input_devices().map_err(|e| e.to_string())?;
-
-    let devices: Vec<AudioDevice> = input_devices
-        .enumerate()
-        .filter_map(|(index, device)| {
-            device.name().ok().map(|raw_name| AudioDevice {
-                name: raw_name.clone(), // On non-Linux, just use raw name as display
-                raw_name,
-                index: index as u32,
-            })
-        })
-        .collect();
-
-    if devices.is_empty() {
-        return Err("No audio input devices found".to_string());
-    }
-
-    Ok(devices)
-}
-
-#[derive(Clone, Serialize, Type)]
-struct AudioDevice {
-    name: String,     // Display name for UI
-    raw_name: String, // Actual cpal device name for audio.rs
-    index: u32,       // Index in cpal device list
-}
 
 #[derive(Clone, Serialize, Type)]
 struct StatusEvent {
@@ -816,9 +741,16 @@ async fn save_settings(
     state: State<'_, AppState>,
     new_config: AppConfig,
 ) -> Result<(), String> {
-    let (old_shortcut, old_device) = {
+    let (old_shortcut, old_device, old_model, old_language, old_model_path, old_use_gpu) = {
         let config = state.config.lock().unwrap();
-        (config.shortcut.clone(), config.audio_device_name.clone())
+        (
+            config.shortcut.clone(),
+            config.audio_device_name.clone(),
+            config.model.clone(),
+            config.language.clone(),
+            config.model_path.clone(),
+            config.use_gpu,
+        )
     };
 
     new_config.save()?;
@@ -832,11 +764,35 @@ async fn save_settings(
         update_global_shortcut(&app_handle, &old_shortcut, &new_config.shortcut)?;
     }
 
-    // Close any existing stream if device changed (will re-open on next PTT)
+    // Re-open audio stream immediately if device changed
     if old_device != new_config.audio_device_name {
-        let capture = state.audio_capture.lock().unwrap();
-        capture.close_stream();
-        dev_log!("[AUDIO] Stream closed — new device will be used on next PTT");
+        let device_name = new_config.audio_device_name.clone();
+        // Close old stream first (separate lock scope)
+        { state.audio_capture.lock().unwrap().close_stream(); }
+        // Re-open on new device (separate lock scope — open_stream can be slow for BT)
+        match state.audio_capture.lock().unwrap().open_stream(device_name.as_deref()) {
+            Ok(()) => dev_log!("[AUDIO] ✅ Stream re-opened on new device: {:?}", device_name),
+            Err(e) => dev_log!("[AUDIO] ⚠️ Stream re-open failed: {} — will retry on next PTT", e),
+        }
+    }
+
+    // Re-init STT engine if model, language, or GPU setting changed
+    let stt_needs_reload = old_model != new_config.model
+        || old_language != new_config.language
+        || old_model_path != new_config.model_path
+        || old_use_gpu != new_config.use_gpu;
+    if stt_needs_reload {
+        dev_log!("[STT] Settings changed — reloading engine (model: {}, lang: {})", new_config.model, new_config.language);
+        stt_whisper::suppress_whisper_cpp_logs();
+        match SttEngine::new(&new_config) {
+            Ok(engine) => {
+                *state.stt_engine.lock().unwrap() = Some(engine);
+                dev_log!("[STT] ✅ Engine reloaded successfully");
+            }
+            Err(e) => {
+                dev_log!("[STT] ⚠️ Engine reload failed: {} — keeping current engine", e);
+            }
+        }
     }
 
     Ok(())
@@ -1071,12 +1027,18 @@ fn get_gpu_info() -> Result<GpuInfo, String> {
     let failure_count = stt_whisper::get_gpu_failure_count();
     let disabled_by_failures = stt_whisper::is_gpu_disabled_by_failures();
 
+    let recommended_model = result.vram_mb.map(|vram| {
+        gpu::recommended_model_for_vram(vram).to_string()
+    });
+
     Ok(GpuInfo {
         available: result.available,
         backend: result.backend,
         device_name: result.device_name,
         failure_count,
         disabled_by_failures,
+        vram_mb: result.vram_mb,
+        recommended_model,
     })
 }
 
@@ -1116,161 +1078,6 @@ fn reset_gpu_failure_count() -> Result<String, String> {
     Ok("GPU failure counter reset. GPU will be tried again on next initialization.".to_string())
 }
 
-/// Get all app data paths for cleanup
-fn get_app_data_paths() -> Vec<(String, std::path::PathBuf)> {
-    let mut paths = Vec::new();
-
-    // Config directory: ~/.config/karaoketyper/
-    if let Some(config_dir) = dirs::config_dir() {
-        paths.push(("Config".to_string(), config_dir.join("karaoketyper")));
-    }
-
-    // Data directory: ~/.local/share/karaoketyper/ (contains venv)
-    if let Some(data_dir) = dirs::data_dir() {
-        paths.push(("Data (venv)".to_string(), data_dir.join("karaoketyper")));
-    }
-
-    // Autostart file: ~/.config/autostart/karaoketyper.desktop
-    if let Some(config_dir) = dirs::config_dir() {
-        paths.push((
-            "Autostart".to_string(),
-            config_dir.join("autostart").join("karaoketyper.desktop"),
-        ));
-    }
-
-    // Hugging Face cache for our models: ~/.cache/huggingface/hub/models--csukuangfj--*
-    if let Some(cache_dir) = dirs::cache_dir() {
-        let hf_hub = cache_dir.join("huggingface").join("hub");
-        if hf_hub.exists() {
-            if let Ok(entries) = std::fs::read_dir(&hf_hub) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("models--csukuangfj--sherpa-onnx") {
-                        paths.push((format!("Model: {}", name), entry.path()));
-                    }
-                }
-            }
-        }
-    }
-
-    paths
-}
-
-/// Get app data info for display in UI
-#[tauri::command]
-#[specta::specta]
-fn get_app_data_info() -> Result<AppDataInfo, String> {
-    let paths = get_app_data_paths();
-    let mut total_size: u64 = 0;
-    let mut items = Vec::new();
-
-    for (name, path) in &paths {
-        let exists = path.exists();
-        let size = if exists {
-            calculate_dir_size(path).unwrap_or(0)
-        } else {
-            0
-        };
-        total_size += size;
-
-        items.push(AppDataItem {
-            name: name.clone(),
-            path: path.to_string_lossy().to_string(),
-            exists,
-            size_mb: size as f64 / 1024.0 / 1024.0,
-        });
-    }
-
-    Ok(AppDataInfo {
-        items,
-        total_size_mb: total_size as f64 / 1024.0 / 1024.0,
-    })
-}
-
-/// Calculate directory size recursively
-fn calculate_dir_size(path: &std::path::Path) -> std::io::Result<u64> {
-    let mut size = 0;
-    if path.is_file() {
-        return Ok(std::fs::metadata(path)?.len());
-    }
-    if path.is_dir() {
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_file() {
-                size += std::fs::metadata(&path)?.len();
-            } else if path.is_dir() {
-                size += calculate_dir_size(&path)?;
-            }
-        }
-    }
-    Ok(size)
-}
-
-/// Clean all app data (for uninstallation)
-#[tauri::command]
-#[specta::specta]
-async fn cleanup_app_data(app_handle: AppHandle) -> Result<String, String> {
-    use std::fs;
-
-    let paths = get_app_data_paths();
-    let mut cleaned = Vec::new();
-    let mut errors = Vec::new();
-
-    // Emit progress event
-    let _ = app_handle.emit("cleanup-progress", serde_json::json!({
-        "status": "starting",
-        "message": "Starting cleanup..."
-    }));
-
-    for (name, path) in paths {
-        if !path.exists() {
-            continue;
-        }
-
-        let _ = app_handle.emit("cleanup-progress", serde_json::json!({
-            "status": "cleaning",
-            "message": format!("Removing {}...", name)
-        }));
-
-        let result = if path.is_dir() {
-            fs::remove_dir_all(&path)
-        } else {
-            fs::remove_file(&path)
-        };
-
-        match result {
-            Ok(_) => {
-                dev_log!("[CLEANUP] Removed: {}", path.display());
-                cleaned.push(name);
-            }
-            Err(e) => {
-                dev_log!("[CLEANUP] Failed to remove {}: {}", path.display(), e);
-                errors.push(format!("{}: {}", name, e));
-            }
-        }
-    }
-
-    let _ = app_handle.emit("cleanup-progress", serde_json::json!({
-        "status": "complete",
-        "message": "Cleanup complete"
-    }));
-
-    if errors.is_empty() {
-        Ok(format!(
-            "Successfully cleaned {} items:\n• {}",
-            cleaned.len(),
-            cleaned.join("\n• ")
-        ))
-    } else {
-        Err(format!(
-            "Cleaned {} items but {} errors:\n{}",
-            cleaned.len(),
-            errors.len(),
-            errors.join("\n")
-        ))
-    }
-}
 
 /// Get list of installed models with their metadata
 #[tauri::command]
@@ -1374,280 +1181,6 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
     Ok("All dependencies ready ✅".to_string())
 }
 
-// ========== GNOME Focused Window Extension Commands (Linux only) ==========
-
-/// Get the extension installation path
-#[cfg(target_os = "linux")]
-#[allow(dead_code)]
-fn get_gnome_extension_path() -> std::path::PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("gnome-shell")
-        .join("extensions")
-        .join("focused-window-dbus@karaoketyper")
-}
-
-/// Check if the GNOME focused window extension is installed
-#[tauri::command]
-#[specta::specta]
-async fn check_focused_window_extension() -> Result<GnomeExtensionStatus, String> {
-    #[cfg(target_os = "linux")]
-    {
-        tokio::task::spawn_blocking(|| {
-            use std::process::Command;
-
-            let extension_path = get_gnome_extension_path();
-            let is_installed = extension_path.join("extension.js").exists();
-
-            let is_enabled = if is_installed {
-                let (xdg_runtime, dbus_addr) = get_dbus_env();
-                Command::new("gnome-extensions")
-                    .args(["info", "focused-window-dbus@karaoketyper"])
-                    .env("XDG_RUNTIME_DIR", &xdg_runtime)
-                    .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-                    .output()
-                    .map(|o| {
-                        let stdout = String::from_utf8_lossy(&o.stdout);
-                        stdout.contains("State: ACTIVE") || stdout.contains("State: ENABLED")
-                    })
-                    .unwrap_or(false)
-            } else {
-                false
-            };
-
-            let is_gnome = std::env::var("XDG_CURRENT_DESKTOP")
-                .map(|d| d.to_lowercase().contains("gnome"))
-                .unwrap_or(false);
-
-            let is_wayland = std::env::var("XDG_SESSION_TYPE")
-                .map(|s| s == "wayland")
-                .unwrap_or(false);
-
-            GnomeExtensionStatus {
-                installed: is_installed,
-                enabled: is_enabled,
-                is_gnome,
-                is_wayland,
-                path: extension_path.to_string_lossy().to_string(),
-                needs_restart: is_installed && !is_enabled,
-            }
-        })
-        .await
-        .map_err(|e| format!("Task failed: {}", e))
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        Ok(GnomeExtensionStatus {
-            installed: false,
-            enabled: false,
-            is_gnome: false,
-            is_wayland: false,
-            path: String::new(),
-            needs_restart: false,
-        })
-    }
-}
-
-/// Install the GNOME focused window extension
-#[tauri::command]
-#[specta::specta]
-async fn install_focused_window_extension(app_handle: AppHandle) -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::fs;
-        use std::io::Write;
-
-        // Get resource paths first (requires app_handle, but is fast)
-        let resource_path = app_handle
-            .path()
-            .resource_dir()
-            .map_err(|e| format!("Failed to get resource dir: {}", e))?
-            .join("focused-window-dbus");
-
-        let dev_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("resources")
-            .join("focused-window-dbus");
-
-        let source_path = if resource_path.exists() {
-            resource_path.clone()
-        } else if dev_path.exists() {
-            dev_path.clone()
-        } else {
-            return Err(format!(
-                "Extension files not found. Checked:\n  - {}\n  - {}",
-                resource_path.display(),
-                dev_path.display()
-            ));
-        };
-
-        // Now do blocking work in spawn_blocking
-        tokio::task::spawn_blocking(move || {
-            let extension_js = fs::read_to_string(source_path.join("extension.js"))
-                .map_err(|e| format!("Failed to read extension.js: {}", e))?;
-            let metadata_json = fs::read_to_string(source_path.join("metadata.json"))
-                .map_err(|e| format!("Failed to read metadata.json: {}", e))?;
-
-            let temp_dir = std::env::temp_dir();
-            let zip_path = temp_dir.join("focused-window-dbus@karaoketyper.zip");
-
-            let zip_file = fs::File::create(&zip_path)
-                .map_err(|e| format!("Failed to create zip: {}", e))?;
-            let mut zip = zip::ZipWriter::new(zip_file);
-
-            let options = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
-
-            zip.start_file("extension.js", options)
-                .map_err(|e| format!("Failed to add extension.js to zip: {}", e))?;
-            zip.write_all(extension_js.as_bytes())
-                .map_err(|e| format!("Failed to write extension.js: {}", e))?;
-
-            zip.start_file("metadata.json", options)
-                .map_err(|e| format!("Failed to add metadata.json to zip: {}", e))?;
-            zip.write_all(metadata_json.as_bytes())
-                .map_err(|e| format!("Failed to write metadata.json: {}", e))?;
-
-            zip.finish().map_err(|e| format!("Failed to finish zip: {}", e))?;
-
-            dev_log!("[GNOME EXT] Created zip at: {}", zip_path.display());
-
-            // Get D-Bus env for all GNOME commands in this block
-            let (xdg_runtime, dbus_addr) = get_dbus_env();
-
-            let install_result = std::process::Command::new("gnome-extensions")
-                .args(["install", "--force", &zip_path.to_string_lossy()])
-                .env("XDG_RUNTIME_DIR", &xdg_runtime)
-                .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-                .output()
-                .map_err(|e| format!("Failed to run gnome-extensions install: {}", e))?;
-
-            let _ = fs::remove_file(&zip_path);
-
-            if !install_result.status.success() {
-                let stderr = String::from_utf8_lossy(&install_result.stderr);
-                return Err(format!("gnome-extensions install failed: {}", stderr));
-            }
-
-            dev_log!("[GNOME EXT] ✅ Extension installed via gnome-extensions");
-
-            std::thread::sleep(std::time::Duration::from_millis(500));
-
-            let enable_result = std::process::Command::new("gnome-extensions")
-                .args(["enable", "focused-window-dbus@karaoketyper"])
-                .env("XDG_RUNTIME_DIR", &xdg_runtime)
-                .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-                .output();
-
-            let cli_enabled = matches!(&enable_result, Ok(output) if output.status.success());
-
-            let ext_uuid = "focused-window-dbus@karaoketyper";
-            let current = std::process::Command::new("gsettings")
-                .args(["get", "org.gnome.shell", "enabled-extensions"])
-                .env("XDG_RUNTIME_DIR", &xdg_runtime)
-                .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .unwrap_or_else(|| "@as []".to_string());
-
-            if !current.contains(ext_uuid) {
-                let trimmed = current.trim();
-                let new_list = if trimmed == "@as []" || trimmed == "[]" {
-                    format!("['{}']", ext_uuid)
-                } else {
-                    let without_bracket = trimmed.trim_end_matches(']');
-                    format!("{}, '{}']", without_bracket, ext_uuid)
-                };
-
-                dev_log!("[GNOME EXT] Setting enabled-extensions to: {}", new_list);
-                let _ = std::process::Command::new("gsettings")
-                    .args(["set", "org.gnome.shell", "enabled-extensions", &new_list])
-                    .env("XDG_RUNTIME_DIR", &xdg_runtime)
-                    .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-                    .output();
-            }
-
-            if cli_enabled {
-                dev_log!("[GNOME EXT] ✅ Extension enabled");
-
-                dev_log!("[GNOME EXT] Initiating automatic logout...");
-                let logout_result = std::process::Command::new("gnome-session-quit")
-                    .args(["--logout", "--no-prompt"])
-                    .env("XDG_RUNTIME_DIR", &xdg_runtime)
-                    .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-                    .spawn();
-
-                match logout_result {
-                    Ok(_) => {
-                        dev_log!("[GNOME EXT] ✓ Logout command sent");
-                        Ok("Extension installée et activée !\n\nDéconnexion en cours...".to_string())
-                    },
-                    Err(e) => {
-                        dev_log!("[GNOME EXT] ⚠️ Logout failed: {}", e);
-                        Ok("Extension installée et activée !\n\nVeuillez vous déconnecter manuellement pour activer l'extension.".to_string())
-                    }
-                }
-            } else {
-                Ok(
-                    "Extension installée !\n\n\
-                     Déconnectez-vous et reconnectez-vous pour l'activer."
-                        .to_string(),
-                )
-            }
-        })
-        .await
-        .map_err(|e| format!("Task failed: {}", e))?
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = app_handle;
-        Err("GNOME extensions are only available on Linux".to_string())
-    }
-}
-
-/// Remove the GNOME focused window extension
-#[tauri::command]
-#[specta::specta]
-async fn remove_focused_window_extension() -> Result<String, String> {
-    #[cfg(target_os = "linux")]
-    {
-        tokio::task::spawn_blocking(|| {
-            use std::fs;
-
-            let extension_path = get_gnome_extension_path();
-
-            if !extension_path.exists() {
-                return Ok("Extension was not installed".to_string());
-            }
-
-            let (xdg_runtime, dbus_addr) = get_dbus_env();
-            let _ = std::process::Command::new("gnome-extensions")
-                .args(["disable", "focused-window-dbus@karaoketyper"])
-                .env("XDG_RUNTIME_DIR", &xdg_runtime)
-                .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-                .output();
-
-            fs::remove_dir_all(&extension_path)
-                .map_err(|e| format!("Failed to remove extension: {}", e))?;
-
-            dev_log!(
-                "[GNOME EXT] ✅ Extension removed: {}",
-                extension_path.display()
-            );
-
-            Ok("Extension removed!\n\nLog out and back in to complete the removal.".to_string())
-        })
-        .await
-        .map_err(|e| format!("Task failed: {}", e))?
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err("GNOME extensions are only available on Linux".to_string())
-    }
-}
 
 #[tauri::command]
 #[specta::specta]
@@ -1679,7 +1212,7 @@ pub fn run() {
             show_settings,
             show_overlay,
             hide_overlay,
-            get_audio_devices,
+            audio_devices::get_audio_devices,
             load_settings,
             save_settings,
             check_evdev_permissions,
@@ -1692,16 +1225,17 @@ pub fn run() {
             get_installed_models,
             download_model,
             get_system_info,
-            check_focused_window_extension,
-            install_focused_window_extension,
-            remove_focused_window_extension,
+            gnome_extension::check_focused_window_extension,
+            gnome_extension::install_focused_window_extension,
+            gnome_extension::remove_focused_window_extension,
             get_autostart_enabled,
             set_autostart_enabled,
-            get_app_data_info,
-            cleanup_app_data,
+            app_data::get_app_data_info,
+            app_data::cleanup_app_data,
             get_gpu_info,
             get_gpu_status,
-            reset_gpu_failure_count
+            reset_gpu_failure_count,
+            check_ollama_status
         ]);
 
     // Generate TypeScript bindings in development mode

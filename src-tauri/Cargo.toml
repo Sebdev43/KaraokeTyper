@@ -1,6 +1,6 @@
 [package]
 name = "karaoketyper"
-version = "1.0.4"
+version = "1.0.8"
 description = "Offline cross-platform voice dictation with push-to-talk"
 authors = ["KaraokeTyper Team"]
 edition = "2021"
@@ -66,12 +66,26 @@ rdev = "0.5"
 whisper-rs = "0.14"
 whisper-rs-sys = "0.13"
 
+# Voice Activity Detection (Silero VAD v4) — direct ort usage
+# vad-rs crates.io pins ort rc.9 which doesn't compile on Rust 1.92+
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "download-binaries"] }
+
+# Audio playback for feedback sounds
+rodio = "0.20"
+
 # Audio capture (cross-platform: ALSA on Linux via pipewire-alsa, CoreAudio on macOS, WASAPI on Windows)
 cpal = "0.15"
+
+# Optional: Ollama LLM client for text correction
+ollama-rs = { version = "0.2", features = ["stream"], optional = true }
 
 # evdev for low-level keyboard access on Wayland (fallback)
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.12"
+
+# jemalloc - reduces virtual memory fragmentation with many threads (Linux/macOS)
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
 
 [features]
 default = []
@@ -80,3 +94,5 @@ default = []
 # macOS: cargo build --features gpu-metal
 gpu-vulkan = ["whisper-rs/vulkan"]
 gpu-metal = ["whisper-rs/metal"]
+# Ollama integration for post-transcription text correction
+ollama = ["dep:ollama-rs"]

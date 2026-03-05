@@ -7,9 +7,27 @@ mod linux_output {
     use std::collections::HashMap;
     use std::fs::OpenOptions;
     use std::os::unix::io::AsRawFd;
-    use std::sync::OnceLock;
+    use std::sync::{Mutex, OnceLock};
     use std::thread;
     use std::time::Duration;
+
+    /// Singleton UInput device — created once, reused for all paste/type operations.
+    /// Avoids creating a new /dev/input/eventN on every paste.
+    static UINPUT_DEVICE: Mutex<Option<UInputDevice>> = Mutex::new(None);
+
+    /// Run a closure with the singleton UInputDevice. Recovers from Mutex poisoning.
+    pub fn with_uinput<F, R>(f: F) -> Result<R, String>
+    where
+        F: FnOnce(&UInputDevice) -> Result<R, String>,
+    {
+        let mut guard = UINPUT_DEVICE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.is_none() {
+            *guard = Some(UInputDevice::new()?);
+        }
+        f(guard.as_ref().unwrap())
+    }
 
     const UI_SET_EVBIT: u64 = 0x40045564;
     const UI_SET_KEYBIT: u64 = 0x40045565;
@@ -439,13 +457,32 @@ mod linux_output {
             crate::dev_log!("[UINPUT] ✅ Ctrl+V sent");
             Ok(())
         }
+
+        pub fn ctrl_shift_v(&self) -> Result<(), String> {
+            crate::dev_log!("[UINPUT] Sending Ctrl+Shift+V...");
+            self.press_key(KEY_LEFTCTRL)?;
+            thread::sleep(Duration::from_millis(10));
+            self.press_key(KEY_LEFTSHIFT)?;
+            thread::sleep(Duration::from_millis(10));
+            self.tap_key(KEY_V)?;
+            thread::sleep(Duration::from_millis(10));
+            self.release_key(KEY_LEFTSHIFT)?;
+            thread::sleep(Duration::from_millis(10));
+            self.release_key(KEY_LEFTCTRL)?;
+            crate::dev_log!("[UINPUT] ✅ Ctrl+Shift+V sent");
+            Ok(())
+        }
     }
 
     impl Drop for UInputDevice {
         fn drop(&mut self) {
             if self.fd >= 0 {
                 unsafe {
-                    libc::ioctl(self.fd, UI_DEV_DESTROY, 0);
+                    let ret = libc::ioctl(self.fd, UI_DEV_DESTROY, 0);
+                    if ret < 0 {
+                        // Don't panic in Drop — just log the failure
+                        eprintln!("[UINPUT] Warning: UI_DEV_DESTROY failed (fd={})", self.fd);
+                    }
                     libc::close(self.fd);
                 }
                 crate::dev_log!("[UINPUT] Device closed");
@@ -484,12 +521,9 @@ impl TextOutput {
 
         crate::dev_log!("[OUTPUT] Typing text: '{}'", text);
 
-        // ALWAYS use clipboard + paste - this respects keyboard layout (AZERTY, QWERTZ, etc.)
-        // ydotool type uses raw scancodes which breaks non-QWERTY layouts
+        // Set clipboard text — use wl-copy on Wayland (persistent daemon) or arboard on X11
         let t1 = std::time::Instant::now();
-        self.clipboard
-            .set_text(text)
-            .map_err(|e| format!("Failed to copy to clipboard: {}", e))?;
+        self.set_clipboard_text(text)?;
         crate::dev_log!(
             "[OUTPUT_TIMING] Clipboard set_text: {}ms",
             t1.elapsed().as_millis()
@@ -516,6 +550,65 @@ impl TextOutput {
         crate::dev_log!("[OUTPUT] ✅ Text pasted successfully");
 
         Ok(())
+    }
+
+    /// Set clipboard text using the best method for the current platform.
+    /// On Wayland: uses wl-copy which forks a persistent daemon to serve clipboard requests.
+    /// This avoids the race condition where arboard's X11 clipboard content disappears
+    /// when the Clipboard object is dropped before the paste key events are processed.
+    /// On X11 / non-Linux: uses arboard directly.
+    fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+            if session_type == "wayland" {
+                crate::dev_log!("[OUTPUT] Using wl-copy for Wayland clipboard (persistent)");
+
+                // wl-copy forks a daemon that serves clipboard requests.
+                // Use spawn() + brief wait — NOT output() which blocks until daemon exits.
+                let mut child = std::process::Command::new("wl-copy")
+                    .arg("--")
+                    .arg(text)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .spawn()
+                    .map_err(|e| format!("Failed to run wl-copy: {}", e))?;
+
+                // Give wl-copy time to fork its daemon and set clipboard
+                thread::sleep(Duration::from_millis(100));
+
+                match child.try_wait() {
+                    Ok(Some(status)) if status.success() => {
+                        crate::dev_log!("[OUTPUT] ✅ wl-copy set clipboard (exited ok)");
+                        return Ok(());
+                    }
+                    Ok(Some(status)) => {
+                        let stderr = child.stderr.take()
+                            .and_then(|mut s| {
+                                let mut buf = String::new();
+                                std::io::Read::read_to_string(&mut s, &mut buf).ok()?;
+                                Some(buf)
+                            })
+                            .unwrap_or_default();
+                        crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed ({}): {}, falling back to arboard", status, stderr);
+                    }
+                    Ok(None) => {
+                        // Still running = daemon mode, clipboard is set
+                        crate::dev_log!("[OUTPUT] ✅ wl-copy daemon running (clipboard set)");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        crate::dev_log!("[OUTPUT] ⚠️ wl-copy check failed: {}, falling back to arboard", e);
+                    }
+                }
+            }
+        }
+
+        // Fallback: arboard (X11 or non-Linux)
+        self.clipboard
+            .set_text(text)
+            .map_err(|e| format!("Failed to copy to clipboard: {}", e))
     }
 
     #[cfg(target_os = "linux")]
@@ -548,26 +641,46 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn simulate_paste(&self) -> Result<(), String> {
+        // Detect if the focused window is a terminal
+        let is_terminal = Self::is_terminal_focused();
+
         // Check if we're on Wayland
         let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
 
         if session_type == "wayland" {
-            // Detect if the focused window is a terminal
-            let is_terminal = Self::is_terminal_focused();
-
-            // Try wtype first (better Wayland integration), then fall back to ydotool
+            // Try wtype first (best Wayland integration)
             if Self::try_wtype_paste(is_terminal)? {
                 return Ok(());
             }
 
-            // Fallback to ydotool
+            // Fallback to uinput (kernel-level, works on both X11 and Wayland)
+            crate::dev_log!("[OUTPUT] wtype failed, trying uinput...");
+            match Self::try_uinput_paste(is_terminal) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    crate::dev_log!("[OUTPUT] uinput failed: {}, trying ydotool...", e);
+                }
+            }
+
+            // Last resort: ydotool
             Self::try_ydotool_paste(is_terminal)
         } else {
-            // Use uinput for X11
-            crate::dev_log!("[OUTPUT] Using uinput for X11 paste...");
-            let device = linux_output::UInputDevice::new()?;
-            device.ctrl_v()
+            // X11: use uinput directly
+            Self::try_uinput_paste(is_terminal)
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn try_uinput_paste(is_terminal: bool) -> Result<(), String> {
+        linux_output::with_uinput(|device| {
+            if is_terminal {
+                crate::dev_log!("[OUTPUT] Using uinput for terminal paste (Ctrl+Shift+V)...");
+                device.ctrl_shift_v()
+            } else {
+                crate::dev_log!("[OUTPUT] Using uinput for paste (Ctrl+V)...");
+                device.ctrl_v()
+            }
+        })
     }
 
     #[cfg(target_os = "linux")]
@@ -663,6 +776,16 @@ impl TextOutput {
         let code_editors = ["code", "code-insiders", "code-oss", "codium", "cursor"];
         for editor in code_editors {
             if wm_class == editor {
+                // Check ${focusedView} in window.title (e.g. "file - project - Terminal - VS Code")
+                let segments: Vec<&str> = title.split(" - ").collect();
+                for seg in &segments {
+                    if seg.trim() == "terminal" {
+                        crate::dev_log!("[OUTPUT] 🖥️ {} terminal detected via focusedView", editor);
+                        return true;
+                    }
+                }
+
+                // Fallback: check if title starts with a shell name (e.g. "bash - project - VS Code")
                 let first_segment = title.split(" \u{2014} ").next()
                     .unwrap_or(&title)
                     .split(" - ").next()
@@ -870,8 +993,7 @@ impl TextOutput {
 
         #[cfg(target_os = "linux")]
         {
-            let device = linux_output::UInputDevice::new()?;
-            device.type_text(text)?;
+            linux_output::with_uinput(|device| device.type_text(text))?;
         }
 
         #[cfg(not(target_os = "linux"))]

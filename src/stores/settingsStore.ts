@@ -1,6 +1,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { AudioDevice, GpuInfo, GpuStatus, ModelInfo } from "@/bindings";
+import type {
+  AudioDevice,
+  GpuInfo,
+  GpuStatus,
+  ModelInfo,
+  ModelUnloadTimeout,
+  OllamaStatus,
+} from "@/bindings";
 
 interface SettingsState {
   // Audio settings
@@ -29,6 +36,19 @@ interface SettingsState {
   gpuDeviceIndex: number | null;
   useGpuAcceleration: boolean;
 
+  // Audio feedback
+  audioFeedbackEnabled: boolean;
+  audioFeedbackVolume: number;
+
+  // Model unload
+  modelUnloadTimeout: ModelUnloadTimeout;
+
+  // Ollama
+  ollamaEnabled: boolean;
+  ollamaUrl: string;
+  ollamaModel: string;
+  ollamaStatus: OllamaStatus | null;
+
   // UI states
   isRefreshing: boolean;
   saveStatus: string;
@@ -47,6 +67,13 @@ interface SettingsState {
   setGpuStatus: (status: GpuStatus | null) => void;
   setGpuDeviceIndex: (index: number | null) => void;
   setUseGpuAcceleration: (enabled: boolean) => void;
+  setAudioFeedbackEnabled: (enabled: boolean) => void;
+  setAudioFeedbackVolume: (volume: number) => void;
+  setModelUnloadTimeout: (timeout: ModelUnloadTimeout) => void;
+  setOllamaEnabled: (enabled: boolean) => void;
+  setOllamaUrl: (url: string) => void;
+  setOllamaModel: (model: string) => void;
+  setOllamaStatus: (status: OllamaStatus | null) => void;
   setIsRefreshing: (refreshing: boolean) => void;
   setSaveStatus: (status: string) => void;
   reset: () => void;
@@ -67,6 +94,13 @@ const initialState = {
   gpuStatus: null,
   gpuDeviceIndex: null,
   useGpuAcceleration: false, // CPU by default for safety
+  audioFeedbackEnabled: true,
+  audioFeedbackVolume: 0.7,
+  modelUnloadTimeout: "Never" as ModelUnloadTimeout,
+  ollamaEnabled: false,
+  ollamaUrl: "http://localhost:11434",
+  ollamaModel: "mistral",
+  ollamaStatus: null,
   isRefreshing: false,
   saveStatus: "",
 };
@@ -106,6 +140,14 @@ export const useSettingsStore = create<SettingsState>()(
 
       setUseGpuAcceleration: (enabled) => set({ useGpuAcceleration: enabled }),
 
+      setAudioFeedbackEnabled: (enabled) => set({ audioFeedbackEnabled: enabled }),
+      setAudioFeedbackVolume: (volume) => set({ audioFeedbackVolume: volume }),
+      setModelUnloadTimeout: (timeout) => set({ modelUnloadTimeout: timeout }),
+      setOllamaEnabled: (enabled) => set({ ollamaEnabled: enabled }),
+      setOllamaUrl: (url) => set({ ollamaUrl: url }),
+      setOllamaModel: (model) => set({ ollamaModel: model }),
+      setOllamaStatus: (status) => set({ ollamaStatus: status }),
+
       setIsRefreshing: (refreshing) => set({ isRefreshing: refreshing }),
 
       setSaveStatus: (status) => set({ saveStatus: status }),
@@ -123,6 +165,12 @@ export const useSettingsStore = create<SettingsState>()(
         autostart: state.autostart,
         useGpuAcceleration: state.useGpuAcceleration,
         gpuDeviceIndex: state.gpuDeviceIndex,
+        audioFeedbackEnabled: state.audioFeedbackEnabled,
+        audioFeedbackVolume: state.audioFeedbackVolume,
+        modelUnloadTimeout: state.modelUnloadTimeout,
+        ollamaEnabled: state.ollamaEnabled,
+        ollamaUrl: state.ollamaUrl,
+        ollamaModel: state.ollamaModel,
       }),
     },
   ),

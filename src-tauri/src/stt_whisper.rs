@@ -74,6 +74,7 @@ impl fmt::Display for WhisperError {
 impl std::error::Error for WhisperError {}
 
 /// Result of GPU initialization attempt
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct GpuInitResult {
     /// Mode used: "gpu" or "cpu"
@@ -313,8 +314,15 @@ impl WhisperSttEngine {
         Ok(init_result)
     }
 
-    /// Check if the engine is initialized
-    pub fn is_initialized(&self) -> bool {
+    pub fn unload(&self) {
+        let mut guard = self.context.lock().unwrap();
+        if guard.is_some() {
+            *guard = None;
+            crate::dev_log!("[STT] Model unloaded from memory");
+        }
+    }
+
+    pub fn is_loaded(&self) -> bool {
         self.context.lock().unwrap().is_some()
     }
 
@@ -349,11 +357,28 @@ impl WhisperSttEngine {
             println!("[Whisper] Transcribing {:.2}s of audio ({} samples)", duration, audio_data.len());
         }
 
-        // Create inference parameters (BeamSearch like Handy for better accuracy)
-        let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-            beam_size: 3,
-            patience: -1.0,
-        });
+        // GPU: use Greedy to minimize VRAM usage and speed up inference
+        // CPU: use BeamSearch for better accuracy (VRAM not a concern)
+        let strategy = if self.use_gpu {
+            #[cfg(debug_assertions)]
+            println!("[Whisper] Using Greedy decoding (GPU mode - lower VRAM usage)");
+            SamplingStrategy::Greedy { best_of: 1 }
+        } else {
+            SamplingStrategy::BeamSearch {
+                beam_size: 3,
+                patience: -1.0,
+            }
+        };
+        let mut params = FullParams::new(strategy);
+
+        // Scale whisper.cpp threads to CPU: use half the cores (min 1, max 8)
+        // Prevents virtual memory explosion from too many malloc arenas
+        // while still scaling with powerful CPUs for faster transcription
+        let cpu_count = std::thread::available_parallelism()
+            .map(|n| n.get() as i32)
+            .unwrap_or(2);
+        let n_threads = (cpu_count / 2).max(1).min(8);
+        params.set_n_threads(n_threads);
 
         // Set language (empty string means auto-detect)
         if self.language != "auto" && !self.language.is_empty() {
@@ -405,15 +430,6 @@ impl WhisperSttEngine {
         Ok(result)
     }
 
-    /// Get the model path
-    pub fn model_path(&self) -> &PathBuf {
-        &self.model_path
-    }
-
-    /// Get the configured language
-    pub fn language(&self) -> &str {
-        &self.language
-    }
 }
 
 impl Drop for WhisperSttEngine {
@@ -430,8 +446,8 @@ mod tests {
     #[test]
     fn test_engine_creation() {
         let engine = WhisperSttEngine::new("/path/to/model.bin", "fr", false, None);
-        assert_eq!(engine.language(), "fr");
-        assert!(!engine.is_initialized());
+        assert_eq!(engine.language, "fr");
+        assert!(engine.context.lock().unwrap().is_none());
     }
 
     #[test]
@@ -439,6 +455,36 @@ mod tests {
         let engine = WhisperSttEngine::new("/nonexistent/model.bin", "fr", false, None);
         let result = engine.initialize();
         assert!(matches!(result, Err(WhisperError::ModelNotFound(_))));
+    }
+
+    #[test]
+    fn test_clean_transcription_normal_text() {
+        assert_eq!(clean_transcription("Bonjour le monde"), "Bonjour le monde");
+        assert_eq!(clean_transcription("  Hello world  "), "Hello world");
+    }
+
+    #[test]
+    fn test_clean_transcription_removes_artifacts() {
+        assert_eq!(clean_transcription("[Music] Hello"), "Hello");
+        assert_eq!(clean_transcription("[BLANK_AUDIO]"), "");
+        assert_eq!(clean_transcription("♪ ♫ some text ♪"), "some text");
+        assert_eq!(clean_transcription("[Silence] Bonjour [Musique]"), "Bonjour");
+    }
+
+    #[test]
+    fn test_clean_transcription_removes_leading_punctuation() {
+        assert_eq!(clean_transcription("??? Hello"), "Hello");
+        assert_eq!(clean_transcription("... world"), "world");
+        assert_eq!(clean_transcription("!,. test"), "test");
+    }
+
+    #[test]
+    fn test_clean_transcription_removes_hallucinations() {
+        assert_eq!(clean_transcription("Merci d'avoir regardé"), "");
+        assert_eq!(clean_transcription("Thanks for watching"), "");
+        assert_eq!(clean_transcription("À bientôt"), "");
+        // "Sous-titres" artifact matches prefix, leaving "réalisés"
+        assert_eq!(clean_transcription("Sous-titres"), "");
     }
 
     #[test]

@@ -16,6 +16,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::vad::{SmoothedVad, VadFrame, VoiceActivityDetector, SILERO_FRAME_SAMPLES};
+
 /// Validate device names to prevent command injection via pactl
 fn is_valid_device_name(name: &str) -> bool {
     name.chars().all(|c| c.is_alphanumeric() || "_.:-,=".contains(c))
@@ -54,6 +56,10 @@ pub struct AudioCapture {
     stop_generation: Arc<AtomicU64>,
     /// Whether current stream is a Bluetooth device (auto-close only for BT)
     is_bluetooth: Arc<AtomicBool>,
+    /// Voice Activity Detection — filters silence from audio before buffering
+    vad: Arc<Mutex<Option<SmoothedVad>>>,
+    /// Accumulates resampled samples until we have a full VAD frame (480 samples)
+    frame_accumulator: Arc<Mutex<Vec<f32>>>,
 }
 
 impl AudioCapture {
@@ -67,7 +73,23 @@ impl AudioCapture {
             first_callback_fired: Arc::new(AtomicBool::new(false)),
             stop_generation: Arc::new(AtomicU64::new(0)),
             is_bluetooth: Arc::new(AtomicBool::new(false)),
+            vad: Arc::new(Mutex::new(None)),
+            frame_accumulator: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Set the Voice Activity Detection engine. When set, only speech frames
+    /// are accumulated in the audio buffer (silence is discarded).
+    pub fn set_vad(&self, vad: SmoothedVad) {
+        *self.vad.lock().unwrap() = Some(vad);
+    }
+
+    /// Reset VAD state (call at start of each recording session).
+    fn reset_vad(&self) {
+        if let Some(vad) = self.vad.lock().unwrap().as_mut() {
+            vad.reset();
+        }
+        self.frame_accumulator.lock().unwrap().clear();
     }
 
     /// Open the audio stream for a device. The stream starts PAUSED (mic OFF).
@@ -171,6 +193,8 @@ impl AudioCapture {
         let audio_buffer = Arc::clone(&self.audio_buffer);
         let first_callback_fired = Arc::clone(&self.first_callback_fired);
         let target_rate = self.target_sample_rate;
+        let vad = Arc::clone(&self.vad);
+        let frame_acc = Arc::clone(&self.frame_accumulator);
 
         let stream = device
             .build_input_stream(
@@ -183,8 +207,42 @@ impl AudioCapture {
                         data.to_vec()
                     };
 
-                    let Ok(mut buf) = audio_buffer.lock() else { return; };
-                    buf.extend_from_slice(&samples);
+                    let Ok(mut vad_guard) = vad.lock() else {
+                        crate::dev_log!("[AUDIO] VAD lock failed, dropping samples");
+                        return;
+                    };
+
+                    if let Some(ref mut vad_engine) = *vad_guard {
+                        // VAD enabled: accumulate into frames of SILERO_FRAME_SAMPLES
+                        let Ok(mut acc) = frame_acc.lock() else {
+                            crate::dev_log!("[AUDIO] Frame accumulator lock failed");
+                            return;
+                        };
+                        acc.extend_from_slice(&samples);
+
+                        while acc.len() >= SILERO_FRAME_SAMPLES {
+                            let frame: Vec<f32> = acc.drain(..SILERO_FRAME_SAMPLES).collect();
+                            match vad_engine.push_frame(&frame) {
+                                Ok(VadFrame::Speech(speech_data)) => {
+                                    let Ok(mut buf) = audio_buffer.lock() else { return; };
+                                    buf.extend_from_slice(speech_data);
+                                }
+                                Ok(VadFrame::Noise) => {} // discard silence
+                                Err(e) => {
+                                    // On VAD error, pass through raw audio
+                                    crate::dev_log!("[AUDIO] VAD error: {}, falling back to passthrough", e);
+                                    let Ok(mut buf) = audio_buffer.lock() else { return; };
+                                    buf.extend_from_slice(&frame);
+                                }
+                            }
+                        }
+                    } else {
+                        // No VAD: passthrough (original behavior)
+                        let Ok(mut buf) = audio_buffer.lock() else { return; };
+                        buf.extend_from_slice(&samples);
+                    }
+
+                    drop(vad_guard);
 
                     if !first_callback_fired.swap(true, Ordering::Relaxed) {
                         crate::dev_log!(
@@ -240,6 +298,7 @@ impl AudioCapture {
         self.audio_buffer.lock().unwrap().clear();
         self.first_callback_fired.store(false, Ordering::Relaxed);
         *self.recording_start_time.lock().unwrap() = Some(std::time::Instant::now());
+        self.reset_vad();
 
         // Resume the stream — mic is now ON, callbacks start firing
         stream.play().map_err(|e| format!("Failed to play stream: {}", e))?;

@@ -3,6 +3,31 @@ use specta::Type;
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+pub enum ModelUnloadTimeout {
+    Never,
+    Min5,
+    Min15,
+    Hour1,
+}
+
+impl Default for ModelUnloadTimeout {
+    fn default() -> Self {
+        Self::Never
+    }
+}
+
+impl ModelUnloadTimeout {
+    pub fn to_seconds(&self) -> Option<u64> {
+        match self {
+            Self::Never => None,
+            Self::Min5 => Some(300),
+            Self::Min15 => Some(900),
+            Self::Hour1 => Some(3600),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct AppConfig {
     pub shortcut: String,
@@ -14,12 +39,34 @@ pub struct AppConfig {
     pub language: String,
     #[serde(default)]
     pub model_path: Option<String>,
-    /// Enable GPU acceleration for Whisper inference (default: false for safety)
-    #[serde(default)]
+    #[serde(default = "auto_detect_gpu")]
     pub use_gpu: bool,
-    /// GPU device index for multi-GPU systems (default: None = use first available)
     #[serde(default)]
     pub gpu_device_index: Option<u32>,
+    #[serde(default = "default_true")]
+    pub audio_feedback_enabled: bool,
+    #[serde(default = "default_volume")]
+    pub audio_feedback_volume: f32,
+    #[serde(default)]
+    pub model_unload_timeout: ModelUnloadTimeout,
+    #[serde(default)]
+    pub ollama_url: Option<String>,
+    #[serde(default)]
+    pub ollama_model: Option<String>,
+    #[serde(default)]
+    pub ollama_enabled: bool,
+}
+
+fn default_true() -> bool { true }
+fn default_volume() -> f32 { 0.7 }
+
+/// Auto-detect GPU: enable if compiled with GPU support
+fn auto_detect_gpu() -> bool {
+    let gpu_compiled = cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal");
+    if gpu_compiled {
+        println!("[GPU] Auto-enabling GPU (compiled with GPU support, first launch or new field)");
+    }
+    gpu_compiled
 }
 
 impl Default for AppConfig {
@@ -32,8 +79,14 @@ impl Default for AppConfig {
             key_delay_ms: 8,
             language: "fr".to_string(),
             model_path: None,
-            use_gpu: false,
+            use_gpu: auto_detect_gpu(),
             gpu_device_index: None,
+            audio_feedback_enabled: true,
+            audio_feedback_volume: 0.7,
+            model_unload_timeout: ModelUnloadTimeout::Never,
+            ollama_url: None,
+            ollama_model: None,
+            ollama_enabled: false,
         }
     }
 }
@@ -64,8 +117,17 @@ impl AppConfig {
         let content = fs::read_to_string(&config_path)
             .map_err(|e| format!("Failed to read config file: {}", e))?;
 
-        let config: AppConfig = serde_json::from_str(&content)
+        let mut config: AppConfig = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse config file: {}", e))?;
+
+        // Migration: auto-enable GPU if compiled with support but config has it disabled
+        // This handles upgrading from builds without GPU to builds with GPU
+        let gpu_compiled = cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal");
+        if gpu_compiled && !config.use_gpu {
+            println!("[CONFIG] Migration: enabling GPU (compiled with GPU support)");
+            config.use_gpu = true;
+            let _ = config.save();
+        }
 
         Ok(config)
     }
@@ -79,5 +141,75 @@ impl AppConfig {
         fs::write(&config_path, json).map_err(|e| format!("Failed to write config file: {}", e))?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_values() {
+        let config = AppConfig::default();
+        assert_eq!(config.shortcut, "CommandOrControl+Space");
+        assert_eq!(config.audio_device_index, 0);
+        assert_eq!(config.model, "base");
+        assert_eq!(config.key_delay_ms, 8);
+        assert_eq!(config.language, "fr");
+        // use_gpu depends on compile-time features (auto-detect)
+        assert_eq!(config.use_gpu, cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal"));
+        assert!(config.gpu_device_index.is_none());
+        assert!(config.model_path.is_none());
+        assert!(config.audio_device_name.is_none());
+    }
+
+    #[test]
+    fn test_serialize_deserialize_roundtrip() {
+        let config = AppConfig {
+            shortcut: "Alt+S".to_string(),
+            audio_device_index: 2,
+            audio_device_name: Some("USB Mic".to_string()),
+            model: "large".to_string(),
+            key_delay_ms: 15,
+            language: "en".to_string(),
+            model_path: Some("/path/to/model".to_string()),
+            use_gpu: true,
+            gpu_device_index: Some(1),
+            audio_feedback_enabled: true,
+            audio_feedback_volume: 0.5,
+            model_unload_timeout: ModelUnloadTimeout::Min5,
+            ollama_url: Some("http://localhost:11434".to_string()),
+            ollama_model: Some("mistral".to_string()),
+            ollama_enabled: false,
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let restored: AppConfig = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(restored.shortcut, "Alt+S");
+        assert_eq!(restored.audio_device_index, 2);
+        assert_eq!(restored.audio_device_name.as_deref(), Some("USB Mic"));
+        assert_eq!(restored.model, "large");
+        assert_eq!(restored.language, "en");
+        assert!(restored.use_gpu);
+        assert_eq!(restored.gpu_device_index, Some(1));
+    }
+
+    #[test]
+    fn test_deserialize_with_missing_optional_fields() {
+        let json = r#"{
+            "shortcut": "Ctrl+Space",
+            "audio_device_index": 0,
+            "model": "base",
+            "key_delay_ms": 8,
+            "language": "fr"
+        }"#;
+
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        // use_gpu depends on compile-time features (auto-detect)
+        assert_eq!(config.use_gpu, cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal"));
+        assert!(config.gpu_device_index.is_none());
+        assert!(config.model_path.is_none());
+        assert!(config.audio_device_name.is_none());
     }
 }

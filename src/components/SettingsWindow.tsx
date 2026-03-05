@@ -5,6 +5,7 @@ import { platform } from "@tauri-apps/plugin-os";
 import { relaunch } from "@tauri-apps/plugin-process";
 import {
   Brain,
+  Clock,
   Cpu,
   Download,
   Info,
@@ -15,6 +16,8 @@ import {
   Monitor,
   RefreshCw,
   Settings,
+  Sparkles,
+  Volume2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -34,6 +37,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { useSettingsStore, useSystemStore } from "@/stores";
@@ -74,6 +78,20 @@ function SettingsWindow() {
     setGpuStatus,
     useGpuAcceleration,
     setUseGpuAcceleration,
+    audioFeedbackEnabled,
+    setAudioFeedbackEnabled,
+    audioFeedbackVolume,
+    setAudioFeedbackVolume,
+    modelUnloadTimeout,
+    setModelUnloadTimeout,
+    ollamaEnabled,
+    setOllamaEnabled,
+    ollamaUrl,
+    setOllamaUrl,
+    ollamaModel,
+    setOllamaModel,
+    ollamaStatus,
+    setOllamaStatus,
     isRefreshing,
     setIsRefreshing,
     saveStatus,
@@ -104,7 +122,9 @@ function SettingsWindow() {
 
   // Local UI state
   const [isCapturing, setIsCapturing] = useState(false);
+  const [activeSection, setActiveSection] = useState("audio");
   const inputRef = useRef<HTMLInputElement>(null);
+  const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   // Detect platform on mount
   useEffect(() => {
@@ -138,13 +158,31 @@ function SettingsWindow() {
         setModel(result.data.model);
         setLanguage(result.data.language);
         setUseGpuAcceleration(result.data.use_gpu ?? false);
+        setAudioFeedbackEnabled(result.data.audio_feedback_enabled ?? true);
+        setAudioFeedbackVolume(result.data.audio_feedback_volume ?? 0.7);
+        setModelUnloadTimeout(result.data.model_unload_timeout ?? "Never");
+        setOllamaEnabled(result.data.ollama_enabled ?? false);
+        setOllamaUrl(result.data.ollama_url ?? "http://localhost:11434");
+        setOllamaModel(result.data.ollama_model ?? "mistral");
       } else {
         console.error("Failed to load settings:", result.error);
       }
     } catch (error) {
       console.error("Failed to load settings:", error);
     }
-  }, [setShortcut, setSelectedDevice, setModel, setLanguage, setUseGpuAcceleration]);
+  }, [
+    setShortcut,
+    setSelectedDevice,
+    setModel,
+    setLanguage,
+    setUseGpuAcceleration,
+    setAudioFeedbackEnabled,
+    setAudioFeedbackVolume,
+    setModelUnloadTimeout,
+    setOllamaEnabled,
+    setOllamaUrl,
+    setOllamaModel,
+  ]);
 
   const checkPermissions = useCallback(async () => {
     try {
@@ -222,6 +260,17 @@ function SettingsWindow() {
       console.error("Failed to load GPU status:", error);
     }
   }, [setGpuStatus]);
+
+  const checkOllama = useCallback(async () => {
+    try {
+      const result = await commands.checkOllamaStatus();
+      if (result.status === "ok") {
+        setOllamaStatus(result.data);
+      }
+    } catch (_error) {
+      setOllamaStatus({ available: false, model: ollamaModel, url: ollamaUrl });
+    }
+  }, [ollamaUrl, ollamaModel, setOllamaStatus]);
 
   const handleResetGpuFailures = async () => {
     try {
@@ -324,9 +373,12 @@ function SettingsWindow() {
   ]);
 
   useEffect(() => {
-    const unlistenProgress = listen<DownloadProgress>("model-download-progress", (event) => {
-      setDownloadProgress(event.payload.percent);
-    });
+    const unlistenProgress = listen<DownloadProgress>(
+      "model-download-progress",
+      (event) => {
+        setDownloadProgress(event.payload.percent);
+      },
+    );
 
     const unlistenComplete = listen("model-download-complete", () => {
       // Refresh models list when download completes
@@ -363,7 +415,8 @@ function SettingsWindow() {
     if (key === " ") key = "Space";
     else if (key.length === 1) key = key.toUpperCase();
 
-    if (key === "Control" || key === "Alt" || key === "Shift" || key === "Meta") return;
+    if (key === "Control" || key === "Alt" || key === "Shift" || key === "Meta")
+      return;
 
     const newShortcut = [...modifiers, key].join("+");
     setShortcut(newShortcut);
@@ -448,6 +501,12 @@ function SettingsWindow() {
         language,
         model_path: modelPath,
         use_gpu: useGpuAcceleration,
+        audio_feedback_enabled: audioFeedbackEnabled,
+        audio_feedback_volume: audioFeedbackVolume,
+        model_unload_timeout: modelUnloadTimeout,
+        ollama_enabled: ollamaEnabled,
+        ollama_url: ollamaUrl,
+        ollama_model: ollamaModel,
       };
 
       const result = await commands.saveSettings(config);
@@ -533,10 +592,13 @@ function SettingsWindow() {
   };
 
   const handleRemoveGnomeExtension = async () => {
-    const confirmed = await confirm("Supprimer l'extension de détection de terminal ?", {
-      title: "Supprimer Extension",
-      kind: "warning",
-    });
+    const confirmed = await confirm(
+      "Supprimer l'extension de détection de terminal ?",
+      {
+        title: "Supprimer Extension",
+        kind: "warning",
+      },
+    );
 
     if (!confirmed) return;
 
@@ -621,474 +683,849 @@ function SettingsWindow() {
         </div>
       </div>
 
-      {/* Content */}
-      <ScrollArea className="flex-1 min-h-0">
-        <div className="p-6 space-y-6">
-          {/* Audio Input */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Mic className="h-5 w-5 text-primary" />
-                Audio Input
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="microphone">Microphone</Label>
-                <div className="flex gap-2">
-                  <Select
-                    value={String(selectedDevice)}
-                    onValueChange={(value) => setSelectedDevice(Number(value))}
-                  >
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="Select a microphone" />
+      {/* Sidebar + Content */}
+      <div className="flex flex-1 min-h-0">
+        {/* Sidebar Navigation */}
+        <nav className="flex-none w-48 border-r border-border bg-muted/30 py-2 overflow-y-auto">
+          {[
+            { id: "audio", icon: Mic, label: "Audio", color: "text-rose-400" },
+            {
+              id: "shortcut",
+              icon: Keyboard,
+              label: "Raccourci",
+              color: "text-amber-400",
+            },
+            {
+              id: "stt",
+              icon: Brain,
+              label: "Reconnaissance",
+              color: "text-violet-400",
+            },
+            {
+              id: "performance",
+              icon: Cpu,
+              label: "Performance",
+              color: "text-cyan-400",
+            },
+            {
+              id: "models",
+              icon: Download,
+              label: "Modèles",
+              color: "text-emerald-400",
+            },
+            {
+              id: "system",
+              icon: Settings,
+              label: "Système",
+              color: "text-orange-400",
+            },
+            ...(isGnomeWayland
+              ? [
+                  {
+                    id: "gnome",
+                    icon: Monitor,
+                    label: "Terminal",
+                    color: "text-sky-400",
+                  },
+                ]
+              : []),
+            {
+              id: "feedback",
+              icon: Volume2,
+              label: "Audio FB",
+              color: "text-pink-400",
+            },
+            {
+              id: "unload",
+              icon: Clock,
+              label: "Déchargement",
+              color: "text-teal-400",
+            },
+            {
+              id: "ollama",
+              icon: Sparkles,
+              label: "Ollama",
+              color: "text-fuchsia-400",
+            },
+            {
+              id: "about",
+              icon: Info,
+              label: "À propos",
+              color: "text-zinc-400",
+            },
+          ].map(({ id, icon: Icon, label, color }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => {
+                setActiveSection(id);
+                sectionRefs.current[id]?.scrollIntoView({
+                  behavior: "smooth",
+                  block: "start",
+                });
+              }}
+              className={cn(
+                "flex items-center gap-2.5 w-full px-4 py-2 text-sm transition-colors text-left",
+                activeSection === id
+                  ? "bg-primary/10 text-foreground font-medium border-r-2 border-primary"
+                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
+              )}
+            >
+              <Icon
+                className={cn(
+                  "h-4 w-4 shrink-0",
+                  activeSection === id ? color : "text-muted-foreground",
+                )}
+              />
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        {/* Content */}
+        <ScrollArea className="flex-1 min-h-0">
+          <div className="p-6 space-y-6">
+            {/* Audio Input */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.audio = el;
+              }}
+            >
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Mic className="h-5 w-5 text-rose-400" />
+                  Audio Input
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="microphone">Microphone</Label>
+                  <div className="flex gap-2">
+                    <Select
+                      value={String(selectedDevice)}
+                      onValueChange={(value) =>
+                        setSelectedDevice(Number(value))
+                      }
+                    >
+                      <SelectTrigger className="flex-1">
+                        <SelectValue placeholder="Select a microphone" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {audioDevices.map((device) => (
+                          <SelectItem
+                            key={device.index}
+                            value={String(device.index)}
+                          >
+                            {device.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={handleRefreshDevices}
+                      disabled={isRefreshing}
+                    >
+                      <RefreshCw
+                        className={cn(
+                          "h-4 w-4",
+                          isRefreshing && "animate-spin",
+                        )}
+                      />
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Keyboard Shortcut */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.shortcut = el;
+              }}
+            >
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Keyboard className="h-5 w-5 text-amber-400" />
+                  Keyboard Shortcut
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="shortcut">Recording Hotkey</Label>
+                  <Input
+                    ref={inputRef}
+                    id="shortcut"
+                    type="text"
+                    value={shortcut}
+                    onClick={handleShortcutCapture}
+                    onKeyDown={handleKeyDown}
+                    onMouseDown={handleMouseDown}
+                    onBlur={handleBlur}
+                    onContextMenu={(e) => e.preventDefault()}
+                    readOnly
+                    placeholder="Click to set hotkey..."
+                    className={cn(
+                      "cursor-pointer",
+                      isCapturing && "ring-2 ring-primary bg-primary/10",
+                    )}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Click, then press any key or mouse button (Mouse4,
+                    Mouse5...)
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Speech Recognition */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.stt = el;
+              }}
+            >
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Brain className="h-5 w-5 text-violet-400" />
+                  Speech Recognition
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="model">Active Model</Label>
+                  <Select value={model} onValueChange={setModel}>
+                    <SelectTrigger>
+                      <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {audioDevices.map((device) => (
-                        <SelectItem key={device.index} value={String(device.index)}>
-                          {device.name}
+                      {installedModels.map((modelInfo) => (
+                        <SelectItem
+                          key={modelInfo.name}
+                          value={modelInfo.name}
+                          disabled={!modelInfo.installed}
+                        >
+                          {modelInfo.display_name} - {modelInfo.size_mb} MB
+                          {!modelInfo.installed && " (Non installé)"}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={handleRefreshDevices}
-                    disabled={isRefreshing}
-                  >
-                    <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Keyboard Shortcut */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Keyboard className="h-5 w-5 text-primary" />
-                Keyboard Shortcut
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="shortcut">Recording Hotkey</Label>
-                <Input
-                  ref={inputRef}
-                  id="shortcut"
-                  type="text"
-                  value={shortcut}
-                  onClick={handleShortcutCapture}
-                  onKeyDown={handleKeyDown}
-                  onMouseDown={handleMouseDown}
-                  onBlur={handleBlur}
-                  onContextMenu={(e) => e.preventDefault()}
-                  readOnly
-                  placeholder="Click to set hotkey..."
-                  className={cn(
-                    "cursor-pointer",
-                    isCapturing && "ring-2 ring-primary bg-primary/10",
-                  )}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Click, then press any key or mouse button (Mouse4, Mouse5...)
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Speech Recognition */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Brain className="h-5 w-5 text-primary" />
-                Speech Recognition
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="model">Active Model</Label>
-                <Select value={model} onValueChange={setModel}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {installedModels.map((modelInfo) => (
-                      <SelectItem
-                        key={modelInfo.name}
-                        value={modelInfo.name}
-                        disabled={!modelInfo.installed}
-                      >
-                        {modelInfo.display_name} - {modelInfo.size_mb} MB
-                        {!modelInfo.installed && " (Non installé)"}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {model && !installedModels.find((m) => m.name === model)?.installed && (
-                  <p className="text-xs text-destructive">
-                    ⚠️ Le modèle "{model}" n'est pas installé. Téléchargez-le dans "Model Management"
-                    ci-dessous.
-                  </p>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="language">Language</Label>
-                <Select value={language} onValueChange={setLanguage}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="fr">Français (French)</SelectItem>
-                    <SelectItem value="en">English</SelectItem>
-                    <SelectItem value="es">Español (Spanish)</SelectItem>
-                    <SelectItem value="de">Deutsch (German)</SelectItem>
-                    <SelectItem value="it">Italiano (Italian)</SelectItem>
-                    <SelectItem value="pt">Português (Portuguese)</SelectItem>
-                    <SelectItem value="nl">Nederlands (Dutch)</SelectItem>
-                    <SelectItem value="pl">Polski (Polish)</SelectItem>
-                    <SelectItem value="ru">Русский (Russian)</SelectItem>
-                    <SelectItem value="zh">中文 (Chinese)</SelectItem>
-                    <SelectItem value="ja">日本語 (Japanese)</SelectItem>
-                    <SelectItem value="ko">한국어 (Korean)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Performance / GPU Acceleration */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Cpu className="h-5 w-5 text-primary" />
-                Performance
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* GPU Info */}
-              <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                  <Label>Detected GPU</Label>
-                  <p className="text-sm text-muted-foreground">
-                    {gpuInfo ? gpuInfo.device_name || "No GPU detected" : "Detecting..."}
-                  </p>
-                </div>
-                <Badge variant={gpuInfo?.available ? "default" : "secondary"}>
-                  {gpuInfo ? (gpuInfo.available ? gpuInfo.backend : "CPU Only") : "..."}
-                </Badge>
-              </div>
-
-              {/* Current Mode Status */}
-              {gpuStatus && (
-                <div className="flex items-center justify-between">
-                  <div className="space-y-1">
-                    <Label>Current Mode</Label>
-                    <p className="text-sm text-muted-foreground">
-                      {gpuStatus.fallback_reason || "Running normally"}
-                    </p>
-                  </div>
-                  <Badge
-                    variant={gpuStatus.mode === "gpu" ? "default" : "secondary"}
-                    className={cn(
-                      gpuStatus.mode === "gpu" && "bg-green-600",
-                      gpuStatus.mode === "cpu" && gpuStatus.fallback_reason && "bg-yellow-600",
+                  {model &&
+                    !installedModels.find((m) => m.name === model)
+                      ?.installed && (
+                      <p className="text-xs text-destructive">
+                        ⚠️ Le modèle "{model}" n'est pas installé.
+                        Téléchargez-le dans "Model Management" ci-dessous.
+                      </p>
                     )}
-                  >
-                    {gpuStatus.mode === "gpu" ? "GPU Active" : "CPU Mode"}
-                  </Badge>
                 </div>
-              )}
 
-              {/* GPU Failure Warning */}
-              {gpuInfo && gpuInfo.failure_count > 0 && (
-                <div className="flex items-center justify-between p-2 rounded bg-yellow-500/10 border border-yellow-500/30">
-                  <div className="space-y-1">
-                    <p className="text-sm text-yellow-500 font-medium">
-                      {gpuInfo.disabled_by_failures
-                        ? `GPU auto-disabled after ${gpuInfo.failure_count} failures`
-                        : `${gpuInfo.failure_count} GPU failure(s) recorded`}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {gpuInfo.disabled_by_failures
-                        ? "GPU will not be used until you reset the counter"
-                        : "GPU will be auto-disabled after 3 consecutive failures"}
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleResetGpuFailures}
-                    className="shrink-0"
-                  >
-                    <RefreshCw className="h-4 w-4 mr-1" />
-                    Retry GPU
-                  </Button>
+                <div className="space-y-2">
+                  <Label htmlFor="language">Language</Label>
+                  <Select value={language} onValueChange={setLanguage}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="fr">Français (French)</SelectItem>
+                      <SelectItem value="en">English</SelectItem>
+                      <SelectItem value="es">Español (Spanish)</SelectItem>
+                      <SelectItem value="de">Deutsch (German)</SelectItem>
+                      <SelectItem value="it">Italiano (Italian)</SelectItem>
+                      <SelectItem value="pt">Português (Portuguese)</SelectItem>
+                      <SelectItem value="nl">Nederlands (Dutch)</SelectItem>
+                      <SelectItem value="pl">Polski (Polish)</SelectItem>
+                      <SelectItem value="ru">Русский (Russian)</SelectItem>
+                      <SelectItem value="zh">中文 (Chinese)</SelectItem>
+                      <SelectItem value="ja">日本語 (Japanese)</SelectItem>
+                      <SelectItem value="ko">한국어 (Korean)</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
-              )}
+              </CardContent>
+            </Card>
 
-              <Separator />
-
-              {/* GPU Toggle */}
-              <div className="flex items-center justify-between">
-                <div className="space-y-1">
-                  <Label>GPU Acceleration</Label>
-                  <p className="text-sm text-muted-foreground">
-                    {useGpuAcceleration
-                      ? "Using GPU for faster transcription"
-                      : "Using CPU (safer, more compatible)"}
-                  </p>
-                </div>
-                <Switch
-                  checked={useGpuAcceleration}
-                  onCheckedChange={setUseGpuAcceleration}
-                  disabled={!gpuInfo?.available || gpuInfo?.disabled_by_failures}
-                />
-              </div>
-
-              {/* Warning */}
-              {useGpuAcceleration && !gpuInfo?.disabled_by_failures && (
-                <p className="text-xs text-yellow-500">
-                  GPU acceleration requires app restart. If you experience crashes, disable this
-                  option.
-                </p>
-              )}
-              {!gpuInfo?.available && (
-                <p className="text-xs text-muted-foreground">
-                  GPU acceleration not available. App compiled without GPU support or no compatible
-                  GPU found.
-                </p>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Model Management */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Download className="h-5 w-5 text-primary" />
-                Model Management
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <p className="text-sm text-muted-foreground">
-                Download Whisper GGML models for speech recognition
-              </p>
-
-              {installedModels.map((modelInfo) => (
-                <div
-                  key={modelInfo.name}
-                  className="flex items-center justify-between p-3 rounded-lg border border-border"
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{modelInfo.display_name}</span>
-                      {modelInfo.installed && (
-                        <Badge variant="default" className="text-xs">
-                          Installed
-                        </Badge>
-                      )}
-                      {modelInfo.name === "ggml-small" && (
-                        <Badge variant="secondary" className="text-xs">
-                          Recommended
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="text-sm text-muted-foreground mt-1">
-                      {modelInfo.description}
-                    </div>
-
-                    {downloadingModel === modelInfo.name && (
-                      <div className="mt-2 space-y-1">
-                        <Progress value={downloadProgress} className="h-2" />
-                        <p className="text-xs text-muted-foreground">
-                          Downloading... {downloadProgress.toFixed(1)}%
-                        </p>
-                      </div>
-                    )}
-                  </div>
-
-                  <Button
-                    variant={modelInfo.installed ? "outline" : "default"}
-                    size="sm"
-                    onClick={() => handleDownloadModel(modelInfo.name)}
-                    disabled={modelInfo.installed || downloadingModel !== null}
-                  >
-                    {modelInfo.installed ? "Installed ✓" : "Download"}
-                  </Button>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-
-          {/* System Setup */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Settings className="h-5 w-5 text-primary" />
-                System Setup
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              {/* System Dependencies (Linux-specific) */}
-              {currentPlatform === "linux" && (
-                <div className="space-y-3">
-                  <Label>System Permissions</Label>
-                  <p className="text-sm text-muted-foreground">
-                    {systemDepsInstalled
-                      ? "System permissions configured"
-                      : "Configure evdev/uinput permissions"}
-                  </p>
-
-                  <div className="flex flex-col gap-2">
-                    <div className="flex items-center gap-2">
-                      <Badge variant={permissionsInstalled ? "default" : "secondary"}>
-                        {permissionsInstalled ? "✓" : "○"}
-                      </Badge>
-                      <span className="text-sm">Push-to-talk (evdev)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant={uinputAvailable ? "default" : "secondary"}>
-                        {uinputAvailable ? "✓" : "○"}
-                      </Badge>
-                      <span className="text-sm">Text output (uinput)</span>
-                    </div>
-                  </div>
-
-                  <Button
-                    onClick={handleInstallSystem}
-                    disabled={isInstallingSystem || systemDepsInstalled}
-                    variant={systemDepsInstalled ? "outline" : "default"}
-                    size="sm"
-                  >
-                    {isInstallingSystem
-                      ? "Installing..."
-                      : systemDepsInstalled
-                        ? "Configured ✓"
-                        : "Setup Permissions"}
-                  </Button>
-                </div>
-              )}
-
-              {currentPlatform === "linux" && <Separator />}
-
-              {/* Autostart */}
-              <div className="space-y-3">
-                <Label>Launch at Startup</Label>
-                <p className="text-sm text-muted-foreground">
-                  Automatically start KaraokeTyper when you log in
-                </p>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Badge variant={autostart ? "default" : "secondary"}>
-                      {autostart ? "Enabled" : "Disabled"}
-                    </Badge>
-                    <span className="text-sm">
-                      {autostart ? "Starts at login" : "Manual start only"}
-                    </span>
-                  </div>
-                  <Switch
-                    checked={autostart}
-                    onCheckedChange={handleToggleAutostart}
-                    disabled={isTogglingAutostart}
-                  />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* GNOME Terminal Detection Extension (Linux/Wayland only) */}
-          {isGnomeWayland && (
-            <Card>
+            {/* Performance / GPU Acceleration */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.performance = el;
+              }}
+            >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Monitor className="h-5 w-5 text-primary" />
-                  Terminal Detection
+                  <Cpu className="h-5 w-5 text-cyan-400" />
+                  Performance
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <p className="text-sm text-muted-foreground">
-                  GNOME Shell extension for automatic terminal detection. When active, uses
-                  Ctrl+Shift+V in terminals and Ctrl+V elsewhere.
-                </p>
-
+                {/* GPU Info */}
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Badge variant={gnomeExtInstalled && gnomeExtEnabled ? "default" : "secondary"}>
-                      {gnomeExtInstalled && gnomeExtEnabled
-                        ? "Active"
-                        : gnomeExtInstalled
-                          ? "Installed (disabled)"
-                          : "Not installed"}
-                    </Badge>
-                    <span className="text-sm">
-                      {gnomeExtInstalled && gnomeExtEnabled
-                        ? "Auto-detect active"
-                        : "Using fallback detection"}
-                    </span>
+                  <div className="space-y-1">
+                    <Label>GPU détecté</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {gpuInfo
+                        ? gpuInfo.device_name || "Aucun GPU détecté"
+                        : "Détection..."}
+                      {gpuInfo?.vram_mb
+                        ? ` (${gpuInfo.vram_mb >= 1024 ? `${(gpuInfo.vram_mb / 1024).toFixed(1)} GB` : `${gpuInfo.vram_mb} MB`} VRAM)`
+                        : ""}
+                    </p>
                   </div>
-
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={handleInstallGnomeExtension}
-                      disabled={isInstallingGnomeExt || gnomeExtInstalled}
-                      variant={gnomeExtInstalled ? "outline" : "default"}
-                      size="sm"
-                    >
-                      {isInstallingGnomeExt
-                        ? "Installing..."
-                        : gnomeExtInstalled
-                          ? "Installed ✓"
-                          : "Install Extension"}
-                    </Button>
-                    {gnomeExtInstalled && (
-                      <Button
-                        onClick={handleRemoveGnomeExtension}
-                        disabled={isInstallingGnomeExt}
-                        variant="destructive"
-                        size="sm"
-                      >
-                        Remove
-                      </Button>
-                    )}
-                  </div>
+                  <Badge variant={gpuInfo?.available ? "default" : "secondary"}>
+                    {gpuInfo
+                      ? gpuInfo.available
+                        ? gpuInfo.backend
+                        : "CPU Only"
+                      : "..."}
+                  </Badge>
                 </div>
 
-                {gnomeExtInstalled && !gnomeExtEnabled && (
-                  <p className="text-sm text-yellow-500">
-                    Extension installed but not enabled. Enable it in GNOME Extensions app or run:
-                    gnome-extensions enable focused-window-dbus@karaoketyper
+                {/* VRAM Recommendation */}
+                {gpuInfo?.vram_mb && gpuInfo.recommended_model && (
+                  <div className="p-2 rounded bg-cyan-500/10 border border-cyan-500/30">
+                    <p className="text-sm text-cyan-400">
+                      Modèle max recommandé pour votre GPU :{" "}
+                      <span className="font-medium">
+                        {gpuInfo.recommended_model}
+                      </span>
+                    </p>
+                    {(() => {
+                      const vramTable: Record<string, number> = {
+                        "ggml-tiny": 150,
+                        "ggml-base": 300,
+                        "ggml-small": 700,
+                        "ggml-medium": 1500,
+                        "ggml-large-v3": 3000,
+                      };
+                      const currentVram = vramTable[model] ?? 0;
+                      const isTooLarge =
+                        gpuInfo.vram_mb !== null &&
+                        currentVram > gpuInfo.vram_mb * 0.7;
+                      if (useGpuAcceleration && isTooLarge) {
+                        return (
+                          <p className="text-xs text-yellow-400 mt-1">
+                            Votre modèle actuel ({model}) risque de dépasser la
+                            capacité VRAM et provoquer des crashs. Essayez{" "}
+                            {gpuInfo.recommended_model}.
+                          </p>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
+                )}
+
+                {/* Current Mode Status */}
+                {gpuStatus && (
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <Label>Mode actuel</Label>
+                      <p className="text-sm text-muted-foreground">
+                        {gpuStatus.fallback_reason || "Fonctionne normalement"}
+                      </p>
+                    </div>
+                    <Badge
+                      variant={
+                        gpuStatus.mode === "gpu" ? "default" : "secondary"
+                      }
+                      className={cn(
+                        gpuStatus.mode === "gpu" && "bg-green-600",
+                        gpuStatus.mode === "cpu" &&
+                          gpuStatus.fallback_reason &&
+                          "bg-yellow-600",
+                      )}
+                    >
+                      {gpuStatus.mode === "gpu" ? "GPU actif" : "Mode CPU"}
+                    </Badge>
+                  </div>
+                )}
+
+                {/* GPU Failure Warning */}
+                {gpuInfo && gpuInfo.failure_count > 0 && (
+                  <div className="flex items-center justify-between p-2 rounded bg-yellow-500/10 border border-yellow-500/30">
+                    <div className="space-y-1">
+                      <p className="text-sm text-yellow-500 font-medium">
+                        {gpuInfo.disabled_by_failures
+                          ? `GPU désactivé après ${gpuInfo.failure_count} échecs`
+                          : `${gpuInfo.failure_count} échec(s) GPU enregistré(s)`}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {gpuInfo.disabled_by_failures
+                          ? "Le GPU ne sera pas utilisé tant que vous ne réinitialisez pas le compteur"
+                          : "Le GPU sera désactivé après 3 échecs consécutifs"}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleResetGpuFailures}
+                      className="shrink-0"
+                    >
+                      <RefreshCw className="h-4 w-4 mr-1" />
+                      Réessayer
+                    </Button>
+                  </div>
+                )}
+
+                <Separator />
+
+                {/* GPU Toggle */}
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label>Accélération GPU</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {useGpuAcceleration
+                        ? "GPU utilisé pour la transcription"
+                        : "CPU utilisé (plus compatible)"}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={useGpuAcceleration}
+                    onCheckedChange={setUseGpuAcceleration}
+                    disabled={
+                      !gpuInfo?.available || gpuInfo?.disabled_by_failures
+                    }
+                  />
+                </div>
+
+                {!gpuInfo?.available && (
+                  <p className="text-xs text-muted-foreground">
+                    Accélération GPU non disponible. Compilé sans support GPU ou
+                    aucun GPU compatible détecté.
                   </p>
                 )}
               </CardContent>
             </Card>
-          )}
 
-          {/* About */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Info className="h-5 w-5 text-primary" />
-                About
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">KaraokeTyper v0.1.0</p>
-              <p className="text-sm text-muted-foreground">
-                Offline voice dictation for{" "}
-                {currentPlatform === "macos"
-                  ? "macOS"
-                  : currentPlatform === "windows"
-                    ? "Windows"
-                    : "Linux"}
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-      </ScrollArea>
+            {/* Model Management */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.models = el;
+              }}
+            >
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Download className="h-5 w-5 text-emerald-400" />
+                  Model Management
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-muted-foreground">
+                  Download Whisper GGML models for speech recognition
+                </p>
+
+                {installedModels.map((modelInfo) => (
+                  <div
+                    key={modelInfo.name}
+                    className="flex items-center justify-between p-3 rounded-lg border border-border"
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">
+                          {modelInfo.display_name}
+                        </span>
+                        {modelInfo.installed && (
+                          <Badge variant="default" className="text-xs">
+                            Installed
+                          </Badge>
+                        )}
+                        {modelInfo.name === "ggml-small" && (
+                          <Badge variant="secondary" className="text-xs">
+                            Recommended
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="text-sm text-muted-foreground mt-1">
+                        {modelInfo.description}
+                      </div>
+
+                      {downloadingModel === modelInfo.name && (
+                        <div className="mt-2 space-y-1">
+                          <Progress value={downloadProgress} className="h-2" />
+                          <p className="text-xs text-muted-foreground">
+                            Downloading... {downloadProgress.toFixed(1)}%
+                          </p>
+                        </div>
+                      )}
+                    </div>
+
+                    <Button
+                      variant={modelInfo.installed ? "outline" : "default"}
+                      size="sm"
+                      onClick={() => handleDownloadModel(modelInfo.name)}
+                      disabled={
+                        modelInfo.installed || downloadingModel !== null
+                      }
+                    >
+                      {modelInfo.installed ? "Installed ✓" : "Download"}
+                    </Button>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            {/* System Setup */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.system = el;
+              }}
+            >
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Settings className="h-5 w-5 text-orange-400" />
+                  System Setup
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {/* System Dependencies (Linux-specific) */}
+                {currentPlatform === "linux" && (
+                  <div className="space-y-3">
+                    <Label>System Permissions</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {systemDepsInstalled
+                        ? "System permissions configured"
+                        : "Configure evdev/uinput permissions"}
+                    </p>
+
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant={
+                            permissionsInstalled ? "default" : "secondary"
+                          }
+                        >
+                          {permissionsInstalled ? "✓" : "○"}
+                        </Badge>
+                        <span className="text-sm">Push-to-talk (evdev)</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant={uinputAvailable ? "default" : "secondary"}
+                        >
+                          {uinputAvailable ? "✓" : "○"}
+                        </Badge>
+                        <span className="text-sm">Text output (uinput)</span>
+                      </div>
+                    </div>
+
+                    <Button
+                      onClick={handleInstallSystem}
+                      disabled={isInstallingSystem || systemDepsInstalled}
+                      variant={systemDepsInstalled ? "outline" : "default"}
+                      size="sm"
+                    >
+                      {isInstallingSystem
+                        ? "Installing..."
+                        : systemDepsInstalled
+                          ? "Configured ✓"
+                          : "Setup Permissions"}
+                    </Button>
+                  </div>
+                )}
+
+                {currentPlatform === "linux" && <Separator />}
+
+                {/* Autostart */}
+                <div className="space-y-3">
+                  <Label>Launch at Startup</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Automatically start KaraokeTyper when you log in
+                  </p>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Badge variant={autostart ? "default" : "secondary"}>
+                        {autostart ? "Enabled" : "Disabled"}
+                      </Badge>
+                      <span className="text-sm">
+                        {autostart ? "Starts at login" : "Manual start only"}
+                      </span>
+                    </div>
+                    <Switch
+                      checked={autostart}
+                      onCheckedChange={handleToggleAutostart}
+                      disabled={isTogglingAutostart}
+                    />
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* GNOME Terminal Detection Extension (Linux/Wayland only) */}
+            {isGnomeWayland && (
+              <Card
+                ref={(el) => {
+                  sectionRefs.current.gnome = el;
+                }}
+              >
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-lg">
+                    <Monitor className="h-5 w-5 text-sky-400" />
+                    Terminal Detection
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    GNOME Shell extension for automatic terminal detection. When
+                    active, uses Ctrl+Shift+V in terminals and Ctrl+V elsewhere.
+                  </p>
+
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        variant={
+                          gnomeExtInstalled && gnomeExtEnabled
+                            ? "default"
+                            : "secondary"
+                        }
+                      >
+                        {gnomeExtInstalled && gnomeExtEnabled
+                          ? "Active"
+                          : gnomeExtInstalled
+                            ? "Installed (disabled)"
+                            : "Not installed"}
+                      </Badge>
+                      <span className="text-sm">
+                        {gnomeExtInstalled && gnomeExtEnabled
+                          ? "Auto-detect active"
+                          : "Using fallback detection"}
+                      </span>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={handleInstallGnomeExtension}
+                        disabled={isInstallingGnomeExt || gnomeExtInstalled}
+                        variant={gnomeExtInstalled ? "outline" : "default"}
+                        size="sm"
+                      >
+                        {isInstallingGnomeExt
+                          ? "Installing..."
+                          : gnomeExtInstalled
+                            ? "Installed ✓"
+                            : "Install Extension"}
+                      </Button>
+                      {gnomeExtInstalled && (
+                        <Button
+                          onClick={handleRemoveGnomeExtension}
+                          disabled={isInstallingGnomeExt}
+                          variant="destructive"
+                          size="sm"
+                        >
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {gnomeExtInstalled && !gnomeExtEnabled && (
+                    <p className="text-sm text-yellow-500">
+                      Extension installed but not enabled. Enable it in GNOME
+                      Extensions app or run: gnome-extensions enable
+                      focused-window-dbus@karaoketyper
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Audio Feedback */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.feedback = el;
+              }}
+            >
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Volume2 className="h-5 w-5 text-pink-400" />
+                  Audio Feedback
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label>Sound Notifications</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Play sounds when recording starts and stops
+                    </p>
+                  </div>
+                  <Switch
+                    checked={audioFeedbackEnabled}
+                    onCheckedChange={setAudioFeedbackEnabled}
+                  />
+                </div>
+
+                {audioFeedbackEnabled && (
+                  <div className="space-y-2">
+                    <Label>
+                      Volume ({Math.round(audioFeedbackVolume * 100)}%)
+                    </Label>
+                    <Slider
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={[audioFeedbackVolume]}
+                      onValueChange={([v]) => setAudioFeedbackVolume(v)}
+                    />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Model Unload Timeout */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.unload = el;
+              }}
+            >
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Clock className="h-5 w-5 text-teal-400" />
+                  Model Unload
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Unload after inactivity</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Free memory by unloading the STT model after a period of
+                    inactivity. The model reloads automatically on next use.
+                  </p>
+                  <Select
+                    value={modelUnloadTimeout}
+                    onValueChange={(value) =>
+                      setModelUnloadTimeout(
+                        value as "Never" | "Min5" | "Min15" | "Hour1",
+                      )
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Never">Never</SelectItem>
+                      <SelectItem value="Min5">After 5 minutes</SelectItem>
+                      <SelectItem value="Min15">After 15 minutes</SelectItem>
+                      <SelectItem value="Hour1">After 1 hour</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Ollama Integration */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.ollama = el;
+              }}
+            >
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Sparkles className="h-5 w-5 text-fuchsia-400" />
+                  Ollama Integration
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-1">
+                    <Label>Text Correction</Label>
+                    <p className="text-sm text-muted-foreground">
+                      Use a local LLM to correct grammar and spelling after
+                      transcription
+                    </p>
+                  </div>
+                  <Switch
+                    checked={ollamaEnabled}
+                    onCheckedChange={(enabled) => {
+                      setOllamaEnabled(enabled);
+                      if (enabled) void checkOllama();
+                    }}
+                  />
+                </div>
+
+                {ollamaEnabled && (
+                  <>
+                    <div className="space-y-2">
+                      <Label>Server URL</Label>
+                      <Input
+                        value={ollamaUrl}
+                        onChange={(e) => setOllamaUrl(e.target.value)}
+                        placeholder="http://localhost:11434"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Model</Label>
+                      <Input
+                        value={ollamaModel}
+                        onChange={(e) => setOllamaModel(e.target.value)}
+                        placeholder="mistral"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Badge
+                          variant={
+                            ollamaStatus?.available ? "default" : "secondary"
+                          }
+                          className={cn(
+                            ollamaStatus?.available && "bg-green-600",
+                          )}
+                        >
+                          {ollamaStatus?.available
+                            ? "Connected"
+                            : "Disconnected"}
+                        </Badge>
+                        <span className="text-sm text-muted-foreground">
+                          {ollamaStatus?.available
+                            ? `${ollamaStatus.model} ready`
+                            : "Ollama not reachable"}
+                        </span>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void checkOllama()}
+                      >
+                        <RefreshCw className="h-4 w-4 mr-1" />
+                        Test
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* About */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.about = el;
+              }}
+            >
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Info className="h-5 w-5 text-zinc-400" />
+                  About
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-muted-foreground">
+                  KaraokeTyper v0.1.0
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Offline voice dictation for{" "}
+                  {currentPlatform === "macos"
+                    ? "macOS"
+                    : currentPlatform === "windows"
+                      ? "Windows"
+                      : "Linux"}
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+        </ScrollArea>
+      </div>
 
       {/* Fixed Footer */}
       <div className="flex-none flex items-center justify-end gap-4 px-6 py-4 border-t border-border">
@@ -1096,7 +1533,9 @@ function SettingsWindow() {
           <span
             className={cn(
               "text-sm",
-              saveStatus.startsWith("Error") ? "text-destructive" : "text-green-500",
+              saveStatus.startsWith("Error")
+                ? "text-destructive"
+                : "text-green-500",
             )}
           >
             {saveStatus}

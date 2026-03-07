@@ -730,9 +730,13 @@ fn create_overlay_window(app_handle: &AppHandle) {
         .decorations(false)
         .always_on_top(true)
         .skip_taskbar(true)
-        .transparent(true)
         .focused(false)
         .visible(false);
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder = builder.transparent(true);
+    }
 
     // Position centered on primary monitor
     if let Ok(Some(monitor)) = app_handle.primary_monitor() {

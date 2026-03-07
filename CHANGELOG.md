@@ -5,6 +5,24 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.9] - 2026-03-07
+
+### Changed
+
+- **Overlay rewrite**: Overlay purement visuel (CSS pur, plus de Tailwind) avec fade-in/fade-out 300ms
+- **Overlay programmatique**: Fenetre overlay creee en Rust (WebviewWindowBuilder) au lieu de tauri.conf.json — shadow(false), focused(false), closable(false)
+- **Positionnement dynamique**: Overlay centre sur l'ecran du curseur a chaque affichage
+- **Paste cross-platform**: Detection intelligente des apps problematiques (Remmina, RustDesk) pour basculer entre clipboard+paste et direct typing via enigo
+- **enigo 0.6**: Migration de enigo 0.2 vers 0.6 (XTest protocol level au lieu de uinput kernel level)
+
+### Fixed
+
+- **Overlay double couche**: Suppression du flash entre etats recording/processing (mecanisme fade-in/fade-out identique a Handy)
+- **Overlay invisible**: globals.css (Tailwind) ecrasait la transparence de l'overlay — supprime de l'overlay entry point
+- **Overlay vol de focus**: Suppression de tous les set_focus() sur l'overlay
+- **Mutex poisoning**: Remplacement de tous les .unwrap() par .unwrap_or_else(|e| e.into_inner()) sur les locks audio et STT
+- **Paste Remmina**: Utilisation de enigo direct typing (XTest) pour les apps remote desktop au lieu de clipboard+paste
+
 ## [1.0.8] - 2026-03-05
 
 ### Added

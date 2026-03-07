@@ -245,7 +245,7 @@ impl WhisperSttEngine {
             let ctx = WhisperContext::new_with_params(model_path_str, cpu_params)
                 .map_err(|e| WhisperError::ModelLoadError(format!("{:?}", e)))?;
 
-            let mut guard = self.context.lock().unwrap();
+            let mut guard = self.context.lock().unwrap_or_else(|e| e.into_inner());
             *guard = Some(ctx);
 
             println!("[Whisper] Model loaded (CPU - GPU disabled): {}", self.model_path.display());
@@ -306,7 +306,7 @@ impl WhisperSttEngine {
             (ctx, GpuInitResult::cpu_by_choice())
         };
 
-        let mut guard = self.context.lock().unwrap();
+        let mut guard = self.context.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(ctx);
 
         println!("[Whisper] Model loaded ({}): {}", init_result.mode, self.model_path.display());
@@ -315,7 +315,7 @@ impl WhisperSttEngine {
     }
 
     pub fn unload(&self) {
-        let mut guard = self.context.lock().unwrap();
+        let mut guard = self.context.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_some() {
             *guard = None;
             crate::dev_log!("[STT] Model unloaded from memory");
@@ -323,7 +323,7 @@ impl WhisperSttEngine {
     }
 
     pub fn is_loaded(&self) -> bool {
-        self.context.lock().unwrap().is_some()
+        self.context.lock().unwrap_or_else(|e| e.into_inner()).is_some()
     }
 
     /// Transcribe audio data
@@ -334,7 +334,7 @@ impl WhisperSttEngine {
     /// # Returns
     /// Transcribed text or error
     pub fn transcribe(&self, audio_data: &[f32]) -> Result<String, WhisperError> {
-        let guard = self.context.lock().unwrap();
+        let guard = self.context.lock().unwrap_or_else(|e| e.into_inner());
         let ctx = guard
             .as_ref()
             .ok_or_else(|| WhisperError::TranscriptionError("Engine not initialized".to_string()))?;

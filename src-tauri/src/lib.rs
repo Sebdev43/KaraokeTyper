@@ -288,7 +288,7 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
     })?;
 
     dev_log!("[STT] ✓ {} engine initialized", engine.backend_name());
-    *state.stt_engine.lock().unwrap() = Some(engine);
+    *state.stt_engine.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
 
     // Initialize Voice Activity Detection (Silero VAD v4)
     {
@@ -301,7 +301,7 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
             match vad::SileroVad::new(&vad_model_path, 0.3) {
                 Ok(silero) => {
                     let smoothed = vad::SmoothedVad::new(Box::new(silero), 15, 15, 2);
-                    let capture = state.audio_capture.lock().unwrap();
+                    let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
                     capture.set_vad(smoothed);
                     dev_log!("[VAD] ✓ Silero VAD v4 initialized (threshold: 0.3)");
                 }
@@ -317,7 +317,7 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
     // Pre-open audio stream now (paused) so first PTT press is instant
     // Without this, first open_stream() takes ~2s (ALSA enumeration) and loses speech
     {
-        let capture = state.audio_capture.lock().unwrap();
+        let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
         let device_name = {
             let config = state.config.lock().unwrap();
             config.audio_device_name.clone()
@@ -407,7 +407,7 @@ pub(crate) async fn do_start_recording(
 
     // Open stream if not already open, then start recording
     {
-        let capture = state.audio_capture.lock().unwrap();
+        let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
 
         if !capture.is_stream_open() {
             let device_name = {
@@ -514,7 +514,7 @@ pub(crate) async fn do_stop_recording(
 
     // Stop recording (stream stays open/paused for instant next PTT)
     let audio_data = {
-        let capture = state.audio_capture.lock().unwrap();
+        let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
 
         // Pause stream — mic stops capturing but stays ready
         capture.stop_recording();
@@ -598,7 +598,7 @@ pub(crate) async fn do_stop_recording(
     // Use spawn_blocking to offload CPU-intensive Whisper transcription
     // Lazy reload is done INSIDE the lock to prevent race with idle watcher
     let transcription = tokio::task::spawn_blocking(move || {
-        let mut stt_engine = stt_engine_arc.lock().unwrap();
+        let mut stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
 
         // Lazy reload: if model was unloaded by idle watcher, re-initialize while holding lock
         let needs_reload = match stt_engine.as_ref() {
@@ -701,22 +701,218 @@ async fn show_settings(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+const OVERLAY_WIDTH: f64 = 300.0;
+const OVERLAY_HEIGHT: f64 = 80.0;
+
+/// Create the overlay window programmatically (like Handy).
+/// This gives full control over window properties that tauri.conf.json doesn't expose.
+fn create_overlay_window(app_handle: &AppHandle) {
+    use tauri::WebviewWindowBuilder;
+
+    let url = if cfg!(debug_assertions) {
+        // Dev mode: Vite serves overlay.html
+        tauri::WebviewUrl::External("http://localhost:1420/overlay.html".parse().unwrap())
+    } else {
+        // Production: built overlay.html in dist
+        tauri::WebviewUrl::App("overlay.html".into())
+    };
+
+    let mut builder = WebviewWindowBuilder::new(app_handle, "overlay", url)
+        .title("Recording")
+        .resizable(false)
+        .inner_size(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+        .shadow(false)
+        .maximizable(false)
+        .minimizable(false)
+        .closable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .transparent(true)
+        .focused(false)
+        .visible(false);
+
+    // Position centered on primary monitor
+    if let Ok(Some(monitor)) = app_handle.primary_monitor() {
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+        let pos = monitor.position();
+        let monitor_w = size.width as f64 / scale;
+        let monitor_x = pos.x as f64 / scale;
+        let monitor_y = pos.y as f64 / scale;
+
+        let x = monitor_x + (monitor_w - OVERLAY_WIDTH) / 2.0;
+        let y = monitor_y + 20.0;
+        builder = builder.position(x, y);
+    }
+
+    match builder.build() {
+        Ok(_window) => {
+            dev_log!("[OVERLAY] Window created successfully (hidden, {}x{})", OVERLAY_WIDTH, OVERLAY_HEIGHT);
+        }
+        Err(e) => {
+            dev_log!("[OVERLAY] Failed to create overlay window: {}", e);
+        }
+    }
+}
+
+/// Position the overlay on the monitor where the cursor is, then show it.
+/// Called from evdev_listener, keyboard_listener, and show_overlay command.
+pub(crate) fn show_overlay_with_state(app: &AppHandle, state: &str) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        // Reposition overlay centered on the monitor with the cursor
+        if let Ok(monitors) = app.available_monitors() {
+            // Try to find cursor position via xdotool (X11) or fallback
+            let cursor_pos = get_cursor_position();
+
+            if let Some((cx, cy)) = cursor_pos {
+                for monitor in &monitors {
+                    let pos = monitor.position();
+                    let size = monitor.size();
+                    let scale = monitor.scale_factor();
+
+                    // Check if cursor is within this monitor
+                    if cx >= pos.x
+                        && cx < pos.x + size.width as i32
+                        && cy >= pos.y
+                        && cy < pos.y + size.height as i32
+                    {
+                        // Center overlay horizontally, place near top
+                        let overlay_w = OVERLAY_WIDTH;
+                        let monitor_w = size.width as f64 / scale;
+                        let monitor_x = pos.x as f64 / scale;
+                        let monitor_y = pos.y as f64 / scale;
+
+                        let x = monitor_x + (monitor_w - overlay_w) / 2.0;
+                        let y = monitor_y + 20.0; // 20px from top of monitor
+
+                        let _ = window.set_position(tauri::Position::Logical(
+                            tauri::LogicalPosition { x, y },
+                        ));
+                        dev_log!("[OVERLAY] Positioned at ({}, {}) on monitor at ({}, {})", x, y, pos.x, pos.y);
+                        break;
+                    }
+                }
+            } else if let Some(primary) = monitors.first() {
+                // Fallback: center on primary monitor
+                let size = primary.size();
+                let scale = primary.scale_factor();
+                let pos = primary.position();
+                let overlay_w = OVERLAY_WIDTH;
+                let monitor_w = size.width as f64 / scale;
+                let monitor_x = pos.x as f64 / scale;
+                let monitor_y = pos.y as f64 / scale;
+
+                let x = monitor_x + (monitor_w - overlay_w) / 2.0;
+                let y = monitor_y + 20.0;
+
+                let _ = window.set_position(tauri::Position::Logical(
+                    tauri::LogicalPosition { x, y },
+                ));
+                dev_log!("[OVERLAY] Positioned on primary monitor at ({}, {})", x, y);
+            }
+        }
+
+        // Show window first (content is opacity:0 by default), then emit state
+        // React receives event → adds fade-in class → opacity transitions to 1
+        let _ = window.show();
+        let _ = window.emit("show-overlay", state);
+    }
+}
+
+/// Hide overlay: emit hide-overlay (triggers CSS fade-out), then hide window after 300ms
+pub(crate) fn hide_overlay_animated(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        // Emit event → React removes fade-in class → opacity transitions to 0
+        let _ = window.emit("hide-overlay", ());
+        // Hide window after fade-out animation completes (300ms)
+        let window_clone = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let _ = window_clone.hide();
+        });
+    }
+}
+
+/// Get cursor position (cross-platform)
+fn get_cursor_position() -> Option<(i32, i32)> {
+    #[cfg(target_os = "linux")]
+    {
+        // Try xdotool first
+        if let Ok(output) = std::process::Command::new("xdotool")
+            .args(["getmouselocation", "--shell"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut x = None;
+                let mut y = None;
+                for line in stdout.lines() {
+                    if let Some(val) = line.strip_prefix("X=") {
+                        x = val.parse().ok();
+                    } else if let Some(val) = line.strip_prefix("Y=") {
+                        y = val.parse().ok();
+                    }
+                }
+                if let (Some(x), Some(y)) = (x, y) {
+                    return Some((x, y));
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // CoreGraphics cursor position
+        if let Ok(output) = std::process::Command::new("sh")
+            .args(["-c", "python3 -c \"from Quartz import CGEventGetLocation, CGEventCreate; e=CGEventCreate(None); p=CGEventGetLocation(e); print(int(p.x), int(p.y))\""])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+                if parts.len() == 2 {
+                    if let (Ok(x), Ok(y)) = (parts[0].parse(), parts[1].parse()) {
+                        return Some((x, y));
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Win32 GetCursorPos
+        if let Ok(output) = std::process::Command::new("powershell")
+            .args(["-Command", "[System.Windows.Forms.Cursor]::Position | ForEach-Object { \"$($_.X) $($_.Y)\" }"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+                if parts.len() == 2 {
+                    if let (Ok(x), Ok(y)) = (parts[0].parse(), parts[1].parse()) {
+                        return Some((x, y));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn show_overlay(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("overlay") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-    }
+    show_overlay_with_state(&app, "recording");
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn hide_overlay(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("overlay") {
-        window.hide().map_err(|e| e.to_string())?;
-    }
+    hide_overlay_animated(&app);
     Ok(())
 }
 
@@ -768,9 +964,9 @@ async fn save_settings(
     if old_device != new_config.audio_device_name {
         let device_name = new_config.audio_device_name.clone();
         // Close old stream first (separate lock scope)
-        { state.audio_capture.lock().unwrap().close_stream(); }
+        { state.audio_capture.lock().unwrap_or_else(|e| e.into_inner()).close_stream(); }
         // Re-open on new device (separate lock scope — open_stream can be slow for BT)
-        match state.audio_capture.lock().unwrap().open_stream(device_name.as_deref()) {
+        match state.audio_capture.lock().unwrap_or_else(|e| e.into_inner()).open_stream(device_name.as_deref()) {
             Ok(()) => dev_log!("[AUDIO] ✅ Stream re-opened on new device: {:?}", device_name),
             Err(e) => dev_log!("[AUDIO] ⚠️ Stream re-open failed: {} — will retry on next PTT", e),
         }
@@ -786,7 +982,7 @@ async fn save_settings(
         stt_whisper::suppress_whisper_cpp_logs();
         match SttEngine::new(&new_config) {
             Ok(engine) => {
-                *state.stt_engine.lock().unwrap() = Some(engine);
+                *state.stt_engine.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
                 dev_log!("[STT] ✅ Engine reloaded successfully");
             }
             Err(e) => {
@@ -879,7 +1075,7 @@ async fn transcribe_audio(
     // Use spawn_blocking to offload CPU-intensive Whisper transcription
     // This prevents blocking the async executor
     let transcription = tokio::task::spawn_blocking(move || {
-        let stt_engine = stt_engine_arc.lock().unwrap();
+        let stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
         let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
         engine.transcribe(&padded_audio)
     })
@@ -1114,7 +1310,7 @@ async fn download_model(
     let config = state.config.lock().unwrap().clone();
     match SttEngine::new(&config) {
         Ok(engine) => {
-            let mut stt = state.stt_engine.lock().unwrap();
+            let mut stt = state.stt_engine.lock().unwrap_or_else(|e| e.into_inner());
             *stt = Some(engine);
             dev_log!("[STT] ✅ STT engine reinitialized with model: {}", model_name);
 
@@ -1263,6 +1459,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
         .setup(|app| {
+            // Create overlay window programmatically (like Handy)
+            // Not in tauri.conf.json — gives full control over window properties
+            create_overlay_window(app.handle());
+
             // Initialize STT engine at startup
             dev_log!("[STARTUP] Initializing STT engine...");
             let app_handle = app.handle().clone();

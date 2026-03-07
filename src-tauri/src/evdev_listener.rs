@@ -467,11 +467,8 @@ fn monitor_input_device(
                                 *state.recording_start_time.lock().unwrap() = Some(t0);
                             }
 
-                            // Show overlay
-                            if let Some(overlay_win) = app_handle.get_webview_window("overlay") {
-                                let _ = overlay_win.show();
-                                let _ = overlay_win.set_focus();
-                            }
+                            // Show overlay centered on cursor's monitor
+                            crate::show_overlay_with_state(&app_handle, "recording");
                             crate::dev_log!("[TIMING] T+{}ms: overlay shown", t0.elapsed().as_millis());
 
                             // Start recording
@@ -521,6 +518,10 @@ fn monitor_input_device(
                                     "[TIMING] T+{}ms: calling do_stop_recording()",
                                     t0.elapsed().as_millis()
                                 );
+
+                                // Switch overlay to processing state
+                                crate::show_overlay_with_state(&app_clone, "processing");
+
                                 match do_stop_recording(app_clone.clone(), &state).await {
                                     Ok(transcription) => {
                                         crate::dev_log!(
@@ -529,11 +530,7 @@ fn monitor_input_device(
                                             transcription
                                         );
                                         if !transcription.is_empty() {
-                                            if let Some(overlay_win) =
-                                                app_clone.get_webview_window("overlay")
-                                            {
-                                                let _ = overlay_win.hide();
-                                            }
+                                            crate::hide_overlay_animated(&app_clone);
                                             crate::dev_log!(
                                                 "[TIMING] T+{}ms: waiting 400ms for focus",
                                                 t0.elapsed().as_millis()
@@ -564,11 +561,7 @@ fn monitor_input_device(
                                                 "[TIMING] T+{}ms: no speech detected",
                                                 t0.elapsed().as_millis()
                                             );
-                                            if let Some(overlay_win) =
-                                                app_clone.get_webview_window("overlay")
-                                            {
-                                                let _ = overlay_win.hide();
-                                            }
+                                            crate::hide_overlay_animated(&app_clone);
                                         }
                                     }
                                     Err(e) => {
@@ -577,11 +570,7 @@ fn monitor_input_device(
                                             t0.elapsed().as_millis(),
                                             e
                                         );
-                                        if let Some(overlay_win) =
-                                            app_clone.get_webview_window("overlay")
-                                        {
-                                            let _ = overlay_win.hide();
-                                        }
+                                        crate::hide_overlay_animated(&app_clone);
                                     }
                                 }
                             });

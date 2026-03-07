@@ -521,7 +521,35 @@ impl TextOutput {
 
         crate::dev_log!("[OUTPUT] Typing text: '{}'", text);
 
-        // Set clipboard text — use wl-copy on Wayland (persistent daemon) or arboard on X11
+        // Strategy: clipboard + paste for speed, direct typing for problematic apps
+        // Apps like Remmina don't handle X11 clipboard paste correctly.
+        // For those, type text directly via enigo (character by character).
+        #[cfg(target_os = "linux")]
+        {
+            if Self::needs_direct_typing() {
+                crate::dev_log!("[OUTPUT] App requires direct typing (clipboard incompatible)");
+                let t1 = std::time::Instant::now();
+                match Self::try_enigo_type_text(text) {
+                    Ok(()) => {
+                        crate::dev_log!(
+                            "[OUTPUT_TIMING] enigo direct type: {}ms",
+                            t1.elapsed().as_millis()
+                        );
+                        crate::dev_log!(
+                            "[OUTPUT_TIMING] Total type_text: {}ms",
+                            t0.elapsed().as_millis()
+                        );
+                        crate::dev_log!("[OUTPUT] ✅ Text typed successfully (enigo direct)");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        crate::dev_log!("[OUTPUT] ⚠️ enigo direct typing failed: {}, falling back to clipboard", e);
+                    }
+                }
+            }
+        }
+
+        // Default: clipboard + paste shortcut (fast)
         let t1 = std::time::Instant::now();
         self.set_clipboard_text(text)?;
         crate::dev_log!(
@@ -648,13 +676,13 @@ impl TextOutput {
         let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
 
         if session_type == "wayland" {
-            // Try wtype first (best Wayland integration)
+            // Wayland: try wtype first (Wayland virtual-keyboard protocol)
             if Self::try_wtype_paste(is_terminal)? {
                 return Ok(());
             }
 
             // Fallback to uinput (kernel-level, works on both X11 and Wayland)
-            crate::dev_log!("[OUTPUT] wtype failed, trying uinput...");
+            crate::dev_log!("[OUTPUT] wtype not available, trying uinput...");
             match Self::try_uinput_paste(is_terminal) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -665,9 +693,136 @@ impl TextOutput {
             // Last resort: ydotool
             Self::try_ydotool_paste(is_terminal)
         } else {
-            // X11: use uinput directly
+            // X11: try enigo first (X11 XTest protocol — works with ALL apps including GTK/VTE)
+            // This is a pure Rust solution, no external tools needed
+            match Self::try_enigo_paste(is_terminal) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    crate::dev_log!("[OUTPUT] enigo failed: {}, trying uinput...", e);
+                }
+            }
+            // Fallback to uinput (kernel-level)
             Self::try_uinput_paste(is_terminal)
         }
+    }
+
+    /// Check if the focused app needs direct typing instead of clipboard paste.
+    /// Remote desktop apps (Remmina, RustDesk, AnyDesk) don't handle clipboard paste well.
+    /// Cross-platform: uses process list detection, no GNOME/KDE dependency.
+    #[cfg(target_os = "linux")]
+    fn needs_direct_typing() -> bool {
+        // Try GNOME extension first (most reliable on GNOME)
+        if let Some(wm_class) = Self::get_focused_wm_class() {
+            let direct_typing_apps = ["remmina", "rustdesk", "anydesk", "vinagre"];
+            for app in direct_typing_apps {
+                if wm_class.contains(app) {
+                    crate::dev_log!("[OUTPUT] Detected '{}' — needs direct typing", app);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Get the WM_CLASS of the focused window (Linux only).
+    /// Tries multiple methods for cross-DE compatibility.
+    #[cfg(target_os = "linux")]
+    fn get_focused_wm_class() -> Option<String> {
+        // Method 1: KaraokeTyper GNOME extension (GNOME)
+        let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
+        if let Ok(output) = std::process::Command::new("gdbus")
+            .args([
+                "call", "--session", "--dest", "org.gnome.Shell",
+                "--object-path", "/org/karaoketyper/FocusedWindow",
+                "--method", "org.karaoketyper.FocusedWindow.GetFocusedWindow",
+            ])
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
+            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+                return Some(stdout.to_string());
+            }
+        }
+
+        // Method 2: xdotool (X11, works on any DE)
+        if let Ok(output) = std::process::Command::new("xdotool")
+            .args(["getactivewindow", "getwindowclassname"])
+            .output()
+        {
+            if output.status.success() {
+                let class = String::from_utf8_lossy(&output.stdout).trim().to_lowercase();
+                if !class.is_empty() {
+                    return Some(class);
+                }
+            }
+        }
+
+        // Method 3: xprop (X11 fallback)
+        if let Ok(output) = std::process::Command::new("sh")
+            .args(["-c", "xprop -id $(xprop -root _NET_ACTIVE_WINDOW | awk '{print $5}') WM_CLASS 2>/dev/null"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+                return Some(stdout.to_string());
+            }
+        }
+
+        None
+    }
+
+    /// Type text directly via enigo (XTest on X11, platform APIs elsewhere).
+    /// Like Handy's "Direct" mode — bypasses clipboard entirely.
+    /// Works with ALL apps: terminals, GTK (Remmina), browsers, etc.
+    fn try_enigo_type_text(text: &str) -> Result<(), String> {
+        use enigo::{Enigo, Keyboard, Settings};
+
+        let mut enigo = Enigo::new(&Settings::default())
+            .map_err(|e| format!("Failed to create enigo: {}", e))?;
+
+        crate::dev_log!("[OUTPUT] enigo: typing {} chars directly...", text.len());
+        enigo.text(text)
+            .map_err(|e| format!("enigo text() failed: {}", e))?;
+
+        crate::dev_log!("[OUTPUT] ✅ enigo direct typing complete");
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn try_enigo_paste(is_terminal: bool) -> Result<(), String> {
+        use enigo::{Enigo, Key, Keyboard, Settings};
+
+        let mut enigo = Enigo::new(&Settings::default())
+            .map_err(|e| format!("Failed to create enigo: {}", e))?;
+
+        if is_terminal {
+            crate::dev_log!("[OUTPUT] Using enigo for terminal paste (Ctrl+Shift+V)...");
+            enigo.key(Key::Control, enigo::Direction::Press)
+                .map_err(|e| format!("enigo Ctrl press: {}", e))?;
+            enigo.key(Key::Shift, enigo::Direction::Press)
+                .map_err(|e| format!("enigo Shift press: {}", e))?;
+            enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+                .map_err(|e| format!("enigo V click: {}", e))?;
+            thread::sleep(Duration::from_millis(50));
+            enigo.key(Key::Shift, enigo::Direction::Release)
+                .map_err(|e| format!("enigo Shift release: {}", e))?;
+            enigo.key(Key::Control, enigo::Direction::Release)
+                .map_err(|e| format!("enigo Ctrl release: {}", e))?;
+        } else {
+            crate::dev_log!("[OUTPUT] Using enigo for paste (Ctrl+V)...");
+            enigo.key(Key::Control, enigo::Direction::Press)
+                .map_err(|e| format!("enigo Ctrl press: {}", e))?;
+            enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+                .map_err(|e| format!("enigo V click: {}", e))?;
+            thread::sleep(Duration::from_millis(50));
+            enigo.key(Key::Control, enigo::Direction::Release)
+                .map_err(|e| format!("enigo Ctrl release: {}", e))?;
+        }
+
+        crate::dev_log!("[OUTPUT] ✅ enigo paste sent successfully");
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
@@ -770,6 +925,15 @@ impl TextOutput {
                 crate::dev_log!("[OUTPUT] 🖥️ Terminal detected: {} (matched '{}')", wm_class, term);
                 return true;
             }
+        }
+
+        // Remmina: treat SSH sessions as terminal (title usually contains connection name)
+        // Remmina SSH = terminal (Ctrl+Shift+V), Remmina RDP/VNC = desktop (Ctrl+V)
+        if wm_class == "remmina" || wm_class.contains("remmina") {
+            // In Remmina, SSH sessions use Ctrl+Shift+V for paste
+            // We default to terminal mode since paste via Ctrl+V rarely works in Remmina
+            crate::dev_log!("[OUTPUT] 🖥️ Remmina detected — using terminal paste (Ctrl+Shift+V)");
+            return true;
         }
 
         // VS Code / code editors with integrated terminal

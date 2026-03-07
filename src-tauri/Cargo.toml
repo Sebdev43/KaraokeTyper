@@ -1,6 +1,6 @@
 [package]
 name = "karaoketyper"
-version = "1.0.9"
+version = "1.1.0"
 description = "Offline cross-platform voice dictation with push-to-talk"
 authors = ["KaraokeTyper Team"]
 edition = "2021"

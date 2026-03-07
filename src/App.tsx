@@ -15,7 +15,9 @@ interface StatusEvent {
 
 function App() {
   const [status, setStatus] = useState<string>("idle");
-  const [message, setMessage] = useState<string>("Press Ctrl+Space to start");
+  const [message, setMessage] = useState<string>(
+    "Appuyez sur Ctrl+Espace pour commencer",
+  );
   const [transcription, setTranscription] = useState<string>("");
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
   const [isRecording, setIsRecording] = useState<boolean>(false);
@@ -27,7 +29,7 @@ function App() {
         const result = await commands.initStt();
         if (result.status === "ok") {
           setIsInitialized(true);
-          setMessage("Ready! Press Ctrl+Space to dictate");
+          setMessage("Prêt ! Appuyez sur Ctrl+Espace pour dicter");
         } else {
           setMessage(`Error: ${result.error}`);
           console.error("Failed to initialize STT:", result.error);
@@ -119,13 +121,13 @@ function App() {
   const getStatusLabel = () => {
     switch (status) {
       case "recording":
-        return "Recording";
+        return "Enregistrement";
       case "processing":
-        return "Processing";
+        return "Traitement";
       case "idle":
-        return "Ready";
+        return "Prêt";
       default:
-        return "Unknown";
+        return "Inconnu";
     }
   };
 
@@ -137,10 +139,17 @@ function App() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Mic className="h-5 w-5 text-primary" />
-              <span className="font-semibold text-foreground">KaraokeTyper</span>
+              <span className="font-semibold text-foreground">
+                KaraokeTyper
+              </span>
             </div>
-            <Badge variant={getStatusVariant()} className={cn(isRecording && "animate-pulse")}>
-              {status === "processing" && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+            <Badge
+              variant={getStatusVariant()}
+              className={cn(isRecording && "animate-pulse")}
+            >
+              {status === "processing" && (
+                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+              )}
               {getStatusLabel()}
             </Badge>
           </div>
@@ -158,12 +167,12 @@ function App() {
             {isRecording ? (
               <>
                 <Square className="h-4 w-4 mr-2" />
-                Stop Recording
+                Arrêter
               </>
             ) : (
               <>
                 <Mic className="h-4 w-4 mr-2" />
-                Start Recording
+                Enregistrer
               </>
             )}
           </Button>
@@ -171,7 +180,9 @@ function App() {
           {/* Transcription */}
           {transcription && (
             <div className="p-3 bg-muted rounded-md">
-              <p className="text-xs text-muted-foreground mb-1">Last transcription:</p>
+              <p className="text-xs text-muted-foreground mb-1">
+                Dernière transcription :
+              </p>
               <p className="text-sm text-foreground">{transcription}</p>
             </div>
           )}

@@ -5,6 +5,22 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-03-07
+
+### Added
+
+- **Contrôle du volume des sons**: Bouton mute avec mémoire du volume précédent dans les paramètres
+
+### Changed
+
+- **Interface 100% française**: Traduction complète de toutes les strings UI (48+ strings) — paramètres, modèles, système, Ollama, à propos
+- **Version corrigée dans À propos**: Affiche désormais la version réelle (v1.1.0) au lieu de v0.1.0
+
+### Fixed
+
+- **Debug WAV en production**: Sauvegarde audio debug (`/tmp/karaoketyper_debug.wav`) désormais gatée par `#[cfg(debug_assertions)]` — n'écrit plus en release
+- **CSP sécurisée**: Remplacement de `csp: null` par une politique restrictive (`default-src 'self'`)
+
 ## [1.0.9] - 2026-03-07
 
 ### Changed

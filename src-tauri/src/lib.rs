@@ -530,19 +530,21 @@ pub(crate) async fn do_stop_recording(
         audio_data.len() as f32 / 16000.0
     );
 
-    // DEBUG: Save audio to file for inspection (cross-platform temp dir)
-    let debug_path = std::env::temp_dir().join("karaoketyper_debug.wav");
-    if let Err(e) = save_debug_wav(&audio_data, &debug_path) {
-        dev_log!("[DEBUG] Failed to save debug WAV: {}", e);
-    } else {
-        dev_log!(
-            "[DEBUG] 🎵 Audio saved to: {} ({} samples, {:.2}s)",
-            debug_path.display(),
-            audio_data.len(),
-            audio_data.len() as f32 / 16000.0
-        );
+    // DEBUG: Save audio to file for inspection (dev builds only)
+    #[cfg(debug_assertions)]
+    {
+        let debug_path = std::env::temp_dir().join("karaoketyper_debug.wav");
+        if let Err(e) = save_debug_wav(&audio_data, &debug_path) {
+            dev_log!("[DEBUG] Failed to save debug WAV: {}", e);
+        } else {
+            dev_log!(
+                "[DEBUG] Audio saved to: {} ({} samples, {:.2}s)",
+                debug_path.display(),
+                audio_data.len(),
+                audio_data.len() as f32 / 16000.0
+            );
+        }
     }
-    dev_log!("[TIMING] T+{}ms: debug WAV saved", t0.elapsed().as_millis());
 
     if audio_data.is_empty() {
         app_handle

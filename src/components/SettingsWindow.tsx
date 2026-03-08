@@ -375,12 +375,9 @@ function SettingsWindow() {
   ]);
 
   useEffect(() => {
-    const unlistenProgress = listen<DownloadProgress>(
-      "model-download-progress",
-      (event) => {
-        setDownloadProgress(event.payload.percent);
-      },
-    );
+    const unlistenProgress = listen<DownloadProgress>("model-download-progress", (event) => {
+      setDownloadProgress(event.payload.percent);
+    });
 
     const unlistenComplete = listen("model-download-complete", () => {
       // Refresh models list when download completes
@@ -417,8 +414,7 @@ function SettingsWindow() {
     if (key === " ") key = "Space";
     else if (key.length === 1) key = key.toUpperCase();
 
-    if (key === "Control" || key === "Alt" || key === "Shift" || key === "Meta")
-      return;
+    if (key === "Control" || key === "Alt" || key === "Shift" || key === "Meta") return;
 
     const newShortcut = [...modifiers, key].join("+");
     setShortcut(newShortcut);
@@ -594,13 +590,10 @@ function SettingsWindow() {
   };
 
   const handleRemoveGnomeExtension = async () => {
-    const confirmed = await confirm(
-      "Supprimer l'extension de détection de terminal ?",
-      {
-        title: "Supprimer Extension",
-        kind: "warning",
-      },
-    );
+    const confirmed = await confirm("Supprimer l'extension de détection de terminal ?", {
+      title: "Supprimer Extension",
+      kind: "warning",
+    });
 
     if (!confirmed) return;
 
@@ -805,19 +798,14 @@ function SettingsWindow() {
                   <div className="flex gap-2">
                     <Select
                       value={String(selectedDevice)}
-                      onValueChange={(value) =>
-                        setSelectedDevice(Number(value))
-                      }
+                      onValueChange={(value) => setSelectedDevice(Number(value))}
                     >
                       <SelectTrigger className="flex-1">
                         <SelectValue placeholder="Sélectionner un micro" />
                       </SelectTrigger>
                       <SelectContent>
                         {audioDevices.map((device) => (
-                          <SelectItem
-                            key={device.index}
-                            value={String(device.index)}
-                          >
+                          <SelectItem key={device.index} value={String(device.index)}>
                             {device.name}
                           </SelectItem>
                         ))}
@@ -829,12 +817,7 @@ function SettingsWindow() {
                       onClick={handleRefreshDevices}
                       disabled={isRefreshing}
                     >
-                      <RefreshCw
-                        className={cn(
-                          "h-4 w-4",
-                          isRefreshing && "animate-spin",
-                        )}
-                      />
+                      <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
                     </Button>
                   </div>
                 </div>
@@ -874,8 +857,7 @@ function SettingsWindow() {
                     )}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Cliquez, puis appuyez sur une touche ou un bouton souris
-                    (Mouse4, Mouse5...)
+                    Cliquez, puis appuyez sur une touche ou un bouton souris (Mouse4, Mouse5...)
                   </p>
                 </div>
               </CardContent>
@@ -913,14 +895,12 @@ function SettingsWindow() {
                       ))}
                     </SelectContent>
                   </Select>
-                  {model &&
-                    !installedModels.find((m) => m.name === model)
-                      ?.installed && (
-                      <p className="text-xs text-destructive">
-                        ⚠️ Le modèle "{model}" n'est pas installé.
-                        Téléchargez-le dans "Modèles" ci-dessous.
-                      </p>
-                    )}
+                  {model && !installedModels.find((m) => m.name === model)?.installed && (
+                    <p className="text-xs text-destructive">
+                      ⚠️ Le modèle "{model}" n'est pas installé. Téléchargez-le dans "Modèles"
+                      ci-dessous.
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">
@@ -966,20 +946,14 @@ function SettingsWindow() {
                   <div className="space-y-1">
                     <Label>GPU détecté</Label>
                     <p className="text-sm text-muted-foreground">
-                      {gpuInfo
-                        ? gpuInfo.device_name || "Aucun GPU détecté"
-                        : "Détection..."}
+                      {gpuInfo ? gpuInfo.device_name || "Aucun GPU détecté" : "Détection..."}
                       {gpuInfo?.vram_mb
                         ? ` (${gpuInfo.vram_mb >= 1024 ? `${(gpuInfo.vram_mb / 1024).toFixed(1)} GB` : `${gpuInfo.vram_mb} MB`} VRAM)`
                         : ""}
                     </p>
                   </div>
                   <Badge variant={gpuInfo?.available ? "default" : "secondary"}>
-                    {gpuInfo
-                      ? gpuInfo.available
-                        ? gpuInfo.backend
-                        : "CPU seul"
-                      : "..."}
+                    {gpuInfo ? (gpuInfo.available ? gpuInfo.backend : "CPU seul") : "..."}
                   </Badge>
                 </div>
 
@@ -988,9 +962,7 @@ function SettingsWindow() {
                   <div className="p-2 rounded bg-cyan-500/10 border border-cyan-500/30">
                     <p className="text-sm text-cyan-400">
                       Modèle max recommandé pour votre GPU :{" "}
-                      <span className="font-medium">
-                        {gpuInfo.recommended_model}
-                      </span>
+                      <span className="font-medium">{gpuInfo.recommended_model}</span>
                     </p>
                     {(() => {
                       const vramTable: Record<string, number> = {
@@ -1002,14 +974,12 @@ function SettingsWindow() {
                       };
                       const currentVram = vramTable[model] ?? 0;
                       const isTooLarge =
-                        gpuInfo.vram_mb !== null &&
-                        currentVram > gpuInfo.vram_mb * 0.7;
+                        gpuInfo.vram_mb !== null && currentVram > gpuInfo.vram_mb * 0.7;
                       if (useGpuAcceleration && isTooLarge) {
                         return (
                           <p className="text-xs text-yellow-400 mt-1">
-                            Votre modèle actuel ({model}) risque de dépasser la
-                            capacité VRAM et provoquer des crashs. Essayez{" "}
-                            {gpuInfo.recommended_model}.
+                            Votre modèle actuel ({model}) risque de dépasser la capacité VRAM et
+                            provoquer des crashs. Essayez {gpuInfo.recommended_model}.
                           </p>
                         );
                       }
@@ -1028,14 +998,10 @@ function SettingsWindow() {
                       </p>
                     </div>
                     <Badge
-                      variant={
-                        gpuStatus.mode === "gpu" ? "default" : "secondary"
-                      }
+                      variant={gpuStatus.mode === "gpu" ? "default" : "secondary"}
                       className={cn(
                         gpuStatus.mode === "gpu" && "bg-green-600",
-                        gpuStatus.mode === "cpu" &&
-                          gpuStatus.fallback_reason &&
-                          "bg-yellow-600",
+                        gpuStatus.mode === "cpu" && gpuStatus.fallback_reason && "bg-yellow-600",
                       )}
                     >
                       {gpuStatus.mode === "gpu" ? "GPU actif" : "Mode CPU"}
@@ -1085,16 +1051,14 @@ function SettingsWindow() {
                   <Switch
                     checked={useGpuAcceleration}
                     onCheckedChange={setUseGpuAcceleration}
-                    disabled={
-                      !gpuInfo?.available || gpuInfo?.disabled_by_failures
-                    }
+                    disabled={!gpuInfo?.available || gpuInfo?.disabled_by_failures}
                   />
                 </div>
 
                 {!gpuInfo?.available && (
                   <p className="text-xs text-muted-foreground">
-                    Accélération GPU non disponible. Compilé sans support GPU ou
-                    aucun GPU compatible détecté.
+                    Accélération GPU non disponible. Compilé sans support GPU ou aucun GPU
+                    compatible détecté.
                   </p>
                 )}
               </CardContent>
@@ -1114,8 +1078,7 @@ function SettingsWindow() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-sm text-muted-foreground">
-                  Télécharger les modèles Whisper GGML pour la reconnaissance
-                  vocale
+                  Télécharger les modèles Whisper GGML pour la reconnaissance vocale
                 </p>
 
                 {installedModels.map((modelInfo) => (
@@ -1125,9 +1088,7 @@ function SettingsWindow() {
                   >
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="font-medium">
-                          {modelInfo.display_name}
-                        </span>
+                        <span className="font-medium">{modelInfo.display_name}</span>
                         {modelInfo.installed && (
                           <Badge variant="default" className="text-xs">
                             Installé
@@ -1157,9 +1118,7 @@ function SettingsWindow() {
                       variant={modelInfo.installed ? "outline" : "default"}
                       size="sm"
                       onClick={() => handleDownloadModel(modelInfo.name)}
-                      disabled={
-                        modelInfo.installed || downloadingModel !== null
-                      }
+                      disabled={modelInfo.installed || downloadingModel !== null}
                     >
                       {modelInfo.installed ? "Installé ✓" : "Télécharger"}
                     </Button>
@@ -1193,26 +1152,16 @@ function SettingsWindow() {
 
                     <div className="flex flex-col gap-2">
                       <div className="flex items-center gap-2">
-                        <Badge
-                          variant={
-                            permissionsInstalled ? "default" : "secondary"
-                          }
-                        >
+                        <Badge variant={permissionsInstalled ? "default" : "secondary"}>
                           {permissionsInstalled ? "✓" : "○"}
                         </Badge>
-                        <span className="text-sm">
-                          Appui pour parler (evdev)
-                        </span>
+                        <span className="text-sm">Appui pour parler (evdev)</span>
                       </div>
                       <div className="flex items-center gap-2">
-                        <Badge
-                          variant={uinputAvailable ? "default" : "secondary"}
-                        >
+                        <Badge variant={uinputAvailable ? "default" : "secondary"}>
                           {uinputAvailable ? "✓" : "○"}
                         </Badge>
-                        <span className="text-sm">
-                          Saisie de texte (uinput)
-                        </span>
+                        <span className="text-sm">Saisie de texte (uinput)</span>
                       </div>
                     </div>
 
@@ -1245,9 +1194,7 @@ function SettingsWindow() {
                         {autostart ? "Activé" : "Désactivé"}
                       </Badge>
                       <span className="text-sm">
-                        {autostart
-                          ? "Démarre à la connexion"
-                          : "Démarrage manuel"}
+                        {autostart ? "Démarre à la connexion" : "Démarrage manuel"}
                       </span>
                     </div>
                     <Switch
@@ -1275,19 +1222,14 @@ function SettingsWindow() {
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <p className="text-sm text-muted-foreground">
-                    Extension GNOME Shell pour la détection automatique des
-                    terminaux. Utilise Ctrl+Maj+V dans les terminaux et Ctrl+V
-                    ailleurs.
+                    Extension GNOME Shell pour la détection automatique des terminaux. Utilise
+                    Ctrl+Maj+V dans les terminaux et Ctrl+V ailleurs.
                   </p>
 
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Badge
-                        variant={
-                          gnomeExtInstalled && gnomeExtEnabled
-                            ? "default"
-                            : "secondary"
-                        }
+                        variant={gnomeExtInstalled && gnomeExtEnabled ? "default" : "secondary"}
                       >
                         {gnomeExtInstalled && gnomeExtEnabled
                           ? "Active"
@@ -1330,9 +1272,8 @@ function SettingsWindow() {
 
                   {gnomeExtInstalled && !gnomeExtEnabled && (
                     <p className="text-sm text-yellow-500">
-                      Extension installée mais non activée. Activez-la dans
-                      l'application Extensions GNOME ou lancez :
-                      gnome-extensions enable focused-window-dbus@karaoketyper
+                      Extension installée mais non activée. Activez-la dans l'application Extensions
+                      GNOME ou lancez : gnome-extensions enable focused-window-dbus@karaoketyper
                     </p>
                   )}
                 </CardContent>
@@ -1375,17 +1316,11 @@ function SettingsWindow() {
                             lastVolumeRef.current = audioFeedbackVolume;
                             setAudioFeedbackVolume(0);
                           } else {
-                            setAudioFeedbackVolume(
-                              lastVolumeRef.current || 0.7,
-                            );
+                            setAudioFeedbackVolume(lastVolumeRef.current || 0.7);
                           }
                         }}
                         className="text-muted-foreground hover:text-foreground transition-colors"
-                        title={
-                          audioFeedbackVolume > 0
-                            ? "Couper le son"
-                            : "Rétablir le son"
-                        }
+                        title={audioFeedbackVolume > 0 ? "Couper le son" : "Rétablir le son"}
                       >
                         {audioFeedbackVolume > 0 ? (
                           <Volume2 className="h-4 w-4" />
@@ -1425,15 +1360,13 @@ function SettingsWindow() {
                 <div className="space-y-2">
                   <Label>Décharger après inactivité</Label>
                   <p className="text-sm text-muted-foreground">
-                    Libérer la mémoire en déchargeant le modèle STT après une
-                    période d'inactivité. Le modèle se recharge automatiquement.
+                    Libérer la mémoire en déchargeant le modèle STT après une période d'inactivité.
+                    Le modèle se recharge automatiquement.
                   </p>
                   <Select
                     value={modelUnloadTimeout}
                     onValueChange={(value) =>
-                      setModelUnloadTimeout(
-                        value as "Never" | "Min5" | "Min15" | "Hour1",
-                      )
+                      setModelUnloadTimeout(value as "Never" | "Min5" | "Min15" | "Hour1")
                     }
                   >
                     <SelectTrigger>
@@ -1467,8 +1400,8 @@ function SettingsWindow() {
                   <div className="space-y-1">
                     <Label>Correction de texte</Label>
                     <p className="text-sm text-muted-foreground">
-                      Utiliser un LLM local pour corriger la grammaire et
-                      l'orthographe après la transcription
+                      Utiliser un LLM local pour corriger la grammaire et l'orthographe après la
+                      transcription
                     </p>
                   </div>
                   <Switch
@@ -1503,12 +1436,8 @@ function SettingsWindow() {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Badge
-                          variant={
-                            ollamaStatus?.available ? "default" : "secondary"
-                          }
-                          className={cn(
-                            ollamaStatus?.available && "bg-green-600",
-                          )}
+                          variant={ollamaStatus?.available ? "default" : "secondary"}
+                          className={cn(ollamaStatus?.available && "bg-green-600")}
                         >
                           {ollamaStatus?.available ? "Connecté" : "Déconnecté"}
                         </Badge>
@@ -1518,11 +1447,7 @@ function SettingsWindow() {
                             : "Ollama non joignable"}
                         </span>
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => void checkOllama()}
-                      >
+                      <Button variant="outline" size="sm" onClick={() => void checkOllama()}>
                         <RefreshCw className="h-4 w-4 mr-1" />
                         Tester
                       </Button>
@@ -1544,9 +1469,7 @@ function SettingsWindow() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  KaraokeTyper v1.1.0
-                </p>
+                <p className="text-sm text-muted-foreground">KaraokeTyper v1.1.0</p>
                 <p className="text-sm text-muted-foreground">
                   Dictée vocale hors-ligne pour{" "}
                   {currentPlatform === "macos"
@@ -1567,9 +1490,7 @@ function SettingsWindow() {
           <span
             className={cn(
               "text-sm",
-              saveStatus.startsWith("Error")
-                ? "text-destructive"
-                : "text-green-500",
+              saveStatus.startsWith("Error") ? "text-destructive" : "text-green-500",
             )}
           >
             {saveStatus}

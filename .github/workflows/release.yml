@@ -233,7 +233,9 @@ jobs:
           CXXFLAGS: '-mmacosx-version-min=10.15'
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          args: --features gpu-metal
+          tauriScript: npm run tauri
+          configPath: src-tauri/tauri.conf.json
+          args: --config 'build.features=["gpu-metal"]' --features gpu-metal
 
   publish-release:
     if: always() && needs.create-release.result == 'success' && (needs.build-linux.result == 'success' || needs.build-windows.result == 'success' || needs.build-macos.result == 'success')

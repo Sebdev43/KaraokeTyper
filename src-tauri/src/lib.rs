@@ -127,12 +127,13 @@ impl SttEngine {
     }
 }
 
-// CPAL: stream opened on first PTT (slow ~1-2s), kept paused between recordings (instant PTT)
+// Worker-thread audio capture: stream opened in background thread, commands via mpsc channel.
+// Eliminates PTT race conditions — start/stop are queued and processed after stream is ready.
 pub(crate) struct AppState {
     audio_capture: Arc<Mutex<AudioCapture>>,
     stt_engine: Arc<Mutex<Option<SttEngine>>>,
     config: Arc<Mutex<AppConfig>>,
-    recording_ready: Arc<std::sync::atomic::AtomicBool>,
+    /// Timestamp of the hotkey press — used for [TIMING] logs
     pub recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
     last_stt_activity: Arc<std::sync::atomic::AtomicU64>,
     idle_watcher_shutdown: Arc<std::sync::atomic::AtomicBool>,
@@ -144,7 +145,6 @@ impl Default for AppState {
             audio_capture: Arc::new(Mutex::new(AudioCapture::new(16000))),
             stt_engine: Arc::new(Mutex::new(None)),
             config: Arc::new(Mutex::new(AppConfig::load().unwrap_or_default())),
-            recording_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             recording_start_time: Arc::new(Mutex::new(None)),
             last_stt_activity: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             idle_watcher_shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -314,17 +314,17 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
         }
     }
 
-    // Pre-open audio stream now (paused) so first PTT press is instant
-    // Without this, first open_stream() takes ~2s (ALSA enumeration) and loses speech
+    // Pre-open audio worker now so first PTT press is instant.
+    // The worker thread handles ALSA enumeration (~2s) in the background.
     {
-        let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
+        let mut capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
         let device_name = {
             let config = state.config.lock().unwrap();
             config.audio_device_name.clone()
         };
-        dev_log!("[AUDIO] Pre-opening audio stream...");
+        dev_log!("[AUDIO] Spawning audio worker (pre-open)...");
         match capture.open_stream(device_name.as_deref()) {
-            Ok(()) => dev_log!("[AUDIO] ✅ Stream pre-opened (paused) — first PTT will be instant"),
+            Ok(()) => dev_log!("[AUDIO] ✅ Audio worker spawned — stream opening in background"),
             Err(e) => dev_log!("[AUDIO] ⚠️ Pre-open failed: {} — will retry on first PTT", e),
         }
     }
@@ -377,14 +377,15 @@ async fn start_recording(app_handle: AppHandle, state: State<'_, AppState>) -> R
     do_start_recording(app_handle, &state).await
 }
 
-/// Helper function for start_recording - can be called from other modules
-/// Stream is already open — this just toggles the recording flag (instant)
+/// Helper function for start_recording - can be called from other modules.
+///
+/// Worker-thread architecture: `open_stream()` returns instantly (spawns a thread).
+/// `start_recording()` sends a command that is queued and processed only after the
+/// stream is ready. No race condition possible.
 pub(crate) async fn do_start_recording(
     app_handle: AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
-
     let t0 = state
         .recording_start_time
         .lock()
@@ -405,26 +406,25 @@ pub(crate) async fn do_start_recording(
         )
         .ok();
 
-    // Open stream if not already open, then start recording
+    // Open worker if not already running, then send Start command
     {
-        let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
+        let mut capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
 
         if !capture.is_stream_open() {
             let device_name = {
                 let config = state.config.lock().unwrap();
                 config.audio_device_name.clone()
             };
-            dev_log!("[TIMING] T+{}ms: Opening audio stream...", t0.elapsed().as_millis());
+            dev_log!("[TIMING] T+{}ms: Spawning audio worker...", t0.elapsed().as_millis());
             capture.open_stream(device_name.as_deref())?;
-            dev_log!("[TIMING] T+{}ms: Stream opened", t0.elapsed().as_millis());
+            dev_log!("[TIMING] T+{}ms: Worker spawned (stream opening in background)", t0.elapsed().as_millis());
         } else {
-            dev_log!("[TIMING] T+{}ms: Stream already open (instant)", t0.elapsed().as_millis());
+            dev_log!("[TIMING] T+{}ms: Worker already running (instant)", t0.elapsed().as_millis());
         }
 
+        // Send Start command — queued in channel, processed after stream is ready
         capture.start_recording()?;
     }
-
-    state.recording_ready.store(true, Ordering::SeqCst);
 
     // Play start sound (non-blocking, in separate thread)
     {
@@ -436,7 +436,7 @@ pub(crate) async fn do_start_recording(
     }
 
     dev_log!(
-        "[TIMING] T+{}ms: Recording started",
+        "[TIMING] T+{}ms: Start command sent",
         t0.elapsed().as_millis()
     );
     Ok(())
@@ -451,13 +451,15 @@ async fn stop_recording(
     do_stop_recording(app_handle, &state).await
 }
 
-/// Helper function for stop_recording - can be called from other modules
+/// Helper function for stop_recording - can be called from other modules.
+///
+/// Worker-thread architecture: `stop_recording()` sends a `Cmd::Stop` to the worker,
+/// which drains remaining samples and returns the buffer via a reply channel.
+/// No race condition — the worker processes Start before Stop (channel ordering).
 pub(crate) async fn do_stop_recording(
     app_handle: AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<String, String> {
-    use std::sync::atomic::Ordering;
-
     // Get t0 from AppState for timing
     let t0 = state
         .recording_start_time
@@ -469,25 +471,6 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
-    // Wait for recording to be ready (max 3000ms — open_stream can take ~2s on first PTT)
-    let mut waited = 0;
-    while !state.recording_ready.load(Ordering::SeqCst) && waited < 3000 {
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        waited += 10;
-    }
-    dev_log!(
-        "[TIMING] T+{}ms: waited {}ms for recording_ready",
-        t0.elapsed().as_millis(),
-        waited
-    );
-
-    if !state.recording_ready.load(Ordering::SeqCst) {
-        dev_log!("[RECORDING] ⚠️ Recording never became ready, proceeding anyway");
-    }
-
-    // Reset the ready flag
-    state.recording_ready.store(false, Ordering::SeqCst);
-
     app_handle
         .emit(
             "status-changed",
@@ -498,11 +481,6 @@ pub(crate) async fn do_stop_recording(
         )
         .ok();
 
-    dev_log!(
-        "[TIMING] T+{}ms: stopping audio capture...",
-        t0.elapsed().as_millis()
-    );
-
     // Play stop sound (non-blocking, in separate thread)
     {
         let cfg = state.config.lock().unwrap();
@@ -512,16 +490,19 @@ pub(crate) async fn do_stop_recording(
         }
     }
 
-    // Stop recording (stream stays open/paused for instant next PTT)
-    let audio_data = {
+    dev_log!(
+        "[TIMING] T+{}ms: sending Stop to audio worker...",
+        t0.elapsed().as_millis()
+    );
+
+    // Send Stop command (non-blocking), then drop the Mutex before waiting.
+    // This prevents holding the lock during the blocking recv (up to 5s).
+    let stop_handle = {
         let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Pause stream — mic stops capturing but stays ready
-        capture.stop_recording();
-
-        // Get the captured audio buffer
-        capture.get_buffer()
+        capture.stop_recording()?
     };
+    // Mutex is released — now block waiting for the worker's reply
+    let audio_data = stop_handle.wait()?;
 
     dev_log!(
         "[TIMING] T+{}ms: audio capture stopped, got {} samples ({:.2}s)",
@@ -966,15 +947,15 @@ async fn save_settings(
         update_global_shortcut(&app_handle, &old_shortcut, &new_config.shortcut)?;
     }
 
-    // Re-open audio stream immediately if device changed
+    // Re-open audio worker on new device if device changed
     if old_device != new_config.audio_device_name {
         let device_name = new_config.audio_device_name.clone();
-        // Close old stream first (separate lock scope)
-        { state.audio_capture.lock().unwrap_or_else(|e| e.into_inner()).close_stream(); }
-        // Re-open on new device (separate lock scope — open_stream can be slow for BT)
-        match state.audio_capture.lock().unwrap_or_else(|e| e.into_inner()).open_stream(device_name.as_deref()) {
-            Ok(()) => dev_log!("[AUDIO] ✅ Stream re-opened on new device: {:?}", device_name),
-            Err(e) => dev_log!("[AUDIO] ⚠️ Stream re-open failed: {} — will retry on next PTT", e),
+        let mut capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
+        // close_stream() shuts down the old worker thread
+        capture.close_stream();
+        match capture.open_stream(device_name.as_deref()) {
+            Ok(()) => dev_log!("[AUDIO] ✅ Audio worker re-spawned on new device: {:?}", device_name),
+            Err(e) => dev_log!("[AUDIO] ⚠️ Worker re-spawn failed: {} — will retry on next PTT", e),
         }
     }
 

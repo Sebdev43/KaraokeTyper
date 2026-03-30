@@ -530,9 +530,16 @@ fn monitor_input_device(
                                             transcription
                                         );
                                         if !transcription.is_empty() {
-                                            crate::hide_overlay_animated(&app_clone);
+                                            // Hide overlay IMMEDIATELY (not animated) so it
+                                            // releases focus before we paste. The animated
+                                            // hide takes 300ms but paste happens at 150ms,
+                                            // causing Ctrl+V to go to the overlay instead
+                                            // of the target app.
+                                            if let Some(window) = app_clone.get_webview_window("overlay") {
+                                                let _ = window.hide();
+                                            }
                                             crate::dev_log!(
-                                                "[TIMING] T+{}ms: waiting 150ms for focus",
+                                                "[TIMING] T+{}ms: overlay hidden, waiting 150ms for focus",
                                                 t0.elapsed().as_millis()
                                             );
                                             tokio::time::sleep(tokio::time::Duration::from_millis(

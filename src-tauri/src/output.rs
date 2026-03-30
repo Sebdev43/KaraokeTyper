@@ -527,50 +527,72 @@ impl TextOutput {
         match self.paste_method {
             PasteMethod::Direct => {
                 let t1 = std::time::Instant::now();
-                // On Linux, if no native typing tool is available, auto-fallback
-                // to clipboard + Ctrl+V. Enigo's text() on X11 has known bugs
-                // that silently drop characters (uppercase loss, Unicode issues).
-                // Enigo keyboard shortcuts (Ctrl+V) work fine — only text() is broken.
+
+                // Remote desktop apps (RustDesk, AnyDesk): ALWAYS use direct typing.
+                // Their clipboard sync is unreliable on Linux, but they forward
+                // keyboard events reliably. Even enigo text() (buggy on X11) is
+                // better than clipboard that never arrives on the remote side.
                 #[cfg(target_os = "linux")]
-                let use_clipboard_fallback = !Self::has_native_direct_tool();
+                let force_direct = Self::is_remote_desktop_focused();
                 #[cfg(not(target_os = "linux"))]
-                let use_clipboard_fallback = false;
+                let force_direct = false;
 
-                if use_clipboard_fallback {
-                    // Auto-detect terminal and choose Ctrl+Shift+V or Ctrl+V
-                    #[cfg(target_os = "linux")]
-                    let effective_method = Self::resolve_paste_method(&PasteMethod::Direct);
-                    #[cfg(not(target_os = "linux"))]
-                    let effective_method = PasteMethod::CtrlV;
-
+                if force_direct {
                     crate::dev_log!(
-                        "[OUTPUT] ⚠️ No native typing tool — auto-fallback to clipboard + {:?}",
-                        effective_method
+                        "[OUTPUT] Remote desktop detected — forcing direct typing (clipboard unreliable)"
                     );
-                    self.set_clipboard_text(text)?;
-                    if self.key_delay_ms > 0 {
-                        thread::sleep(Duration::from_millis(self.key_delay_ms));
-                    }
-                    // Enigo keyboard shortcuts work fine on X11 — only text() is buggy
+                    Self::try_direct_typing(text)?;
+                } else {
+                    // On Linux, if no native typing tool is available, auto-fallback
+                    // to clipboard + paste shortcut. Enigo's text() on X11 has known bugs
+                    // that silently drop characters — clipboard is safer for standard apps.
                     #[cfg(target_os = "linux")]
-                    {
-                        match Self::try_enigo_shortcut(&effective_method) {
-                            Ok(()) => {}
-                            Err(e) => {
-                                crate::dev_log!(
-                                    "[OUTPUT] enigo shortcut failed: {}, trying uinput...",
-                                    e
-                                );
-                                Self::try_uinput_shortcut(&effective_method)?;
+                    let use_clipboard_fallback = !Self::has_native_direct_tool();
+                    #[cfg(not(target_os = "linux"))]
+                    let use_clipboard_fallback = false;
+
+                    if use_clipboard_fallback {
+                        crate::dev_log!(
+                            "[OUTPUT] No native typing tool — clipboard fallback"
+                        );
+                        // Step 1: Set clipboard FIRST
+                        self.set_clipboard_text(text)?;
+
+                        // Step 2: Wait for clipboard to settle AND focus to return
+                        // to the target app (KaraokeTyper overlay releases focus)
+                        if self.key_delay_ms > 0 {
+                            thread::sleep(Duration::from_millis(self.key_delay_ms));
+                        }
+
+                        // Step 3: NOW detect terminal (after focus has returned to target)
+                        // This matches the old simulate_paste() timing that worked.
+                        #[cfg(target_os = "linux")]
+                        let effective_method = Self::resolve_paste_method(&PasteMethod::Direct);
+                        #[cfg(not(target_os = "linux"))]
+                        let effective_method = PasteMethod::CtrlV;
+
+                        crate::dev_log!("[OUTPUT] Detected paste method: {:?}", effective_method);
+
+                        // Step 4: Send paste shortcut
+                        #[cfg(target_os = "linux")]
+                        {
+                            match Self::try_enigo_shortcut(&effective_method) {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    crate::dev_log!(
+                                        "[OUTPUT] enigo shortcut failed: {}, trying uinput...",
+                                        e
+                                    );
+                                    Self::try_uinput_shortcut(&effective_method)?;
+                                }
                             }
                         }
+                    } else {
+                        Self::try_direct_typing(text)?;
                     }
-                } else {
-                    Self::try_direct_typing(text)?;
                 }
                 crate::dev_log!(
-                    "[OUTPUT_TIMING] Direct type{}: {}ms",
-                    if use_clipboard_fallback { " (clipboard fallback)" } else { "" },
+                    "[OUTPUT_TIMING] Direct type: {}ms",
                     t1.elapsed().as_millis()
                 );
             }
@@ -824,10 +846,15 @@ impl TextOutput {
             }
         }
 
-        // Remmina SSH sessions → terminal paste
-        if wm_class == "remmina" || wm_class.contains("remmina") {
-            crate::dev_log!("[OUTPUT] Remmina detected — using terminal paste (Ctrl+Shift+V)");
-            return true;
+        // Remote desktop apps → use terminal paste (Ctrl+Shift+V) by default.
+        // These apps have their own clipboard sync which is often unreliable on Linux.
+        // Ctrl+Shift+V works in both remote terminals AND most remote desktop apps.
+        let remote_desktop_apps = ["remmina", "rustdesk", "anydesk", "vinagre"];
+        for app in remote_desktop_apps {
+            if wm_class == app || wm_class.contains(app) {
+                crate::dev_log!("[OUTPUT] Remote desktop '{}' detected — using Ctrl+Shift+V", app);
+                return true;
+            }
         }
 
         // VS Code / code editors with integrated terminal
@@ -956,6 +983,81 @@ impl TextOutput {
         None
     }
 
+    /// Check if the focused window is a remote desktop app (RustDesk, AnyDesk, etc.)
+    /// Remote desktop apps have unreliable clipboard sync on Linux.
+    /// Direct typing (keystroke forwarding) is more reliable for these apps.
+    #[cfg(target_os = "linux")]
+    fn is_remote_desktop_focused() -> bool {
+        if let Some(is_remote) = Self::check_remote_desktop_via_extension() {
+            return is_remote;
+        }
+        false
+    }
+
+    #[cfg(target_os = "linux")]
+    fn check_remote_desktop_via_extension() -> Option<bool> {
+        let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
+        let mut child = std::process::Command::new("gdbus")
+            .args([
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Shell",
+                "--object-path",
+                "/org/karaoketyper/FocusedWindow",
+                "--method",
+                "org.karaoketyper.FocusedWindow.GetFocusedWindow",
+            ])
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
+            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        if let Some(stdout) = child.stdout.take() {
+                            use std::io::Read;
+                            let mut buf = String::new();
+                            let mut reader = std::io::BufReader::new(stdout);
+                            if reader.read_to_string(&mut buf).is_ok() {
+                                let trimmed = buf.trim().trim_start_matches('(').trim_end_matches(')');
+                                let wm_class = trimmed.splitn(2, ", ").next()
+                                    .unwrap_or("")
+                                    .trim().trim_matches('\'')
+                                    .to_lowercase();
+                                let remote_apps = ["rustdesk", "anydesk", "vinagre"];
+                                for app in remote_apps {
+                                    if wm_class == app || wm_class.contains(app) {
+                                        crate::dev_log!(
+                                            "[OUTPUT] Remote desktop '{}' detected — forcing direct typing",
+                                            app
+                                        );
+                                        return Some(true);
+                                    }
+                                }
+                                return Some(false);
+                            }
+                        }
+                    }
+                    return None;
+                }
+                Ok(None) => {
+                    if std::time::Instant::now() > deadline {
+                        let _ = child.kill();
+                        return None;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return None,
+            }
+        }
+    }
+
     /// Resolve the effective paste method for clipboard-based paste.
     /// When paste_method is Direct (auto-fallback) or CtrlV, auto-detect terminals
     /// and use Ctrl+Shift+V if a terminal is focused. User-explicit CtrlShiftV/ShiftInsert
@@ -979,11 +1081,14 @@ impl TextOutput {
         }
     }
 
-    /// Check if a native direct-typing tool is available for the current Linux environment.
-    /// On Wayland: kwtype, wtype, dotool, or ydotool.
-    /// On X11: xdotool.
-    /// Used to decide whether Direct mode can work without falling back to enigo
-    /// (which has known character-dropping bugs on X11).
+    /// Check if a native direct-typing tool is available that handles keyboard
+    /// layouts correctly (AZERTY, QWERTZ, etc.).
+    ///
+    /// IMPORTANT: wtype and ydotool send QWERTY keycodes that get re-interpreted
+    /// by the compositor with the current layout → garbled text on AZERTY.
+    /// Only xdotool (X11) and kwtype (KDE Wayland) handle layouts correctly.
+    /// On true Wayland, wtype works because the compositor provides the keymap.
+    /// On XWayland (Tauri reports X11 but session is Wayland), wtype garbles.
     #[cfg(target_os = "linux")]
     fn has_native_direct_tool() -> bool {
         if Self::is_wayland() {
@@ -994,14 +1099,17 @@ impl TextOutput {
             (is_kde && Self::is_tool_available("kwtype"))
                 || Self::is_tool_available("wtype")
                 || Self::is_tool_available("dotool")
-                || Self::is_tool_available("ydotool")
         } else {
+            // X11: ONLY xdotool handles keyboard layouts correctly.
+            // ydotool/wtype send QWERTY keycodes → garbled on AZERTY.
             Self::is_tool_available("xdotool")
         }
     }
 
-    /// Direct typing: try native tools first (wtype/xdotool/dotool), fall back to enigo.
-    /// Matches Handy's try_direct_typing_linux() approach.
+    /// Direct typing: try native tools based on session type.
+    /// Follows Handy's approach: Wayland tools for Wayland, X11 tools for X11.
+    /// ydotool is tried on BOTH (works via uinput, layout-aware).
+    /// Never use wtype on X11 — it runs but uses wrong keymap (AZERTY garbled).
     fn try_direct_typing(text: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
@@ -1017,12 +1125,11 @@ impl TextOutput {
             );
 
             if is_wayland {
-                // KDE Wayland: kwtype first (KDE Fake Input protocol, supports unicode)
+                // Wayland: kwtype → wtype → dotool → ydotool
                 if is_kde && Self::is_tool_available("kwtype") {
                     crate::dev_log!("[OUTPUT] Direct: using kwtype (KDE Wayland)");
                     return Self::run_direct_tool("kwtype", &["--", text]);
                 }
-                // wtype works for TEXT typing on all Wayland compositors (GNOME, KDE, etc.)
                 if Self::is_tool_available("wtype") {
                     crate::dev_log!("[OUTPUT] Direct: using wtype");
                     return Self::run_direct_tool("wtype", &["--", text]);
@@ -1031,13 +1138,14 @@ impl TextOutput {
                     crate::dev_log!("[OUTPUT] Direct: using dotool");
                     return Self::run_dotool_type(text);
                 }
-                // ydotool: last resort — broken unicode/accents on many systems
                 if Self::is_tool_available("ydotool") {
-                    crate::dev_log!("[OUTPUT] Direct: using ydotool (warning: may corrupt accents)");
+                    crate::dev_log!("[OUTPUT] Direct: using ydotool");
                     return Self::run_direct_tool("ydotool", &["type", "--", text]);
                 }
             } else {
-                // X11: xdotool first (handles unicode), then enigo
+                // X11: ONLY xdotool handles keyboard layouts correctly.
+                // Do NOT use ydotool/wtype here — they send QWERTY keycodes
+                // that get garbled on AZERTY/QWERTZ layouts.
                 if Self::is_tool_available("xdotool") {
                     crate::dev_log!("[OUTPUT] Direct: using xdotool");
                     return Self::run_direct_tool("xdotool", &["type", "--clearmodifiers", "--", text]);
@@ -1490,6 +1598,20 @@ mod tests {
         fn test_classify_window_remmina() {
             assert!(TextOutput::classify_window_from_dbus(
                 "('remmina', 'SSH connection to server')"
+            ));
+        }
+
+        #[test]
+        fn test_classify_window_rustdesk() {
+            assert!(TextOutput::classify_window_from_dbus(
+                "('rustdesk', 'RustDesk - 192.168.1.100')"
+            ));
+        }
+
+        #[test]
+        fn test_classify_window_anydesk() {
+            assert!(TextOutput::classify_window_from_dbus(
+                "('anydesk', 'AnyDesk')"
             ));
         }
 

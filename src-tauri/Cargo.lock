@@ -2519,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "karaoketyper"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arboard",
  "cpal",
@@ -2539,6 +2539,7 @@ dependencies = [
  "serde_json",
  "specta",
  "specta-typescript",
+ "strsim",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

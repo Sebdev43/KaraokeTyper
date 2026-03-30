@@ -15,6 +15,7 @@ mod audio_feedback;
 mod gnome_extension;
 mod app_data;
 mod ollama_client;
+mod text_processing;
 
 // Linux-specific modules
 #[cfg(target_os = "linux")]
@@ -116,9 +117,9 @@ impl SttEngine {
         Ok(SttEngine { engine })
     }
 
-    pub fn transcribe(&self, audio_data: &[f32]) -> Result<String, String> {
+    pub fn transcribe(&self, audio_data: &[f32], initial_prompt: Option<&str>) -> Result<String, String> {
         self.engine
-            .transcribe(audio_data)
+            .transcribe(audio_data, initial_prompt)
             .map_err(|e| e.to_string())
     }
 
@@ -574,12 +575,29 @@ pub(crate) async fn do_stop_recording(
     // Update STT activity timestamp (for idle watcher)
     update_stt_activity(state);
 
+    // Read text processing config before entering spawn_blocking
+    let (custom_words, custom_words_threshold, filler_removal, stutter_collapse) = {
+        let cfg = state.config.lock().unwrap();
+        (
+            cfg.custom_words.clone(),
+            cfg.custom_words_threshold,
+            cfg.filler_removal_enabled,
+            cfg.stutter_collapse_enabled,
+        )
+    };
+
+    // Build initial_prompt from custom words to bias Whisper recognition
+    let initial_prompt = text_processing::build_initial_prompt(&custom_words, {
+        &state.config.lock().unwrap().language
+    });
+
     // Clone Arcs to move into spawn_blocking
     let stt_engine_arc = Arc::clone(&state.stt_engine);
     let config_arc = Arc::clone(&state.config);
 
     // Use spawn_blocking to offload CPU-intensive Whisper transcription
     // Lazy reload is done INSIDE the lock to prevent race with idle watcher
+    let prompt_for_whisper = if initial_prompt.is_empty() { None } else { Some(initial_prompt.clone()) };
     let transcription = tokio::task::spawn_blocking(move || {
         let mut stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -604,7 +622,7 @@ pub(crate) async fn do_stop_recording(
         }
 
         let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
-        engine.transcribe(&padded_audio)
+        engine.transcribe(&padded_audio, prompt_for_whisper.as_deref())
     })
     .await
     .map_err(|e| format!("Transcription task panicked: {}", e))??;
@@ -617,6 +635,25 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis(),
         transcription
     );
+
+    // Apply text processing pipeline: filler removal → stutter collapse → custom words
+    let transcription = {
+        let processed = text_processing::process_transcription(
+            &transcription,
+            &custom_words,
+            custom_words_threshold,
+            filler_removal,
+            stutter_collapse,
+        );
+        if processed != transcription {
+            dev_log!(
+                "[TEXT] Post-processing: '{}' → '{}'",
+                transcription,
+                processed
+            );
+        }
+        processed
+    };
 
     // Optional Ollama post-processing for spelling/grammar correction
     let final_text = {
@@ -669,7 +706,8 @@ async fn type_text(text: String) -> Result<(), String> {
 
 /// Helper function for type_text - can be called from other modules
 pub(crate) async fn do_type_text(text: String) -> Result<(), String> {
-    let mut output = TextOutput::new(100)?; // 100ms delay for key release
+    let config = AppConfig::load().unwrap_or_default();
+    let mut output = TextOutput::new(60, config.paste_method)?;
     output.type_text(&text)?;
     Ok(())
 }
@@ -1056,6 +1094,13 @@ async fn transcribe_audio(
         padded_audio.len()
     );
 
+    // Build initial_prompt from custom words
+    let initial_prompt = {
+        let cfg = state.config.lock().unwrap();
+        text_processing::build_initial_prompt(&cfg.custom_words, &cfg.language)
+    };
+    let prompt_for_whisper = if initial_prompt.is_empty() { None } else { Some(initial_prompt) };
+
     // Clone Arc to move into spawn_blocking
     let stt_engine_arc = Arc::clone(&state.stt_engine);
 
@@ -1064,7 +1109,7 @@ async fn transcribe_audio(
     let transcription = tokio::task::spawn_blocking(move || {
         let stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
         let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
-        engine.transcribe(&padded_audio)
+        engine.transcribe(&padded_audio, prompt_for_whisper.as_deref())
     })
     .await
     .map_err(|e| format!("Transcription task panicked: {}", e))??;

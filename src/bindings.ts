@@ -274,7 +274,25 @@ async checkOllamaStatus() : Promise<Result<OllamaStatus, string>> {
 
 /** user-defined types **/
 
-export type AppConfig = { shortcut: string; audio_device_index: number; audio_device_name?: string | null; model: string; key_delay_ms: number; language: string; model_path?: string | null; use_gpu?: boolean; gpu_device_index?: number | null; audio_feedback_enabled?: boolean; audio_feedback_volume?: number; model_unload_timeout?: ModelUnloadTimeout; ollama_url?: string | null; ollama_model?: string | null; ollama_enabled?: boolean }
+export type AppConfig = { shortcut: string; audio_device_index: number; audio_device_name?: string | null; model: string; key_delay_ms: number; language: string; model_path?: string | null; use_gpu?: boolean; gpu_device_index?: number | null; audio_feedback_enabled?: boolean; audio_feedback_volume?: number; model_unload_timeout?: ModelUnloadTimeout; ollama_url?: string | null; ollama_model?: string | null; ollama_enabled?: boolean; paste_method?: PasteMethod; 
+/**
+ * Custom words for fuzzy correction after transcription.
+ * Words that Whisper frequently misrecognizes (names, technical terms, etc.)
+ */
+custom_words?: string[]; 
+/**
+ * Fuzzy matching threshold (0.0 = exact, 1.0 = anything matches).
+ * Default: 0.3 — good balance for French speech correction.
+ */
+custom_words_threshold?: number; 
+/**
+ * Enable filler word removal ("euh", "um", "ah", etc.)
+ */
+filler_removal_enabled?: boolean; 
+/**
+ * Enable stutter collapse ("je je je veux" → "je veux")
+ */
+stutter_collapse_enabled?: boolean }
 export type AppDataInfo = { items: AppDataItem[]; total_size_mb: number }
 export type AppDataItem = { name: string; path: string; exists: boolean; size_mb: number }
 export type AudioDevice = { name: string; raw_name: string; index: number }
@@ -322,6 +340,32 @@ failure_count: number }
 export type ModelInfo = { name: string; display_name: string; size_mb: number; url: string; installed: boolean; description: string }
 export type ModelUnloadTimeout = "Never" | "Min5" | "Min15" | "Hour1"
 export type OllamaStatus = { available: boolean; model: string; url: string }
+/**
+ * How text is pasted into the focused application.
+ * Inspired by Handy's approach: user picks the method, no auto-detection.
+ */
+export type PasteMethod = 
+/**
+ * Type text directly via wtype/xdotool/dotool (no clipboard).
+ * Works universally — terminals, editors, remote desktop apps.
+ */
+"Direct" | 
+/**
+ * Clipboard + Ctrl+V (standard apps).
+ */
+"CtrlV" | 
+/**
+ * Clipboard + Ctrl+Shift+V (terminals).
+ */
+"CtrlShiftV" | 
+/**
+ * Clipboard + Shift+Insert (some terminals, tmux).
+ */
+"ShiftInsert" | 
+/**
+ * Do nothing (disable paste).
+ */
+"None"
 /**
  * System information
  */

@@ -532,11 +532,11 @@ fn monitor_input_device(
                                         if !transcription.is_empty() {
                                             crate::hide_overlay_animated(&app_clone);
                                             crate::dev_log!(
-                                                "[TIMING] T+{}ms: waiting 400ms for focus",
+                                                "[TIMING] T+{}ms: waiting 150ms for focus",
                                                 t0.elapsed().as_millis()
                                             );
                                             tokio::time::sleep(tokio::time::Duration::from_millis(
-                                                400,
+                                                150,
                                             ))
                                             .await;
 

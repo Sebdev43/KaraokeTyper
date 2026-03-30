@@ -333,7 +333,7 @@ impl WhisperSttEngine {
     ///
     /// # Returns
     /// Transcribed text or error
-    pub fn transcribe(&self, audio_data: &[f32]) -> Result<String, WhisperError> {
+    pub fn transcribe(&self, audio_data: &[f32], initial_prompt: Option<&str>) -> Result<String, WhisperError> {
         let guard = self.context.lock().unwrap_or_else(|e| e.into_inner());
         let ctx = guard
             .as_ref()
@@ -399,6 +399,15 @@ impl WhisperSttEngine {
         // Suppress non-speech tokens for cleaner output
         params.set_suppress_blank(true);
         params.set_suppress_nst(true);
+
+        // Apply initial_prompt to bias Whisper toward custom vocabulary
+        if let Some(prompt) = initial_prompt {
+            if !prompt.is_empty() {
+                params.set_initial_prompt(prompt);
+                #[cfg(debug_assertions)]
+                println!("[Whisper] Using initial_prompt: '{}'", prompt);
+            }
+        }
 
         // Create state for this transcription
         let mut state = ctx

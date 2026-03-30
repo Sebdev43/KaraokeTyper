@@ -552,20 +552,28 @@ impl TextOutput {
                     let use_clipboard_fallback = false;
 
                     if use_clipboard_fallback {
-                        // Auto-detect terminal and choose Ctrl+Shift+V or Ctrl+V
+                        crate::dev_log!(
+                            "[OUTPUT] No native typing tool — clipboard fallback"
+                        );
+                        // Step 1: Set clipboard FIRST
+                        self.set_clipboard_text(text)?;
+
+                        // Step 2: Wait for clipboard to settle AND focus to return
+                        // to the target app (KaraokeTyper overlay releases focus)
+                        if self.key_delay_ms > 0 {
+                            thread::sleep(Duration::from_millis(self.key_delay_ms));
+                        }
+
+                        // Step 3: NOW detect terminal (after focus has returned to target)
+                        // This matches the old simulate_paste() timing that worked.
                         #[cfg(target_os = "linux")]
                         let effective_method = Self::resolve_paste_method(&PasteMethod::Direct);
                         #[cfg(not(target_os = "linux"))]
                         let effective_method = PasteMethod::CtrlV;
 
-                        crate::dev_log!(
-                            "[OUTPUT] No native typing tool — clipboard fallback + {:?}",
-                            effective_method
-                        );
-                        self.set_clipboard_text(text)?;
-                        if self.key_delay_ms > 0 {
-                            thread::sleep(Duration::from_millis(self.key_delay_ms));
-                        }
+                        crate::dev_log!("[OUTPUT] Detected paste method: {:?}", effective_method);
+
+                        // Step 4: Send paste shortcut
                         #[cfg(target_os = "linux")]
                         {
                             match Self::try_enigo_shortcut(&effective_method) {

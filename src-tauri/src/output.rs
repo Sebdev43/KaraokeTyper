@@ -824,10 +824,15 @@ impl TextOutput {
             }
         }
 
-        // Remmina SSH sessions → terminal paste
-        if wm_class == "remmina" || wm_class.contains("remmina") {
-            crate::dev_log!("[OUTPUT] Remmina detected — using terminal paste (Ctrl+Shift+V)");
-            return true;
+        // Remote desktop apps → use terminal paste (Ctrl+Shift+V) by default.
+        // These apps have their own clipboard sync which is often unreliable on Linux.
+        // Ctrl+Shift+V works in both remote terminals AND most remote desktop apps.
+        let remote_desktop_apps = ["remmina", "rustdesk", "anydesk", "vinagre"];
+        for app in remote_desktop_apps {
+            if wm_class == app || wm_class.contains(app) {
+                crate::dev_log!("[OUTPUT] Remote desktop '{}' detected — using Ctrl+Shift+V", app);
+                return true;
+            }
         }
 
         // VS Code / code editors with integrated terminal
@@ -1490,6 +1495,20 @@ mod tests {
         fn test_classify_window_remmina() {
             assert!(TextOutput::classify_window_from_dbus(
                 "('remmina', 'SSH connection to server')"
+            ));
+        }
+
+        #[test]
+        fn test_classify_window_rustdesk() {
+            assert!(TextOutput::classify_window_from_dbus(
+                "('rustdesk', 'RustDesk - 192.168.1.100')"
+            ));
+        }
+
+        #[test]
+        fn test_classify_window_anydesk() {
+            assert!(TextOutput::classify_window_from_dbus(
+                "('anydesk', 'AnyDesk')"
             ));
         }
 

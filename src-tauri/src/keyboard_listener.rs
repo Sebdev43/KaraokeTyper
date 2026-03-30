@@ -95,15 +95,14 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
                         crate::dev_log!("[KEYBOARD] Failed to start recording: {}", e);
                     }
 
-                    // Show overlay
-                    if let Some(overlay_win) = app_clone.get_webview_window("overlay") {
-                        let _ = overlay_win.show();
-                        let _ = overlay_win.set_focus();
-                        let _ = overlay_win.emit("recording-started", ());
-                    }
+                    // Show overlay centered on cursor's monitor
+                    crate::show_overlay_with_state(&app_clone, "recording");
                 }
                 HotkeyEvent::PushToTalkReleased => {
-                    crate::dev_log!("[KEYBOARD] 🛑 Ctrl+Space RELEASED - stopping recording");
+                    crate::dev_log!("[KEYBOARD] Ctrl+Space RELEASED - stopping recording");
+
+                    // Switch overlay to processing state
+                    crate::show_overlay_with_state(&app_clone, "processing");
 
                     // Stop recording and transcribe using helper function
                     let state = app_clone.state::<crate::AppState>();
@@ -111,19 +110,15 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
                         Ok(transcription) => {
                             crate::dev_log!("[KEYBOARD] Transcription: {}", transcription);
 
+                            crate::hide_overlay_animated(&app_clone);
+
                             // Wait for physical keys to fully release
                             tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
                             // Type the text using helper function
                             match crate::do_type_text(transcription).await {
                                 Ok(_) => {
-                                    crate::dev_log!("[KEYBOARD] ✅ Text pasted successfully");
-                                    if let Some(overlay_win) =
-                                        app_clone.get_webview_window("overlay")
-                                    {
-                                        let _ = overlay_win.emit("recording-stopped", ());
-                                        let _ = overlay_win.hide();
-                                    }
+                                    crate::dev_log!("[KEYBOARD] Text pasted successfully");
                                 }
                                 Err(e) => {
                                     crate::dev_log!("[KEYBOARD] Failed to paste text: {}", e);
@@ -132,6 +127,7 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
                         }
                         Err(e) => {
                             crate::dev_log!("[KEYBOARD] Failed to transcribe: {}", e);
+                            crate::hide_overlay_animated(&app_clone);
                         }
                     }
                 }

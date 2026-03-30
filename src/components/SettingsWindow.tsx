@@ -18,6 +18,7 @@ import {
   Settings,
   Sparkles,
   Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -90,6 +91,16 @@ function SettingsWindow() {
     setOllamaUrl,
     ollamaModel,
     setOllamaModel,
+    pasteMethod,
+    setPasteMethod,
+    customWords,
+    setCustomWords,
+    customWordsThreshold,
+    setCustomWordsThreshold,
+    fillerRemovalEnabled,
+    setFillerRemovalEnabled,
+    stutterCollapseEnabled,
+    setStutterCollapseEnabled,
     ollamaStatus,
     setOllamaStatus,
     isRefreshing,
@@ -125,6 +136,7 @@ function SettingsWindow() {
   const [activeSection, setActiveSection] = useState("audio");
   const inputRef = useRef<HTMLInputElement>(null);
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const lastVolumeRef = useRef(0.7);
 
   // Detect platform on mount
   useEffect(() => {
@@ -164,6 +176,7 @@ function SettingsWindow() {
         setOllamaEnabled(result.data.ollama_enabled ?? false);
         setOllamaUrl(result.data.ollama_url ?? "http://localhost:11434");
         setOllamaModel(result.data.ollama_model ?? "mistral");
+        setPasteMethod(result.data.paste_method ?? "Direct");
       } else {
         console.error("Failed to load settings:", result.error);
       }
@@ -182,6 +195,7 @@ function SettingsWindow() {
     setOllamaEnabled,
     setOllamaUrl,
     setOllamaModel,
+    setPasteMethod,
   ]);
 
   const checkPermissions = useCallback(async () => {
@@ -483,7 +497,7 @@ function SettingsWindow() {
 
   const handleSave = async () => {
     try {
-      setSaveStatus("Saving...");
+      setSaveStatus("Enregistrement…");
 
       const selectedDeviceName =
         audioDevices.find((d) => d.index === selectedDevice)?.raw_name || null;
@@ -507,11 +521,16 @@ function SettingsWindow() {
         ollama_enabled: ollamaEnabled,
         ollama_url: ollamaUrl,
         ollama_model: ollamaModel,
+        paste_method: pasteMethod,
+        custom_words: customWords,
+        custom_words_threshold: customWordsThreshold,
+        filler_removal_enabled: fillerRemovalEnabled,
+        stutter_collapse_enabled: stutterCollapseEnabled,
       };
 
       const result = await commands.saveSettings(config);
       if (result.status === "ok") {
-        setSaveStatus("Settings saved!");
+        setSaveStatus("Paramètres enregistrés !");
         setTimeout(() => setSaveStatus(""), 2000);
         await getCurrentWindow().hide();
       } else {
@@ -653,7 +672,7 @@ function SettingsWindow() {
       >
         <div data-tauri-drag-region className="flex items-center gap-2">
           <Settings className="h-4 w-4 text-primary" />
-          <span className="text-sm font-medium">KaraokeTyper Settings</span>
+          <span className="text-sm font-medium">KaraokeTyper — Paramètres</span>
         </div>
         <div className="flex items-center gap-1">
           <Button
@@ -732,7 +751,7 @@ function SettingsWindow() {
             {
               id: "feedback",
               icon: Volume2,
-              label: "Audio FB",
+              label: "Sons",
               color: "text-pink-400",
             },
             {
@@ -794,7 +813,7 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Mic className="h-5 w-5 text-rose-400" />
-                  Audio Input
+                  Entrée audio
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -808,7 +827,7 @@ function SettingsWindow() {
                       }
                     >
                       <SelectTrigger className="flex-1">
-                        <SelectValue placeholder="Select a microphone" />
+                        <SelectValue placeholder="Sélectionner un micro" />
                       </SelectTrigger>
                       <SelectContent>
                         {audioDevices.map((device) => (
@@ -848,12 +867,12 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Keyboard className="h-5 w-5 text-amber-400" />
-                  Keyboard Shortcut
+                  Raccourci clavier
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="shortcut">Recording Hotkey</Label>
+                  <Label htmlFor="shortcut">Touche d'enregistrement</Label>
                   <Input
                     ref={inputRef}
                     id="shortcut"
@@ -865,15 +884,15 @@ function SettingsWindow() {
                     onBlur={handleBlur}
                     onContextMenu={(e) => e.preventDefault()}
                     readOnly
-                    placeholder="Click to set hotkey..."
+                    placeholder="Cliquez pour définir..."
                     className={cn(
                       "cursor-pointer",
                       isCapturing && "ring-2 ring-primary bg-primary/10",
                     )}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Click, then press any key or mouse button (Mouse4,
-                    Mouse5...)
+                    Cliquez, puis appuyez sur une touche ou un bouton souris
+                    (Mouse4, Mouse5...)
                   </p>
                 </div>
               </CardContent>
@@ -888,12 +907,12 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Brain className="h-5 w-5 text-violet-400" />
-                  Speech Recognition
+                  Reconnaissance vocale
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="model">Active Model</Label>
+                  <Label htmlFor="model">Modèle actif</Label>
                   <Select value={model} onValueChange={setModel}>
                     <SelectTrigger>
                       <SelectValue />
@@ -916,13 +935,13 @@ function SettingsWindow() {
                       ?.installed && (
                       <p className="text-xs text-destructive">
                         ⚠️ Le modèle "{model}" n'est pas installé.
-                        Téléchargez-le dans "Model Management" ci-dessous.
+                        Téléchargez-le dans "Modèles" ci-dessous.
                       </p>
                     )}
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="language">Language</Label>
+                  <Label htmlFor="language">Langue</Label>
                   <Select value={language} onValueChange={setLanguage}>
                     <SelectTrigger>
                       <SelectValue />
@@ -976,7 +995,7 @@ function SettingsWindow() {
                     {gpuInfo
                       ? gpuInfo.available
                         ? gpuInfo.backend
-                        : "CPU Only"
+                        : "CPU seul"
                       : "..."}
                   </Badge>
                 </div>
@@ -1107,12 +1126,13 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Download className="h-5 w-5 text-emerald-400" />
-                  Model Management
+                  Gestion des modèles
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-sm text-muted-foreground">
-                  Download Whisper GGML models for speech recognition
+                  Télécharger les modèles Whisper GGML pour la reconnaissance
+                  vocale
                 </p>
 
                 {installedModels.map((modelInfo) => (
@@ -1127,12 +1147,12 @@ function SettingsWindow() {
                         </span>
                         {modelInfo.installed && (
                           <Badge variant="default" className="text-xs">
-                            Installed
+                            Installé
                           </Badge>
                         )}
                         {modelInfo.name === "ggml-small" && (
                           <Badge variant="secondary" className="text-xs">
-                            Recommended
+                            Recommandé
                           </Badge>
                         )}
                       </div>
@@ -1144,7 +1164,7 @@ function SettingsWindow() {
                         <div className="mt-2 space-y-1">
                           <Progress value={downloadProgress} className="h-2" />
                           <p className="text-xs text-muted-foreground">
-                            Downloading... {downloadProgress.toFixed(1)}%
+                            Téléchargement… {downloadProgress.toFixed(1)}%
                           </p>
                         </div>
                       )}
@@ -1158,7 +1178,7 @@ function SettingsWindow() {
                         modelInfo.installed || downloadingModel !== null
                       }
                     >
-                      {modelInfo.installed ? "Installed ✓" : "Download"}
+                      {modelInfo.installed ? "Installé ✓" : "Télécharger"}
                     </Button>
                   </div>
                 ))}
@@ -1174,18 +1194,18 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Settings className="h-5 w-5 text-orange-400" />
-                  System Setup
+                  Configuration système
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-6">
                 {/* System Dependencies (Linux-specific) */}
                 {currentPlatform === "linux" && (
                   <div className="space-y-3">
-                    <Label>System Permissions</Label>
+                    <Label>Permissions système</Label>
                     <p className="text-sm text-muted-foreground">
                       {systemDepsInstalled
-                        ? "System permissions configured"
-                        : "Configure evdev/uinput permissions"}
+                        ? "Permissions système configurées"
+                        : "Configurer les permissions evdev/uinput"}
                     </p>
 
                     <div className="flex flex-col gap-2">
@@ -1197,7 +1217,9 @@ function SettingsWindow() {
                         >
                           {permissionsInstalled ? "✓" : "○"}
                         </Badge>
-                        <span className="text-sm">Push-to-talk (evdev)</span>
+                        <span className="text-sm">
+                          Appui pour parler (evdev)
+                        </span>
                       </div>
                       <div className="flex items-center gap-2">
                         <Badge
@@ -1205,7 +1227,9 @@ function SettingsWindow() {
                         >
                           {uinputAvailable ? "✓" : "○"}
                         </Badge>
-                        <span className="text-sm">Text output (uinput)</span>
+                        <span className="text-sm">
+                          Saisie de texte (uinput)
+                        </span>
                       </div>
                     </div>
 
@@ -1216,29 +1240,64 @@ function SettingsWindow() {
                       size="sm"
                     >
                       {isInstallingSystem
-                        ? "Installing..."
+                        ? "Installation…"
                         : systemDepsInstalled
-                          ? "Configured ✓"
-                          : "Setup Permissions"}
+                          ? "Configuré ✓"
+                          : "Configurer les permissions"}
                     </Button>
                   </div>
                 )}
 
                 {currentPlatform === "linux" && <Separator />}
 
+                {/* Paste Method */}
+                <div className="space-y-3">
+                  <Label>Méthode de collage</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Comment le texte est injecté dans l'application active
+                  </p>
+                  <Select
+                    value={pasteMethod}
+                    onValueChange={(v) =>
+                      setPasteMethod(v as import("@/bindings").PasteMethod)
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Direct">
+                        Direct (wtype/xdotool) — recommandé Linux
+                      </SelectItem>
+                      <SelectItem value="CtrlV">Ctrl+V (clipboard)</SelectItem>
+                      <SelectItem value="CtrlShiftV">
+                        Ctrl+Shift+V (terminaux)
+                      </SelectItem>
+                      <SelectItem value="ShiftInsert">
+                        Shift+Insert (tmux, certains terminaux)
+                      </SelectItem>
+                      <SelectItem value="None">Désactivé</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <Separator />
+
                 {/* Autostart */}
                 <div className="space-y-3">
-                  <Label>Launch at Startup</Label>
+                  <Label>Lancement au démarrage</Label>
                   <p className="text-sm text-muted-foreground">
-                    Automatically start KaraokeTyper when you log in
+                    Démarrer automatiquement KaraokeTyper à la connexion
                   </p>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Badge variant={autostart ? "default" : "secondary"}>
-                        {autostart ? "Enabled" : "Disabled"}
+                        {autostart ? "Activé" : "Désactivé"}
                       </Badge>
                       <span className="text-sm">
-                        {autostart ? "Starts at login" : "Manual start only"}
+                        {autostart
+                          ? "Démarre à la connexion"
+                          : "Démarrage manuel"}
                       </span>
                     </div>
                     <Switch
@@ -1261,13 +1320,14 @@ function SettingsWindow() {
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2 text-lg">
                     <Monitor className="h-5 w-5 text-sky-400" />
-                    Terminal Detection
+                    Détection de terminal
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <p className="text-sm text-muted-foreground">
-                    GNOME Shell extension for automatic terminal detection. When
-                    active, uses Ctrl+Shift+V in terminals and Ctrl+V elsewhere.
+                    Extension GNOME Shell pour la détection automatique des
+                    terminaux. Utilise Ctrl+Maj+V dans les terminaux et Ctrl+V
+                    ailleurs.
                   </p>
 
                   <div className="flex items-center justify-between">
@@ -1282,13 +1342,13 @@ function SettingsWindow() {
                         {gnomeExtInstalled && gnomeExtEnabled
                           ? "Active"
                           : gnomeExtInstalled
-                            ? "Installed (disabled)"
-                            : "Not installed"}
+                            ? "Installée (désactivée)"
+                            : "Non installée"}
                       </Badge>
                       <span className="text-sm">
                         {gnomeExtInstalled && gnomeExtEnabled
-                          ? "Auto-detect active"
-                          : "Using fallback detection"}
+                          ? "Détection automatique active"
+                          : "Détection de secours utilisée"}
                       </span>
                     </div>
 
@@ -1300,10 +1360,10 @@ function SettingsWindow() {
                         size="sm"
                       >
                         {isInstallingGnomeExt
-                          ? "Installing..."
+                          ? "Installation…"
                           : gnomeExtInstalled
-                            ? "Installed ✓"
-                            : "Install Extension"}
+                            ? "Installée ✓"
+                            : "Installer l'extension"}
                       </Button>
                       {gnomeExtInstalled && (
                         <Button
@@ -1312,7 +1372,7 @@ function SettingsWindow() {
                           variant="destructive"
                           size="sm"
                         >
-                          Remove
+                          Supprimer
                         </Button>
                       )}
                     </div>
@@ -1320,9 +1380,9 @@ function SettingsWindow() {
 
                   {gnomeExtInstalled && !gnomeExtEnabled && (
                     <p className="text-sm text-yellow-500">
-                      Extension installed but not enabled. Enable it in GNOME
-                      Extensions app or run: gnome-extensions enable
-                      focused-window-dbus@karaoketyper
+                      Extension installée mais non activée. Activez-la dans
+                      l'application Extensions GNOME ou lancez :
+                      gnome-extensions enable focused-window-dbus@karaoketyper
                     </p>
                   )}
                 </CardContent>
@@ -1338,15 +1398,15 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Volume2 className="h-5 w-5 text-pink-400" />
-                  Audio Feedback
+                  Sons de l'application
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Sound Notifications</Label>
+                    <Label>Notifications sonores</Label>
                     <p className="text-sm text-muted-foreground">
-                      Play sounds when recording starts and stops
+                      Jouer un son au début et à la fin de l'enregistrement
                     </p>
                   </div>
                   <Switch
@@ -1357,9 +1417,36 @@ function SettingsWindow() {
 
                 {audioFeedbackEnabled && (
                   <div className="space-y-2">
-                    <Label>
-                      Volume ({Math.round(audioFeedbackVolume * 100)}%)
-                    </Label>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (audioFeedbackVolume > 0) {
+                            lastVolumeRef.current = audioFeedbackVolume;
+                            setAudioFeedbackVolume(0);
+                          } else {
+                            setAudioFeedbackVolume(
+                              lastVolumeRef.current || 0.7,
+                            );
+                          }
+                        }}
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                        title={
+                          audioFeedbackVolume > 0
+                            ? "Couper le son"
+                            : "Rétablir le son"
+                        }
+                      >
+                        {audioFeedbackVolume > 0 ? (
+                          <Volume2 className="h-4 w-4" />
+                        ) : (
+                          <VolumeX className="h-4 w-4" />
+                        )}
+                      </button>
+                      <Label className="flex-1">
+                        Volume ({Math.round(audioFeedbackVolume * 100)}%)
+                      </Label>
+                    </div>
                     <Slider
                       min={0}
                       max={1}
@@ -1381,15 +1468,15 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Clock className="h-5 w-5 text-teal-400" />
-                  Model Unload
+                  Déchargement du modèle
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label>Unload after inactivity</Label>
+                  <Label>Décharger après inactivité</Label>
                   <p className="text-sm text-muted-foreground">
-                    Free memory by unloading the STT model after a period of
-                    inactivity. The model reloads automatically on next use.
+                    Libérer la mémoire en déchargeant le modèle STT après une
+                    période d'inactivité. Le modèle se recharge automatiquement.
                   </p>
                   <Select
                     value={modelUnloadTimeout}
@@ -1403,10 +1490,10 @@ function SettingsWindow() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Never">Never</SelectItem>
-                      <SelectItem value="Min5">After 5 minutes</SelectItem>
-                      <SelectItem value="Min15">After 15 minutes</SelectItem>
-                      <SelectItem value="Hour1">After 1 hour</SelectItem>
+                      <SelectItem value="Never">Jamais</SelectItem>
+                      <SelectItem value="Min5">Après 5 minutes</SelectItem>
+                      <SelectItem value="Min15">Après 15 minutes</SelectItem>
+                      <SelectItem value="Hour1">Après 1 heure</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1422,16 +1509,16 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Sparkles className="h-5 w-5 text-fuchsia-400" />
-                  Ollama Integration
+                  Intégration Ollama
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Text Correction</Label>
+                    <Label>Correction de texte</Label>
                     <p className="text-sm text-muted-foreground">
-                      Use a local LLM to correct grammar and spelling after
-                      transcription
+                      Utiliser un LLM local pour corriger la grammaire et
+                      l'orthographe après la transcription
                     </p>
                   </div>
                   <Switch
@@ -1446,7 +1533,7 @@ function SettingsWindow() {
                 {ollamaEnabled && (
                   <>
                     <div className="space-y-2">
-                      <Label>Server URL</Label>
+                      <Label>URL du serveur</Label>
                       <Input
                         value={ollamaUrl}
                         onChange={(e) => setOllamaUrl(e.target.value)}
@@ -1455,7 +1542,7 @@ function SettingsWindow() {
                     </div>
 
                     <div className="space-y-2">
-                      <Label>Model</Label>
+                      <Label>Modèle</Label>
                       <Input
                         value={ollamaModel}
                         onChange={(e) => setOllamaModel(e.target.value)}
@@ -1473,14 +1560,12 @@ function SettingsWindow() {
                             ollamaStatus?.available && "bg-green-600",
                           )}
                         >
-                          {ollamaStatus?.available
-                            ? "Connected"
-                            : "Disconnected"}
+                          {ollamaStatus?.available ? "Connecté" : "Déconnecté"}
                         </Badge>
                         <span className="text-sm text-muted-foreground">
                           {ollamaStatus?.available
-                            ? `${ollamaStatus.model} ready`
-                            : "Ollama not reachable"}
+                            ? `${ollamaStatus.model} prêt`
+                            : "Ollama non joignable"}
                         </span>
                       </div>
                       <Button
@@ -1489,7 +1574,7 @@ function SettingsWindow() {
                         onClick={() => void checkOllama()}
                       >
                         <RefreshCw className="h-4 w-4 mr-1" />
-                        Test
+                        Tester
                       </Button>
                     </div>
                   </>
@@ -1505,16 +1590,15 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Info className="h-5 w-5 text-zinc-400" />
-                  About
+                  <Info className="h-5 w-5 text-zinc-400" />À propos
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-muted-foreground">
-                  KaraokeTyper v0.1.0
+                  KaraokeTyper v1.1.0
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  Offline voice dictation for{" "}
+                  Dictée vocale hors-ligne pour{" "}
                   {currentPlatform === "macos"
                     ? "macOS"
                     : currentPlatform === "windows"
@@ -1541,7 +1625,7 @@ function SettingsWindow() {
             {saveStatus}
           </span>
         )}
-        <Button onClick={handleSave}>Save & Close</Button>
+        <Button onClick={handleSave}>Enregistrer et fermer</Button>
       </div>
     </div>
   );

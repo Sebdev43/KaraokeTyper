@@ -7,6 +7,7 @@ import type {
   ModelInfo,
   ModelUnloadTimeout,
   OllamaStatus,
+  PasteMethod,
 } from "@/bindings";
 
 interface SettingsState {
@@ -43,6 +44,15 @@ interface SettingsState {
   // Model unload
   modelUnloadTimeout: ModelUnloadTimeout;
 
+  // Paste method
+  pasteMethod: PasteMethod;
+
+  // Text processing
+  customWords: string[];
+  customWordsThreshold: number;
+  fillerRemovalEnabled: boolean;
+  stutterCollapseEnabled: boolean;
+
   // Ollama
   ollamaEnabled: boolean;
   ollamaUrl: string;
@@ -70,6 +80,11 @@ interface SettingsState {
   setAudioFeedbackEnabled: (enabled: boolean) => void;
   setAudioFeedbackVolume: (volume: number) => void;
   setModelUnloadTimeout: (timeout: ModelUnloadTimeout) => void;
+  setPasteMethod: (method: PasteMethod) => void;
+  setCustomWords: (words: string[]) => void;
+  setCustomWordsThreshold: (threshold: number) => void;
+  setFillerRemovalEnabled: (enabled: boolean) => void;
+  setStutterCollapseEnabled: (enabled: boolean) => void;
   setOllamaEnabled: (enabled: boolean) => void;
   setOllamaUrl: (url: string) => void;
   setOllamaModel: (model: string) => void;
@@ -97,6 +112,11 @@ const initialState = {
   audioFeedbackEnabled: true,
   audioFeedbackVolume: 0.7,
   modelUnloadTimeout: "Never" as ModelUnloadTimeout,
+  pasteMethod: "Direct" as PasteMethod,
+  customWords: [] as string[],
+  customWordsThreshold: 0.3,
+  fillerRemovalEnabled: true,
+  stutterCollapseEnabled: true,
   ollamaEnabled: false,
   ollamaUrl: "http://localhost:11434",
   ollamaModel: "mistral",
@@ -140,9 +160,18 @@ export const useSettingsStore = create<SettingsState>()(
 
       setUseGpuAcceleration: (enabled) => set({ useGpuAcceleration: enabled }),
 
-      setAudioFeedbackEnabled: (enabled) => set({ audioFeedbackEnabled: enabled }),
+      setAudioFeedbackEnabled: (enabled) =>
+        set({ audioFeedbackEnabled: enabled }),
       setAudioFeedbackVolume: (volume) => set({ audioFeedbackVolume: volume }),
       setModelUnloadTimeout: (timeout) => set({ modelUnloadTimeout: timeout }),
+      setPasteMethod: (method) => set({ pasteMethod: method }),
+      setCustomWords: (words) => set({ customWords: words }),
+      setCustomWordsThreshold: (threshold) =>
+        set({ customWordsThreshold: threshold }),
+      setFillerRemovalEnabled: (enabled) =>
+        set({ fillerRemovalEnabled: enabled }),
+      setStutterCollapseEnabled: (enabled) =>
+        set({ stutterCollapseEnabled: enabled }),
       setOllamaEnabled: (enabled) => set({ ollamaEnabled: enabled }),
       setOllamaUrl: (url) => set({ ollamaUrl: url }),
       setOllamaModel: (model) => set({ ollamaModel: model }),
@@ -168,6 +197,7 @@ export const useSettingsStore = create<SettingsState>()(
         audioFeedbackEnabled: state.audioFeedbackEnabled,
         audioFeedbackVolume: state.audioFeedbackVolume,
         modelUnloadTimeout: state.modelUnloadTimeout,
+        pasteMethod: state.pasteMethod,
         ollamaEnabled: state.ollamaEnabled,
         ollamaUrl: state.ollamaUrl,
         ollamaModel: state.ollamaModel,

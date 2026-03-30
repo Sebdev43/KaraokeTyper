@@ -3,6 +3,32 @@ use specta::Type;
 use std::fs;
 use std::path::PathBuf;
 
+/// How text is pasted into the focused application.
+/// Inspired by Handy's approach: user picks the method, no auto-detection.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+pub enum PasteMethod {
+    /// Type text directly via wtype/xdotool/dotool (no clipboard).
+    /// Works universally — terminals, editors, remote desktop apps.
+    Direct,
+    /// Clipboard + Ctrl+V (standard apps).
+    CtrlV,
+    /// Clipboard + Ctrl+Shift+V (terminals).
+    CtrlShiftV,
+    /// Clipboard + Shift+Insert (some terminals, tmux).
+    ShiftInsert,
+    /// Do nothing (disable paste).
+    None,
+}
+
+impl Default for PasteMethod {
+    fn default() -> Self {
+        #[cfg(target_os = "linux")]
+        return PasteMethod::Direct;
+        #[cfg(not(target_os = "linux"))]
+        return PasteMethod::CtrlV;
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
 pub enum ModelUnloadTimeout {
     Never,
@@ -55,10 +81,27 @@ pub struct AppConfig {
     pub ollama_model: Option<String>,
     #[serde(default)]
     pub ollama_enabled: bool,
+    #[serde(default)]
+    pub paste_method: PasteMethod,
+    /// Custom words for fuzzy correction after transcription.
+    /// Words that Whisper frequently misrecognizes (names, technical terms, etc.)
+    #[serde(default)]
+    pub custom_words: Vec<String>,
+    /// Fuzzy matching threshold (0.0 = exact, 1.0 = anything matches).
+    /// Default: 0.3 — good balance for French speech correction.
+    #[serde(default = "default_custom_words_threshold")]
+    pub custom_words_threshold: f32,
+    /// Enable filler word removal ("euh", "um", "ah", etc.)
+    #[serde(default = "default_true")]
+    pub filler_removal_enabled: bool,
+    /// Enable stutter collapse ("je je je veux" → "je veux")
+    #[serde(default = "default_true")]
+    pub stutter_collapse_enabled: bool,
 }
 
 fn default_true() -> bool { true }
 fn default_volume() -> f32 { 0.7 }
+fn default_custom_words_threshold() -> f32 { 0.3 }
 
 /// Auto-detect GPU: enable if compiled with GPU support
 fn auto_detect_gpu() -> bool {
@@ -87,6 +130,11 @@ impl Default for AppConfig {
             ollama_url: None,
             ollama_model: None,
             ollama_enabled: false,
+            paste_method: PasteMethod::default(),
+            custom_words: Vec::new(),
+            custom_words_threshold: default_custom_words_threshold(),
+            filler_removal_enabled: true,
+            stutter_collapse_enabled: true,
         }
     }
 }
@@ -181,6 +229,11 @@ mod tests {
             ollama_url: Some("http://localhost:11434".to_string()),
             ollama_model: Some("mistral".to_string()),
             ollama_enabled: false,
+            paste_method: PasteMethod::CtrlShiftV,
+            custom_words: vec!["Claude".to_string(), "Tauri".to_string()],
+            custom_words_threshold: 0.25,
+            filler_removal_enabled: true,
+            stutter_collapse_enabled: true,
         };
 
         let json = serde_json::to_string(&config).unwrap();

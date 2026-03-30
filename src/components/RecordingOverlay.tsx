@@ -1,125 +1,42 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { Zap } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
-import { commands } from "@/bindings";
-import { getAudioCapture, transcribeAudio } from "@/lib/audioCapture";
-import { type AppStatus, useAppStore } from "@/stores";
+import { useEffect, useState } from "react";
 
-interface StatusEvent {
-  status: AppStatus;
-  message: string;
-}
-
-// Helper to log to Rust console
-const logToRust = (msg: string) => {
-  console.log(msg);
-  commands.logFromFrontend(msg).catch(() => {});
-};
-
-// Guard to prevent duplicate listener setup
-let listenersInitialized = false;
+type OverlayState = "idle" | "recording" | "processing";
 
 function RecordingOverlay() {
-  const { status, setStatus } = useAppStore();
-  const isRecordingRef = useRef<boolean>(false);
-  const audioCapture = useRef(getAudioCapture());
-
-  // Log on mount (only once)
-  useEffect(() => {
-    logToRust("[Overlay] Component mounted");
-  }, []);
-
-  // Handle start recording via Web Audio API
-  const handleStartRecording = useCallback(async () => {
-    logToRust("[Overlay] Starting Web Audio recording...");
-    setStatus("recording");
-    isRecordingRef.current = true;
-
-    try {
-      await audioCapture.current.startRecording();
-      logToRust("[Overlay] Web Audio recording started successfully");
-    } catch (error) {
-      logToRust(`[Overlay] Failed to start Web Audio recording: ${error}`);
-      setStatus("idle");
-      isRecordingRef.current = false;
-    }
-  }, [setStatus]);
-
-  // Handle stop recording and transcription
-  const handleStopRecording = useCallback(async () => {
-    logToRust("[Overlay] Stopping Web Audio recording...");
-    setStatus("processing");
-    isRecordingRef.current = false;
-
-    try {
-      // Stop recording and get audio data
-      const audioData = audioCapture.current.stopRecording();
-
-      if (audioData.length === 0) {
-        logToRust("[Overlay] No audio captured");
-        setStatus("idle");
-        return;
-      }
-
-      logToRust(`[Overlay] Got ${audioData.length} samples, sending to backend...`);
-
-      // Send to backend for transcription
-      const transcription = await transcribeAudio(audioData);
-      logToRust(`[Overlay] Transcription: "${transcription}"`);
-
-      if (transcription?.trim()) {
-        // Type the transcription
-        const typeResult = await commands.typeText(transcription.trim());
-        if (typeResult.status === "ok") {
-          logToRust("[Overlay] Text typed successfully");
-        } else {
-          logToRust(`[Overlay] Failed to type text: ${typeResult.error}`);
-        }
-      } else {
-        logToRust("[Overlay] No speech detected");
-      }
-    } catch (error) {
-      logToRust(`[Overlay] Transcription failed: ${error}`);
-    } finally {
-      setStatus("idle");
-    }
-  }, [setStatus]);
+  const [isVisible, setIsVisible] = useState(false);
+  const [state, setState] = useState<OverlayState>("recording");
 
   useEffect(() => {
-    // Guard against duplicate listener setup
-    if (listenersInitialized) {
-      logToRust("[Overlay] Listeners already initialized, skipping");
-      return;
-    }
-    listenersInitialized = true;
-
     const unlisteners: UnlistenFn[] = [];
 
     const setupListeners = async () => {
-      // Listen for status changes from backend
-      const unlistenStatus = await listen<StatusEvent>("status-changed", (event) => {
-        // Only update status if not controlled by Web Audio
-        if (!isRecordingRef.current || event.payload.status !== "recording") {
-          setStatus(event.payload.status);
-        }
+      // show-overlay: update state + trigger fade-in
+      // Force repaint on state change to clear WebKitGTK transparent buffer
+      const unlistenShow = await listen<string>("show-overlay", (event) => {
+        const newState = event.payload as OverlayState;
+        setState((prev) => {
+          if (prev !== newState && prev !== "idle") {
+            // Briefly hide to force WebKitGTK to clear the old frame
+            setIsVisible(false);
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                setIsVisible(true);
+              });
+            });
+          } else {
+            setIsVisible(true);
+          }
+          return newState;
+        });
       });
-      unlisteners.push(unlistenStatus);
+      unlisteners.push(unlistenShow);
 
-      // Listen for recording started event - trigger Web Audio capture
-      const unlistenStarted = await listen("recording-started", () => {
-        logToRust("[Overlay] Received recording-started event");
-        handleStartRecording();
+      // hide-overlay: trigger fade-out (CSS transition handles the animation)
+      const unlistenHide = await listen("hide-overlay", () => {
+        setIsVisible(false);
       });
-      unlisteners.push(unlistenStarted);
-
-      // Listen for recording stopped event - stop capture and transcribe
-      const unlistenStopped = await listen("recording-stopped", () => {
-        logToRust("[Overlay] Received recording-stopped event");
-        handleStopRecording();
-      });
-      unlisteners.push(unlistenStopped);
-
-      logToRust("[Overlay] Event listeners set up");
+      unlisteners.push(unlistenHide);
     };
 
     setupListeners();
@@ -128,83 +45,56 @@ function RecordingOverlay() {
       for (const unlisten of unlisteners) {
         unlisten();
       }
-      listenersInitialized = false;
     };
-  }, [handleStartRecording, handleStopRecording, setStatus]);
+  }, []);
 
   return (
-    <div className="inline-flex items-center gap-2 px-3 py-2 bg-zinc-900/80 backdrop-blur-md rounded-lg border border-zinc-700/40 shadow-lg">
-      {/* Idle State - Minimal green dot */}
-      {status === "idle" && (
+    <div className={`overlay-container ${isVisible ? "fade-in" : ""}`}>
+      {/* Idle State */}
+      {state === "idle" && (
         <>
-          <div className="h-2 w-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/40" />
-          <span className="text-xs text-zinc-300 font-medium">Prêt</span>
+          <div className="dot dot-green" />
+          <span className="overlay-text">Prêt</span>
         </>
       )}
 
-      {/* Recording State - Pulsing red dot with waves */}
-      {status === "recording" && (
+      {/* Recording State */}
+      {state === "recording" && (
         <>
-          <div className="relative flex items-center">
-            {/* Pulsing dot */}
-            <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse shadow-sm shadow-red-500/60" />
+          <div className="dot dot-red dot-pulse" />
+          <div className="bars-container">
+            <div className="bar bar-red overlay-soundwave" style={{ animationDelay: "0s" }} />
+            <div className="bar bar-red overlay-soundwave" style={{ animationDelay: "0.12s" }} />
+            <div className="bar bar-red overlay-soundwave" style={{ animationDelay: "0.15s" }} />
+            <div className="bar bar-red overlay-soundwave" style={{ animationDelay: "0.24s" }} />
+            <div className="bar bar-red overlay-soundwave" style={{ animationDelay: "0.36s" }} />
           </div>
-
-          {/* Mini sound wave bars */}
-          <div className="flex items-center gap-[2px]">
-            <div
-              className="w-[2px] bg-red-500 rounded-full overlay-soundwave h-2"
-              style={{ animationDelay: "0s" }}
-            />
-            <div
-              className="w-[2px] bg-red-500 rounded-full overlay-soundwave h-2"
-              style={{ animationDelay: "0.12s" }}
-            />
-            <div
-              className="w-[2px] bg-red-500 rounded-full overlay-soundwave h-2"
-              style={{ animationDelay: "0.24s" }}
-            />
-            <div
-              className="w-[2px] bg-red-500 rounded-full overlay-soundwave h-2"
-              style={{ animationDelay: "0.36s" }}
-            />
-          </div>
-
-          <span className="text-xs text-red-400 font-medium">Écoute...</span>
+          <span className="overlay-text text-red">Écoute...</span>
         </>
       )}
 
-      {/* Processing State - Spinning amber dot */}
-      {status === "processing" && (
+      {/* Processing State */}
+      {state === "processing" && (
         <>
-          <div className="relative flex items-center">
-            <Zap className="h-3 w-3 text-amber-500 animate-pulse" />
+          <svg
+            className="icon-zap"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            role="img"
+            aria-label="Traitement"
+          >
+            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+          </svg>
+          <div className="bars-container">
+            <div className="bar bar-amber overlay-shimmer" style={{ animationDelay: "0s" }} />
+            <div className="bar bar-amber overlay-shimmer" style={{ animationDelay: "0.15s" }} />
+            <div className="bar bar-amber overlay-shimmer" style={{ animationDelay: "0.3s" }} />
+            <div className="bar bar-amber overlay-shimmer" style={{ animationDelay: "0.45s" }} />
+            <div className="bar bar-amber overlay-shimmer" style={{ animationDelay: "0.6s" }} />
           </div>
-
-          <div className="flex items-center gap-[2px]">
-            <div
-              className="w-[2px] bg-amber-500 rounded-full overlay-shimmer h-2.5"
-              style={{ animationDelay: "0s" }}
-            />
-            <div
-              className="w-[2px] bg-amber-500 rounded-full overlay-shimmer h-2.5"
-              style={{ animationDelay: "0.15s" }}
-            />
-            <div
-              className="w-[2px] bg-amber-500 rounded-full overlay-shimmer h-2.5"
-              style={{ animationDelay: "0.3s" }}
-            />
-            <div
-              className="w-[2px] bg-amber-500 rounded-full overlay-shimmer h-2.5"
-              style={{ animationDelay: "0.45s" }}
-            />
-            <div
-              className="w-[2px] bg-amber-500 rounded-full overlay-shimmer h-2.5"
-              style={{ animationDelay: "0.6s" }}
-            />
-          </div>
-
-          <span className="text-xs text-amber-400 font-medium">IA...</span>
+          <span className="overlay-text text-amber">IA...</span>
         </>
       )}
     </div>

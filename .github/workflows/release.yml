@@ -47,44 +47,40 @@ jobs:
               repo: context.repo.repo,
               tag_name: `v${version}`,
               name: `KaraokeTyper v${version}`,
-              body: `## What's New in v${version}
+              body: `## KaraokeTyper v${version}
 
-            ### UI fix
-            - **Fixed Select dropdown black rectangle** on Linux — Radix UI Portal caused WebKitGTK rendering issue
-            - Dropdown now renders inline without portal for reliable display
+            Voir le [CHANGELOG](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/dev/CHANGELOG.md) pour les détails.
 
-            ---
+            ### Téléchargements
 
-            ### Downloads
-
-            | Platform | File | Description |
-            |----------|------|-------------|
-            | **Linux** | \`karaoketyper_${version}_amd64.deb\` | Debian/Ubuntu package |
-            | **Linux** | \`karaoketyper_${version}_amd64.AppImage\` | Portable AppImage |
-            | **Windows** | \`karaoketyper_${version}_x64-setup.exe\` | Windows installer |
-            | **Windows** | \`karaoketyper_${version}_x64_en-US.msi\` | Windows MSI package |
-            | **macOS** | \`karaoketyper_${version}_aarch64.dmg\` | macOS Apple Silicon DMG |
+            | Plateforme | Fichier | Description |
+            |------------|---------|-------------|
+            | **Linux** | \`karaoketyper_${version}_amd64.deb\` | Paquet Debian/Ubuntu |
+            | **Linux** | \`karaoketyper_${version}_amd64.AppImage\` | AppImage portable |
+            | **Windows** | \`karaoketyper_${version}_x64-setup.exe\` | Installateur Windows |
+            | **Windows** | \`karaoketyper_${version}_x64_en-US.msi\` | Paquet MSI Windows |
+            | **macOS** | \`karaoketyper_${version}_aarch64.dmg\` | DMG macOS Apple Silicon |
 
             ### Installation
 
-            **Linux (Debian/Ubuntu):**
+            **Linux (Debian/Ubuntu) :**
             \`\`\`bash
             sudo dpkg -i karaoketyper_${version}_amd64.deb
             sudo apt-get install -f
             \`\`\`
 
-            **Linux (AppImage):**
+            **Linux (AppImage) :**
             \`\`\`bash
             chmod +x karaoketyper_${version}_amd64.AppImage
             ./karaoketyper_${version}_amd64.AppImage
             \`\`\`
 
-            **Windows:** Run the installer (.exe or .msi)
+            **Windows :** Lancez l'installateur (.exe ou .msi)
 
-            **macOS:** Mount the DMG and drag to Applications
+            **macOS :** Montez le DMG et glissez dans Applications
 
             ---
-            *100% offline voice dictation - no cloud, no telemetry*
+            *Dictée vocale 100% hors-ligne — pas de cloud, pas de télémétrie*
             `,
               draft: true,
               prerelease: false
@@ -237,9 +233,10 @@ jobs:
           CXXFLAGS: '-mmacosx-version-min=10.15'
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
-          args: --features gpu-metal
+          args: --config src-tauri/tauri.macos.conf.json --features gpu-metal
 
   publish-release:
+    if: always() && needs.create-release.result == 'success' && (needs.build-linux.result == 'success' || needs.build-windows.result == 'success' || needs.build-macos.result == 'success')
     needs: [create-release, build-linux, build-windows, build-macos]
     runs-on: ubuntu-latest
     steps:

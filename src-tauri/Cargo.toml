@@ -1,6 +1,6 @@
 [package]
 name = "karaoketyper"
-version = "1.0.8"
+version = "1.2.0"
 description = "Offline cross-platform voice dictation with push-to-talk"
 authors = ["KaraokeTyper Team"]
 edition = "2021"
@@ -57,14 +57,14 @@ ringbuf = "0.4"
 arboard = "3.4"
 
 # Keyboard simulation (cross-platform)
-enigo = "0.2"
+enigo = "0.6"
 
 # Keyboard event listening (cross-platform)
 rdev = "0.5"
 
 # Speech-to-text (CPU by default, GPU acceleration via features)
 whisper-rs = "0.14"
-whisper-rs-sys = "0.13"
+whisper-rs-sys = { version = "0.13", default-features = false }
 
 # Voice Activity Detection (Silero VAD v4) — direct ort usage
 # vad-rs crates.io pins ort rc.9 which doesn't compile on Rust 1.92+
@@ -78,6 +78,9 @@ cpal = "0.15"
 
 # Optional: Ollama LLM client for text correction
 ollama-rs = { version = "0.2", features = ["stream"], optional = true }
+
+# String similarity for custom word matching (Levenshtein distance)
+strsim = "0.11"
 
 # evdev for low-level keyboard access on Wayland (fallback)
 [target.'cfg(target_os = "linux")'.dependencies]

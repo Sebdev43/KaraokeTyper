@@ -15,6 +15,7 @@ mod audio_feedback;
 mod gnome_extension;
 mod app_data;
 mod ollama_client;
+mod text_processing;
 
 // Linux-specific modules
 #[cfg(target_os = "linux")]
@@ -116,9 +117,9 @@ impl SttEngine {
         Ok(SttEngine { engine })
     }
 
-    pub fn transcribe(&self, audio_data: &[f32]) -> Result<String, String> {
+    pub fn transcribe(&self, audio_data: &[f32], initial_prompt: Option<&str>) -> Result<String, String> {
         self.engine
-            .transcribe(audio_data)
+            .transcribe(audio_data, initial_prompt)
             .map_err(|e| e.to_string())
     }
 
@@ -127,12 +128,13 @@ impl SttEngine {
     }
 }
 
-// CPAL: stream opened on first PTT (slow ~1-2s), kept paused between recordings (instant PTT)
+// Worker-thread audio capture: stream opened in background thread, commands via mpsc channel.
+// Eliminates PTT race conditions — start/stop are queued and processed after stream is ready.
 pub(crate) struct AppState {
     audio_capture: Arc<Mutex<AudioCapture>>,
     stt_engine: Arc<Mutex<Option<SttEngine>>>,
     config: Arc<Mutex<AppConfig>>,
-    recording_ready: Arc<std::sync::atomic::AtomicBool>,
+    /// Timestamp of the hotkey press — used for [TIMING] logs
     pub recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
     last_stt_activity: Arc<std::sync::atomic::AtomicU64>,
     idle_watcher_shutdown: Arc<std::sync::atomic::AtomicBool>,
@@ -144,7 +146,6 @@ impl Default for AppState {
             audio_capture: Arc::new(Mutex::new(AudioCapture::new(16000))),
             stt_engine: Arc::new(Mutex::new(None)),
             config: Arc::new(Mutex::new(AppConfig::load().unwrap_or_default())),
-            recording_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             recording_start_time: Arc::new(Mutex::new(None)),
             last_stt_activity: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             idle_watcher_shutdown: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -288,7 +289,7 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
     })?;
 
     dev_log!("[STT] ✓ {} engine initialized", engine.backend_name());
-    *state.stt_engine.lock().unwrap() = Some(engine);
+    *state.stt_engine.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
 
     // Initialize Voice Activity Detection (Silero VAD v4)
     {
@@ -301,7 +302,7 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
             match vad::SileroVad::new(&vad_model_path, 0.3) {
                 Ok(silero) => {
                     let smoothed = vad::SmoothedVad::new(Box::new(silero), 15, 15, 2);
-                    let capture = state.audio_capture.lock().unwrap();
+                    let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
                     capture.set_vad(smoothed);
                     dev_log!("[VAD] ✓ Silero VAD v4 initialized (threshold: 0.3)");
                 }
@@ -314,17 +315,17 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
         }
     }
 
-    // Pre-open audio stream now (paused) so first PTT press is instant
-    // Without this, first open_stream() takes ~2s (ALSA enumeration) and loses speech
+    // Pre-open audio worker now so first PTT press is instant.
+    // The worker thread handles ALSA enumeration (~2s) in the background.
     {
-        let capture = state.audio_capture.lock().unwrap();
+        let mut capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
         let device_name = {
             let config = state.config.lock().unwrap();
             config.audio_device_name.clone()
         };
-        dev_log!("[AUDIO] Pre-opening audio stream...");
+        dev_log!("[AUDIO] Spawning audio worker (pre-open)...");
         match capture.open_stream(device_name.as_deref()) {
-            Ok(()) => dev_log!("[AUDIO] ✅ Stream pre-opened (paused) — first PTT will be instant"),
+            Ok(()) => dev_log!("[AUDIO] ✅ Audio worker spawned — stream opening in background"),
             Err(e) => dev_log!("[AUDIO] ⚠️ Pre-open failed: {} — will retry on first PTT", e),
         }
     }
@@ -377,14 +378,15 @@ async fn start_recording(app_handle: AppHandle, state: State<'_, AppState>) -> R
     do_start_recording(app_handle, &state).await
 }
 
-/// Helper function for start_recording - can be called from other modules
-/// Stream is already open — this just toggles the recording flag (instant)
+/// Helper function for start_recording - can be called from other modules.
+///
+/// Worker-thread architecture: `open_stream()` returns instantly (spawns a thread).
+/// `start_recording()` sends a command that is queued and processed only after the
+/// stream is ready. No race condition possible.
 pub(crate) async fn do_start_recording(
     app_handle: AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
-
     let t0 = state
         .recording_start_time
         .lock()
@@ -405,26 +407,25 @@ pub(crate) async fn do_start_recording(
         )
         .ok();
 
-    // Open stream if not already open, then start recording
+    // Open worker if not already running, then send Start command
     {
-        let capture = state.audio_capture.lock().unwrap();
+        let mut capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
 
         if !capture.is_stream_open() {
             let device_name = {
                 let config = state.config.lock().unwrap();
                 config.audio_device_name.clone()
             };
-            dev_log!("[TIMING] T+{}ms: Opening audio stream...", t0.elapsed().as_millis());
+            dev_log!("[TIMING] T+{}ms: Spawning audio worker...", t0.elapsed().as_millis());
             capture.open_stream(device_name.as_deref())?;
-            dev_log!("[TIMING] T+{}ms: Stream opened", t0.elapsed().as_millis());
+            dev_log!("[TIMING] T+{}ms: Worker spawned (stream opening in background)", t0.elapsed().as_millis());
         } else {
-            dev_log!("[TIMING] T+{}ms: Stream already open (instant)", t0.elapsed().as_millis());
+            dev_log!("[TIMING] T+{}ms: Worker already running (instant)", t0.elapsed().as_millis());
         }
 
+        // Send Start command — queued in channel, processed after stream is ready
         capture.start_recording()?;
     }
-
-    state.recording_ready.store(true, Ordering::SeqCst);
 
     // Play start sound (non-blocking, in separate thread)
     {
@@ -436,7 +437,7 @@ pub(crate) async fn do_start_recording(
     }
 
     dev_log!(
-        "[TIMING] T+{}ms: Recording started",
+        "[TIMING] T+{}ms: Start command sent",
         t0.elapsed().as_millis()
     );
     Ok(())
@@ -451,13 +452,15 @@ async fn stop_recording(
     do_stop_recording(app_handle, &state).await
 }
 
-/// Helper function for stop_recording - can be called from other modules
+/// Helper function for stop_recording - can be called from other modules.
+///
+/// Worker-thread architecture: `stop_recording()` sends a `Cmd::Stop` to the worker,
+/// which drains remaining samples and returns the buffer via a reply channel.
+/// No race condition — the worker processes Start before Stop (channel ordering).
 pub(crate) async fn do_stop_recording(
     app_handle: AppHandle,
     state: &State<'_, AppState>,
 ) -> Result<String, String> {
-    use std::sync::atomic::Ordering;
-
     // Get t0 from AppState for timing
     let t0 = state
         .recording_start_time
@@ -469,25 +472,6 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis()
     );
 
-    // Wait for recording to be ready (max 3000ms — open_stream can take ~2s on first PTT)
-    let mut waited = 0;
-    while !state.recording_ready.load(Ordering::SeqCst) && waited < 3000 {
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        waited += 10;
-    }
-    dev_log!(
-        "[TIMING] T+{}ms: waited {}ms for recording_ready",
-        t0.elapsed().as_millis(),
-        waited
-    );
-
-    if !state.recording_ready.load(Ordering::SeqCst) {
-        dev_log!("[RECORDING] ⚠️ Recording never became ready, proceeding anyway");
-    }
-
-    // Reset the ready flag
-    state.recording_ready.store(false, Ordering::SeqCst);
-
     app_handle
         .emit(
             "status-changed",
@@ -498,11 +482,6 @@ pub(crate) async fn do_stop_recording(
         )
         .ok();
 
-    dev_log!(
-        "[TIMING] T+{}ms: stopping audio capture...",
-        t0.elapsed().as_millis()
-    );
-
     // Play stop sound (non-blocking, in separate thread)
     {
         let cfg = state.config.lock().unwrap();
@@ -512,16 +491,19 @@ pub(crate) async fn do_stop_recording(
         }
     }
 
-    // Stop recording (stream stays open/paused for instant next PTT)
-    let audio_data = {
-        let capture = state.audio_capture.lock().unwrap();
+    dev_log!(
+        "[TIMING] T+{}ms: sending Stop to audio worker...",
+        t0.elapsed().as_millis()
+    );
 
-        // Pause stream — mic stops capturing but stays ready
-        capture.stop_recording();
-
-        // Get the captured audio buffer
-        capture.get_buffer()
+    // Send Stop command (non-blocking), then drop the Mutex before waiting.
+    // This prevents holding the lock during the blocking recv (up to 5s).
+    let stop_handle = {
+        let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
+        capture.stop_recording()?
     };
+    // Mutex is released — now block waiting for the worker's reply
+    let audio_data = stop_handle.wait()?;
 
     dev_log!(
         "[TIMING] T+{}ms: audio capture stopped, got {} samples ({:.2}s)",
@@ -530,19 +512,21 @@ pub(crate) async fn do_stop_recording(
         audio_data.len() as f32 / 16000.0
     );
 
-    // DEBUG: Save audio to file for inspection (cross-platform temp dir)
-    let debug_path = std::env::temp_dir().join("karaoketyper_debug.wav");
-    if let Err(e) = save_debug_wav(&audio_data, &debug_path) {
-        dev_log!("[DEBUG] Failed to save debug WAV: {}", e);
-    } else {
-        dev_log!(
-            "[DEBUG] 🎵 Audio saved to: {} ({} samples, {:.2}s)",
-            debug_path.display(),
-            audio_data.len(),
-            audio_data.len() as f32 / 16000.0
-        );
+    // DEBUG: Save audio to file for inspection (dev builds only)
+    #[cfg(debug_assertions)]
+    {
+        let debug_path = std::env::temp_dir().join("karaoketyper_debug.wav");
+        if let Err(e) = save_debug_wav(&audio_data, &debug_path) {
+            dev_log!("[DEBUG] Failed to save debug WAV: {}", e);
+        } else {
+            dev_log!(
+                "[DEBUG] Audio saved to: {} ({} samples, {:.2}s)",
+                debug_path.display(),
+                audio_data.len(),
+                audio_data.len() as f32 / 16000.0
+            );
+        }
     }
-    dev_log!("[TIMING] T+{}ms: debug WAV saved", t0.elapsed().as_millis());
 
     if audio_data.is_empty() {
         app_handle
@@ -591,14 +575,31 @@ pub(crate) async fn do_stop_recording(
     // Update STT activity timestamp (for idle watcher)
     update_stt_activity(state);
 
+    // Read text processing config before entering spawn_blocking
+    let (custom_words, custom_words_threshold, filler_removal, stutter_collapse) = {
+        let cfg = state.config.lock().unwrap();
+        (
+            cfg.custom_words.clone(),
+            cfg.custom_words_threshold,
+            cfg.filler_removal_enabled,
+            cfg.stutter_collapse_enabled,
+        )
+    };
+
+    // Build initial_prompt from custom words to bias Whisper recognition
+    let initial_prompt = text_processing::build_initial_prompt(&custom_words, {
+        &state.config.lock().unwrap().language
+    });
+
     // Clone Arcs to move into spawn_blocking
     let stt_engine_arc = Arc::clone(&state.stt_engine);
     let config_arc = Arc::clone(&state.config);
 
     // Use spawn_blocking to offload CPU-intensive Whisper transcription
     // Lazy reload is done INSIDE the lock to prevent race with idle watcher
+    let prompt_for_whisper = if initial_prompt.is_empty() { None } else { Some(initial_prompt.clone()) };
     let transcription = tokio::task::spawn_blocking(move || {
-        let mut stt_engine = stt_engine_arc.lock().unwrap();
+        let mut stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
 
         // Lazy reload: if model was unloaded by idle watcher, re-initialize while holding lock
         let needs_reload = match stt_engine.as_ref() {
@@ -621,7 +622,7 @@ pub(crate) async fn do_stop_recording(
         }
 
         let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
-        engine.transcribe(&padded_audio)
+        engine.transcribe(&padded_audio, prompt_for_whisper.as_deref())
     })
     .await
     .map_err(|e| format!("Transcription task panicked: {}", e))??;
@@ -634,6 +635,25 @@ pub(crate) async fn do_stop_recording(
         t0.elapsed().as_millis(),
         transcription
     );
+
+    // Apply text processing pipeline: filler removal → stutter collapse → custom words
+    let transcription = {
+        let processed = text_processing::process_transcription(
+            &transcription,
+            &custom_words,
+            custom_words_threshold,
+            filler_removal,
+            stutter_collapse,
+        );
+        if processed != transcription {
+            dev_log!(
+                "[TEXT] Post-processing: '{}' → '{}'",
+                transcription,
+                processed
+            );
+        }
+        processed
+    };
 
     // Optional Ollama post-processing for spelling/grammar correction
     let final_text = {
@@ -686,7 +706,8 @@ async fn type_text(text: String) -> Result<(), String> {
 
 /// Helper function for type_text - can be called from other modules
 pub(crate) async fn do_type_text(text: String) -> Result<(), String> {
-    let mut output = TextOutput::new(100)?; // 100ms delay for key release
+    let config = AppConfig::load().unwrap_or_default();
+    let mut output = TextOutput::new(60, config.paste_method)?;
     output.type_text(&text)?;
     Ok(())
 }
@@ -701,22 +722,222 @@ async fn show_settings(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+const OVERLAY_WIDTH: f64 = 300.0;
+const OVERLAY_HEIGHT: f64 = 80.0;
+
+/// Create the overlay window programmatically (like Handy).
+/// This gives full control over window properties that tauri.conf.json doesn't expose.
+fn create_overlay_window(app_handle: &AppHandle) {
+    use tauri::WebviewWindowBuilder;
+
+    let url = if cfg!(debug_assertions) {
+        // Dev mode: Vite serves overlay.html
+        tauri::WebviewUrl::External("http://localhost:1420/overlay.html".parse().unwrap())
+    } else {
+        // Production: built overlay.html in dist
+        tauri::WebviewUrl::App("overlay.html".into())
+    };
+
+    let mut builder = WebviewWindowBuilder::new(app_handle, "overlay", url)
+        .title("Recording")
+        .resizable(false)
+        .inner_size(OVERLAY_WIDTH, OVERLAY_HEIGHT)
+        .shadow(false)
+        .maximizable(false)
+        .minimizable(false)
+        .closable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .visible(false);
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder = builder.transparent(true);
+    }
+
+    // Position centered on primary monitor
+    if let Ok(Some(monitor)) = app_handle.primary_monitor() {
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+        let pos = monitor.position();
+        let monitor_w = size.width as f64 / scale;
+        let monitor_x = pos.x as f64 / scale;
+        let monitor_y = pos.y as f64 / scale;
+
+        let x = monitor_x + (monitor_w - OVERLAY_WIDTH) / 2.0;
+        let y = monitor_y + 20.0;
+        builder = builder.position(x, y);
+    }
+
+    match builder.build() {
+        Ok(_window) => {
+            dev_log!("[OVERLAY] Window created successfully (hidden, {}x{})", OVERLAY_WIDTH, OVERLAY_HEIGHT);
+        }
+        Err(e) => {
+            dev_log!("[OVERLAY] Failed to create overlay window: {}", e);
+        }
+    }
+}
+
+/// Position the overlay on the monitor where the cursor is, then show it.
+/// Called from evdev_listener, keyboard_listener, and show_overlay command.
+pub(crate) fn show_overlay_with_state(app: &AppHandle, state: &str) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        // Reposition overlay centered on the monitor with the cursor
+        if let Ok(monitors) = app.available_monitors() {
+            // Try to find cursor position via xdotool (X11) or fallback
+            let cursor_pos = get_cursor_position();
+
+            if let Some((cx, cy)) = cursor_pos {
+                for monitor in &monitors {
+                    let pos = monitor.position();
+                    let size = monitor.size();
+                    let scale = monitor.scale_factor();
+
+                    // Check if cursor is within this monitor
+                    if cx >= pos.x
+                        && cx < pos.x + size.width as i32
+                        && cy >= pos.y
+                        && cy < pos.y + size.height as i32
+                    {
+                        // Center overlay horizontally, place near top
+                        let overlay_w = OVERLAY_WIDTH;
+                        let monitor_w = size.width as f64 / scale;
+                        let monitor_x = pos.x as f64 / scale;
+                        let monitor_y = pos.y as f64 / scale;
+
+                        let x = monitor_x + (monitor_w - overlay_w) / 2.0;
+                        let y = monitor_y + 20.0; // 20px from top of monitor
+
+                        let _ = window.set_position(tauri::Position::Logical(
+                            tauri::LogicalPosition { x, y },
+                        ));
+                        dev_log!("[OVERLAY] Positioned at ({}, {}) on monitor at ({}, {})", x, y, pos.x, pos.y);
+                        break;
+                    }
+                }
+            } else if let Some(primary) = monitors.first() {
+                // Fallback: center on primary monitor
+                let size = primary.size();
+                let scale = primary.scale_factor();
+                let pos = primary.position();
+                let overlay_w = OVERLAY_WIDTH;
+                let monitor_w = size.width as f64 / scale;
+                let monitor_x = pos.x as f64 / scale;
+                let monitor_y = pos.y as f64 / scale;
+
+                let x = monitor_x + (monitor_w - overlay_w) / 2.0;
+                let y = monitor_y + 20.0;
+
+                let _ = window.set_position(tauri::Position::Logical(
+                    tauri::LogicalPosition { x, y },
+                ));
+                dev_log!("[OVERLAY] Positioned on primary monitor at ({}, {})", x, y);
+            }
+        }
+
+        // Show window first (content is opacity:0 by default), then emit state
+        // React receives event → adds fade-in class → opacity transitions to 1
+        let _ = window.show();
+        let _ = window.emit("show-overlay", state);
+    }
+}
+
+/// Hide overlay: emit hide-overlay (triggers CSS fade-out), then hide window after 300ms
+pub(crate) fn hide_overlay_animated(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        // Emit event → React removes fade-in class → opacity transitions to 0
+        let _ = window.emit("hide-overlay", ());
+        // Hide window after fade-out animation completes (300ms)
+        let window_clone = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let _ = window_clone.hide();
+        });
+    }
+}
+
+/// Get cursor position (cross-platform)
+fn get_cursor_position() -> Option<(i32, i32)> {
+    #[cfg(target_os = "linux")]
+    {
+        // Try xdotool first
+        if let Ok(output) = std::process::Command::new("xdotool")
+            .args(["getmouselocation", "--shell"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut x = None;
+                let mut y = None;
+                for line in stdout.lines() {
+                    if let Some(val) = line.strip_prefix("X=") {
+                        x = val.parse().ok();
+                    } else if let Some(val) = line.strip_prefix("Y=") {
+                        y = val.parse().ok();
+                    }
+                }
+                if let (Some(x), Some(y)) = (x, y) {
+                    return Some((x, y));
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // CoreGraphics cursor position
+        if let Ok(output) = std::process::Command::new("sh")
+            .args(["-c", "python3 -c \"from Quartz import CGEventGetLocation, CGEventCreate; e=CGEventCreate(None); p=CGEventGetLocation(e); print(int(p.x), int(p.y))\""])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+                if parts.len() == 2 {
+                    if let (Ok(x), Ok(y)) = (parts[0].parse(), parts[1].parse()) {
+                        return Some((x, y));
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Win32 GetCursorPos
+        if let Ok(output) = std::process::Command::new("powershell")
+            .args(["-Command", "[System.Windows.Forms.Cursor]::Position | ForEach-Object { \"$($_.X) $($_.Y)\" }"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+                if parts.len() == 2 {
+                    if let (Ok(x), Ok(y)) = (parts[0].parse(), parts[1].parse()) {
+                        return Some((x, y));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn show_overlay(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("overlay") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-    }
+    show_overlay_with_state(&app, "recording");
     Ok(())
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn hide_overlay(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("overlay") {
-        window.hide().map_err(|e| e.to_string())?;
-    }
+    hide_overlay_animated(&app);
     Ok(())
 }
 
@@ -764,15 +985,15 @@ async fn save_settings(
         update_global_shortcut(&app_handle, &old_shortcut, &new_config.shortcut)?;
     }
 
-    // Re-open audio stream immediately if device changed
+    // Re-open audio worker on new device if device changed
     if old_device != new_config.audio_device_name {
         let device_name = new_config.audio_device_name.clone();
-        // Close old stream first (separate lock scope)
-        { state.audio_capture.lock().unwrap().close_stream(); }
-        // Re-open on new device (separate lock scope — open_stream can be slow for BT)
-        match state.audio_capture.lock().unwrap().open_stream(device_name.as_deref()) {
-            Ok(()) => dev_log!("[AUDIO] ✅ Stream re-opened on new device: {:?}", device_name),
-            Err(e) => dev_log!("[AUDIO] ⚠️ Stream re-open failed: {} — will retry on next PTT", e),
+        let mut capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
+        // close_stream() shuts down the old worker thread
+        capture.close_stream();
+        match capture.open_stream(device_name.as_deref()) {
+            Ok(()) => dev_log!("[AUDIO] ✅ Audio worker re-spawned on new device: {:?}", device_name),
+            Err(e) => dev_log!("[AUDIO] ⚠️ Worker re-spawn failed: {} — will retry on next PTT", e),
         }
     }
 
@@ -786,7 +1007,7 @@ async fn save_settings(
         stt_whisper::suppress_whisper_cpp_logs();
         match SttEngine::new(&new_config) {
             Ok(engine) => {
-                *state.stt_engine.lock().unwrap() = Some(engine);
+                *state.stt_engine.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
                 dev_log!("[STT] ✅ Engine reloaded successfully");
             }
             Err(e) => {
@@ -873,15 +1094,22 @@ async fn transcribe_audio(
         padded_audio.len()
     );
 
+    // Build initial_prompt from custom words
+    let initial_prompt = {
+        let cfg = state.config.lock().unwrap();
+        text_processing::build_initial_prompt(&cfg.custom_words, &cfg.language)
+    };
+    let prompt_for_whisper = if initial_prompt.is_empty() { None } else { Some(initial_prompt) };
+
     // Clone Arc to move into spawn_blocking
     let stt_engine_arc = Arc::clone(&state.stt_engine);
 
     // Use spawn_blocking to offload CPU-intensive Whisper transcription
     // This prevents blocking the async executor
     let transcription = tokio::task::spawn_blocking(move || {
-        let stt_engine = stt_engine_arc.lock().unwrap();
+        let stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
         let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
-        engine.transcribe(&padded_audio)
+        engine.transcribe(&padded_audio, prompt_for_whisper.as_deref())
     })
     .await
     .map_err(|e| format!("Transcription task panicked: {}", e))??;
@@ -1114,7 +1342,7 @@ async fn download_model(
     let config = state.config.lock().unwrap().clone();
     match SttEngine::new(&config) {
         Ok(engine) => {
-            let mut stt = state.stt_engine.lock().unwrap();
+            let mut stt = state.stt_engine.lock().unwrap_or_else(|e| e.into_inner());
             *stt = Some(engine);
             dev_log!("[STT] ✅ STT engine reinitialized with model: {}", model_name);
 
@@ -1263,6 +1491,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
         .setup(|app| {
+            // Create overlay window programmatically (like Handy)
+            // Not in tauri.conf.json — gives full control over window properties
+            create_overlay_window(app.handle());
+
             // Initialize STT engine at startup
             dev_log!("[STARTUP] Initializing STT engine...");
             let app_handle = app.handle().clone();

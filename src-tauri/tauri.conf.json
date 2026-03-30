@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "karaoketyper",
-  "version": "1.0.8",
+  "version": "1.2.0",
   "identifier": "com.seb43.karaoketyper",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -23,27 +23,10 @@
         "visible": false,
         "skipTaskbar": false,
         "decorations": false
-      },
-      {
-        "label": "overlay",
-        "title": "Recording",
-        "url": "overlay.html",
-        "width": 160,
-        "height": 50,
-        "resizable": false,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "center": false,
-        "x": 20,
-        "y": 80,
-        "skipTaskbar": true,
-        "transparent": true,
-        "backgroundColor": [0, 0, 0, 0],
-        "visible": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' http://localhost:*"
     }
   },
   "bundle": {

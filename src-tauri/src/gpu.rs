@@ -14,6 +14,7 @@ pub struct GpuDetectionResult {
 }
 
 /// VRAM requirements per whisper model (approximate, in MB)
+#[allow(dead_code)]
 pub fn model_vram_mb(model_name: &str) -> u32 {
     let name = model_name.to_lowercase();
     if name.contains("large") {

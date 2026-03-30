@@ -1073,77 +1073,75 @@ impl TextOutput {
         }
     }
 
-    /// Check if ANY native direct-typing tool is available.
-    /// Checks ALL tools regardless of session type (X11/Wayland), because env vars
-    /// can be wrong (Tauri/Electron apps often report X11 even on Wayland sessions).
-    /// The tool itself will fail gracefully if it can't work in the current environment.
+    /// Check if a native direct-typing tool is available for the current session.
+    /// Follows Handy's approach: branch on session type, check relevant tools.
+    /// ydotool is checked on BOTH X11 and Wayland (works on both via uinput).
     #[cfg(target_os = "linux")]
     fn has_native_direct_tool() -> bool {
-        Self::is_tool_available("wtype")
-            || Self::is_tool_available("xdotool")
-            || Self::is_tool_available("kwtype")
-            || Self::is_tool_available("dotool")
-            || Self::is_tool_available("ydotool")
+        if Self::is_wayland() {
+            let is_kde = std::env::var("XDG_CURRENT_DESKTOP")
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains("kde");
+            (is_kde && Self::is_tool_available("kwtype"))
+                || Self::is_tool_available("wtype")
+                || Self::is_tool_available("dotool")
+                || Self::is_tool_available("ydotool")
+        } else {
+            // X11: xdotool OR ydotool (ydotool works on X11 too via uinput)
+            Self::is_tool_available("xdotool")
+                || Self::is_tool_available("ydotool")
+        }
     }
 
-    /// Direct typing: try ALL native tools in priority order, regardless of session type.
-    /// Env vars (XDG_SESSION_TYPE, WAYLAND_DISPLAY) are unreliable in Tauri/Electron apps
-    /// which often report X11 even on Wayland sessions. Each tool fails fast if it can't
-    /// work in the current environment, so trying them all is safe and robust.
+    /// Direct typing: try native tools based on session type.
+    /// Follows Handy's approach: Wayland tools for Wayland, X11 tools for X11.
+    /// ydotool is tried on BOTH (works via uinput, layout-aware).
+    /// Never use wtype on X11 — it runs but uses wrong keymap (AZERTY garbled).
     fn try_direct_typing(text: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
+            let is_wayland = Self::is_wayland();
             let is_kde = std::env::var("XDG_CURRENT_DESKTOP")
                 .unwrap_or_default()
                 .to_lowercase()
                 .contains("kde");
 
-            // KDE Wayland: kwtype first (KDE Fake Input protocol, best unicode support)
-            if is_kde && Self::is_tool_available("kwtype") {
-                crate::dev_log!("[OUTPUT] Direct: trying kwtype (KDE)");
-                match Self::run_direct_tool("kwtype", &["--", text]) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => crate::dev_log!("[OUTPUT] kwtype failed: {}", e),
+            crate::dev_log!(
+                "[OUTPUT] Direct typing: is_wayland={}, kde={}",
+                is_wayland, is_kde
+            );
+
+            if is_wayland {
+                // Wayland: kwtype → wtype → dotool → ydotool
+                if is_kde && Self::is_tool_available("kwtype") {
+                    crate::dev_log!("[OUTPUT] Direct: using kwtype (KDE Wayland)");
+                    return Self::run_direct_tool("kwtype", &["--", text]);
+                }
+                if Self::is_tool_available("wtype") {
+                    crate::dev_log!("[OUTPUT] Direct: using wtype");
+                    return Self::run_direct_tool("wtype", &["--", text]);
+                }
+                if Self::is_tool_available("dotool") {
+                    crate::dev_log!("[OUTPUT] Direct: using dotool");
+                    return Self::run_dotool_type(text);
+                }
+                if Self::is_tool_available("ydotool") {
+                    crate::dev_log!("[OUTPUT] Direct: using ydotool");
+                    return Self::run_direct_tool("ydotool", &["type", "--", text]);
+                }
+            } else {
+                // X11: xdotool → ydotool (ydotool works on X11 via uinput)
+                if Self::is_tool_available("xdotool") {
+                    crate::dev_log!("[OUTPUT] Direct: using xdotool");
+                    return Self::run_direct_tool("xdotool", &["type", "--clearmodifiers", "--", text]);
+                }
+                if Self::is_tool_available("ydotool") {
+                    crate::dev_log!("[OUTPUT] Direct: using ydotool (X11 fallback)");
+                    return Self::run_direct_tool("ydotool", &["type", "--", text]);
                 }
             }
-
-            // wtype: works on all Wayland compositors, good unicode support
-            if Self::is_tool_available("wtype") {
-                crate::dev_log!("[OUTPUT] Direct: trying wtype");
-                match Self::run_direct_tool("wtype", &["--", text]) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => crate::dev_log!("[OUTPUT] wtype failed: {}", e),
-                }
-            }
-
-            // xdotool: X11, handles unicode well
-            if Self::is_tool_available("xdotool") {
-                crate::dev_log!("[OUTPUT] Direct: trying xdotool");
-                match Self::run_direct_tool("xdotool", &["type", "--clearmodifiers", "--", text]) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => crate::dev_log!("[OUTPUT] xdotool failed: {}", e),
-                }
-            }
-
-            // dotool: works on both X11 and Wayland via stdin
-            if Self::is_tool_available("dotool") {
-                crate::dev_log!("[OUTPUT] Direct: trying dotool");
-                match Self::run_dotool_type(text) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => crate::dev_log!("[OUTPUT] dotool failed: {}", e),
-                }
-            }
-
-            // ydotool: last resort — may corrupt accents but works on both X11/Wayland
-            if Self::is_tool_available("ydotool") {
-                crate::dev_log!("[OUTPUT] Direct: trying ydotool (warning: may corrupt accents)");
-                match Self::run_direct_tool("ydotool", &["type", "--", text]) {
-                    Ok(()) => return Ok(()),
-                    Err(e) => crate::dev_log!("[OUTPUT] ydotool failed: {}", e),
-                }
-            }
-
-            crate::dev_log!("[OUTPUT] No native tool succeeded, falling back to enigo");
+            crate::dev_log!("[OUTPUT] No native tool found, falling back to enigo");
         }
 
         // Fallback: enigo (works on all platforms)

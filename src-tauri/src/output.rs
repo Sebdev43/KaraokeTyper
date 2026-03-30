@@ -1073,9 +1073,14 @@ impl TextOutput {
         }
     }
 
-    /// Check if a native direct-typing tool is available for the current session.
-    /// Follows Handy's approach: branch on session type, check relevant tools.
-    /// ydotool is checked on BOTH X11 and Wayland (works on both via uinput).
+    /// Check if a native direct-typing tool is available that handles keyboard
+    /// layouts correctly (AZERTY, QWERTZ, etc.).
+    ///
+    /// IMPORTANT: wtype and ydotool send QWERTY keycodes that get re-interpreted
+    /// by the compositor with the current layout → garbled text on AZERTY.
+    /// Only xdotool (X11) and kwtype (KDE Wayland) handle layouts correctly.
+    /// On true Wayland, wtype works because the compositor provides the keymap.
+    /// On XWayland (Tauri reports X11 but session is Wayland), wtype garbles.
     #[cfg(target_os = "linux")]
     fn has_native_direct_tool() -> bool {
         if Self::is_wayland() {
@@ -1086,11 +1091,10 @@ impl TextOutput {
             (is_kde && Self::is_tool_available("kwtype"))
                 || Self::is_tool_available("wtype")
                 || Self::is_tool_available("dotool")
-                || Self::is_tool_available("ydotool")
         } else {
-            // X11: xdotool OR ydotool (ydotool works on X11 too via uinput)
+            // X11: ONLY xdotool handles keyboard layouts correctly.
+            // ydotool/wtype send QWERTY keycodes → garbled on AZERTY.
             Self::is_tool_available("xdotool")
-                || Self::is_tool_available("ydotool")
         }
     }
 
@@ -1131,14 +1135,12 @@ impl TextOutput {
                     return Self::run_direct_tool("ydotool", &["type", "--", text]);
                 }
             } else {
-                // X11: xdotool → ydotool (ydotool works on X11 via uinput)
+                // X11: ONLY xdotool handles keyboard layouts correctly.
+                // Do NOT use ydotool/wtype here — they send QWERTY keycodes
+                // that get garbled on AZERTY/QWERTZ layouts.
                 if Self::is_tool_available("xdotool") {
                     crate::dev_log!("[OUTPUT] Direct: using xdotool");
                     return Self::run_direct_tool("xdotool", &["type", "--clearmodifiers", "--", text]);
-                }
-                if Self::is_tool_available("ydotool") {
-                    crate::dev_log!("[OUTPUT] Direct: using ydotool (X11 fallback)");
-                    return Self::run_direct_tool("ydotool", &["type", "--", text]);
                 }
             }
             crate::dev_log!("[OUTPUT] No native tool found, falling back to enigo");

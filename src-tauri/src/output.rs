@@ -527,50 +527,64 @@ impl TextOutput {
         match self.paste_method {
             PasteMethod::Direct => {
                 let t1 = std::time::Instant::now();
-                // On Linux, if no native typing tool is available, auto-fallback
-                // to clipboard + Ctrl+V. Enigo's text() on X11 has known bugs
-                // that silently drop characters (uppercase loss, Unicode issues).
-                // Enigo keyboard shortcuts (Ctrl+V) work fine — only text() is broken.
+
+                // Remote desktop apps (RustDesk, AnyDesk): ALWAYS use direct typing.
+                // Their clipboard sync is unreliable on Linux, but they forward
+                // keyboard events reliably. Even enigo text() (buggy on X11) is
+                // better than clipboard that never arrives on the remote side.
                 #[cfg(target_os = "linux")]
-                let use_clipboard_fallback = !Self::has_native_direct_tool();
+                let force_direct = Self::is_remote_desktop_focused();
                 #[cfg(not(target_os = "linux"))]
-                let use_clipboard_fallback = false;
+                let force_direct = false;
 
-                if use_clipboard_fallback {
-                    // Auto-detect terminal and choose Ctrl+Shift+V or Ctrl+V
-                    #[cfg(target_os = "linux")]
-                    let effective_method = Self::resolve_paste_method(&PasteMethod::Direct);
-                    #[cfg(not(target_os = "linux"))]
-                    let effective_method = PasteMethod::CtrlV;
-
+                if force_direct {
                     crate::dev_log!(
-                        "[OUTPUT] ⚠️ No native typing tool — auto-fallback to clipboard + {:?}",
-                        effective_method
+                        "[OUTPUT] Remote desktop detected — forcing direct typing (clipboard unreliable)"
                     );
-                    self.set_clipboard_text(text)?;
-                    if self.key_delay_ms > 0 {
-                        thread::sleep(Duration::from_millis(self.key_delay_ms));
-                    }
-                    // Enigo keyboard shortcuts work fine on X11 — only text() is buggy
+                    Self::try_direct_typing(text)?;
+                } else {
+                    // On Linux, if no native typing tool is available, auto-fallback
+                    // to clipboard + paste shortcut. Enigo's text() on X11 has known bugs
+                    // that silently drop characters — clipboard is safer for standard apps.
                     #[cfg(target_os = "linux")]
-                    {
-                        match Self::try_enigo_shortcut(&effective_method) {
-                            Ok(()) => {}
-                            Err(e) => {
-                                crate::dev_log!(
-                                    "[OUTPUT] enigo shortcut failed: {}, trying uinput...",
-                                    e
-                                );
-                                Self::try_uinput_shortcut(&effective_method)?;
+                    let use_clipboard_fallback = !Self::has_native_direct_tool();
+                    #[cfg(not(target_os = "linux"))]
+                    let use_clipboard_fallback = false;
+
+                    if use_clipboard_fallback {
+                        // Auto-detect terminal and choose Ctrl+Shift+V or Ctrl+V
+                        #[cfg(target_os = "linux")]
+                        let effective_method = Self::resolve_paste_method(&PasteMethod::Direct);
+                        #[cfg(not(target_os = "linux"))]
+                        let effective_method = PasteMethod::CtrlV;
+
+                        crate::dev_log!(
+                            "[OUTPUT] No native typing tool — clipboard fallback + {:?}",
+                            effective_method
+                        );
+                        self.set_clipboard_text(text)?;
+                        if self.key_delay_ms > 0 {
+                            thread::sleep(Duration::from_millis(self.key_delay_ms));
+                        }
+                        #[cfg(target_os = "linux")]
+                        {
+                            match Self::try_enigo_shortcut(&effective_method) {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    crate::dev_log!(
+                                        "[OUTPUT] enigo shortcut failed: {}, trying uinput...",
+                                        e
+                                    );
+                                    Self::try_uinput_shortcut(&effective_method)?;
+                                }
                             }
                         }
+                    } else {
+                        Self::try_direct_typing(text)?;
                     }
-                } else {
-                    Self::try_direct_typing(text)?;
                 }
                 crate::dev_log!(
-                    "[OUTPUT_TIMING] Direct type{}: {}ms",
-                    if use_clipboard_fallback { " (clipboard fallback)" } else { "" },
+                    "[OUTPUT_TIMING] Direct type: {}ms",
                     t1.elapsed().as_millis()
                 );
             }
@@ -959,6 +973,81 @@ impl TextOutput {
             }
         }
         None
+    }
+
+    /// Check if the focused window is a remote desktop app (RustDesk, AnyDesk, etc.)
+    /// Remote desktop apps have unreliable clipboard sync on Linux.
+    /// Direct typing (keystroke forwarding) is more reliable for these apps.
+    #[cfg(target_os = "linux")]
+    fn is_remote_desktop_focused() -> bool {
+        if let Some(is_remote) = Self::check_remote_desktop_via_extension() {
+            return is_remote;
+        }
+        false
+    }
+
+    #[cfg(target_os = "linux")]
+    fn check_remote_desktop_via_extension() -> Option<bool> {
+        let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
+        let mut child = std::process::Command::new("gdbus")
+            .args([
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Shell",
+                "--object-path",
+                "/org/karaoketyper/FocusedWindow",
+                "--method",
+                "org.karaoketyper.FocusedWindow.GetFocusedWindow",
+            ])
+            .env("XDG_RUNTIME_DIR", &xdg_runtime)
+            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+
+        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    if status.success() {
+                        if let Some(stdout) = child.stdout.take() {
+                            use std::io::Read;
+                            let mut buf = String::new();
+                            let mut reader = std::io::BufReader::new(stdout);
+                            if reader.read_to_string(&mut buf).is_ok() {
+                                let trimmed = buf.trim().trim_start_matches('(').trim_end_matches(')');
+                                let wm_class = trimmed.splitn(2, ", ").next()
+                                    .unwrap_or("")
+                                    .trim().trim_matches('\'')
+                                    .to_lowercase();
+                                let remote_apps = ["rustdesk", "anydesk", "vinagre"];
+                                for app in remote_apps {
+                                    if wm_class == app || wm_class.contains(app) {
+                                        crate::dev_log!(
+                                            "[OUTPUT] Remote desktop '{}' detected — forcing direct typing",
+                                            app
+                                        );
+                                        return Some(true);
+                                    }
+                                }
+                                return Some(false);
+                            }
+                        }
+                    }
+                    return None;
+                }
+                Ok(None) => {
+                    if std::time::Instant::now() > deadline {
+                        let _ = child.kill();
+                        return None;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(_) => return None,
+            }
+        }
     }
 
     /// Resolve the effective paste method for clipboard-based paste.

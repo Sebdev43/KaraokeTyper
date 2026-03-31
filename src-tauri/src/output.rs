@@ -570,17 +570,44 @@ impl TextOutput {
 
                         crate::dev_log!("[OUTPUT] Detected paste method: {:?}", effective_method);
 
-                        // Step 4: Send paste shortcut
+                        // Step 4: Send paste shortcut (same chain as send_paste_shortcut)
                         #[cfg(target_os = "linux")]
                         {
-                            match Self::try_enigo_shortcut(&effective_method) {
-                                Ok(()) => {}
-                                Err(e) => {
-                                    crate::dev_log!(
-                                        "[OUTPUT] enigo shortcut failed: {}, trying uinput...",
-                                        e
-                                    );
-                                    Self::try_uinput_shortcut(&effective_method)?;
+                            // X11: xdotool → ydotool → enigo (matches Handy)
+                            let mut sent = false;
+                            if !Self::is_wayland() {
+                                if Self::is_tool_available("xdotool") {
+                                    let key_combo = match &effective_method {
+                                        PasteMethod::CtrlShiftV => "ctrl+shift+v",
+                                        PasteMethod::ShiftInsert => "shift+Insert",
+                                        _ => "ctrl+v",
+                                    };
+                                    if let Ok(output) = std::process::Command::new("xdotool")
+                                        .args(["key", "--clearmodifiers", key_combo])
+                                        .output()
+                                    {
+                                        if output.status.success() {
+                                            sent = true;
+                                        }
+                                    }
+                                }
+                                if !sent && Self::is_tool_available("ydotool") {
+                                    crate::dev_log!("[OUTPUT] Using ydotool for paste shortcut");
+                                    if Self::try_ydotool_shortcut(&effective_method).is_ok() {
+                                        sent = true;
+                                    }
+                                }
+                            }
+                            if !sent {
+                                match Self::try_enigo_shortcut(&effective_method) {
+                                    Ok(()) => {}
+                                    Err(e) => {
+                                        crate::dev_log!(
+                                            "[OUTPUT] enigo shortcut failed: {}, trying uinput...",
+                                            e
+                                        );
+                                        Self::try_uinput_shortcut(&effective_method)?;
+                                    }
                                 }
                             }
                         }
@@ -726,7 +753,28 @@ impl TextOutput {
             }
             Self::try_ydotool_shortcut(&self.paste_method)
         } else {
-            // X11: try enigo first
+            // X11: xdotool → ydotool → enigo (matches Handy's approach)
+            if Self::is_tool_available("xdotool") {
+                crate::dev_log!("[OUTPUT] Using xdotool for paste shortcut");
+                let key_combo = match &self.paste_method {
+                    PasteMethod::CtrlShiftV => "ctrl+shift+v",
+                    PasteMethod::ShiftInsert => "shift+Insert",
+                    _ => "ctrl+v",
+                };
+                let output = std::process::Command::new("xdotool")
+                    .args(["key", "--clearmodifiers", key_combo])
+                    .output()
+                    .map_err(|e| format!("xdotool failed: {}", e))?;
+                if output.status.success() {
+                    return Ok(());
+                }
+                crate::dev_log!("[OUTPUT] xdotool shortcut failed, trying ydotool...");
+            }
+            if Self::is_tool_available("ydotool") {
+                crate::dev_log!("[OUTPUT] Using ydotool for paste shortcut");
+                return Self::try_ydotool_shortcut(&self.paste_method);
+            }
+            // Fallback: enigo
             match Self::try_enigo_shortcut(&self.paste_method) {
                 Ok(()) => return Ok(()),
                 Err(e) => {

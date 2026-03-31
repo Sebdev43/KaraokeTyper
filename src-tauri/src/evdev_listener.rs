@@ -551,7 +551,7 @@ fn monitor_input_device(
                                                 "[TIMING] T+{}ms: pasting text",
                                                 t0.elapsed().as_millis()
                                             );
-                                            if let Err(e) = do_type_text(transcription).await {
+                                            if let Err(e) = do_type_text(transcription, &app_clone).await {
                                                 crate::dev_log!(
                                                     "[TIMING] T+{}ms: paste FAILED: {}",
                                                     t0.elapsed().as_millis(),

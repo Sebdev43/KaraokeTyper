@@ -5,6 +5,30 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-03-31
+
+### Added
+
+- **Text processing pipeline** (`text_processing.rs`): Filler word removal (euh, um, ah), stutter collapse (je je je → je), custom words fuzzy matching (Levenshtein + Soundex phonétique)
+- **Whisper initial_prompt**: Construit automatiquement depuis les custom words pour biaiser la reconnaissance vers le vocabulaire de l'utilisateur
+- **Custom words config**: `custom_words`, `custom_words_threshold`, `filler_removal_enabled`, `stutter_collapse_enabled` dans les settings
+- **Terminal auto-detection**: Détection GNOME D-Bus (extension + Shell Eval) pour choisir automatiquement Ctrl+V ou Ctrl+Shift+V
+- **Remote desktop detection**: RustDesk, AnyDesk, Remmina, Vinagre détectés via D-Bus — skip terminal auto-detection, utilise la méthode configurée
+- **Dépendance strsim**: Distance de Levenshtein normalisée pour le fuzzy matching des custom words
+
+### Changed
+
+- **Clipboard: arboard → tauri-plugin-clipboard-manager**: Migration vers le plugin Tauri officiel (comme Handy), résout le problème "image invalide" dans Remmina où arboard posait le clipboard dans un format incorrect
+- **Output fallback intelligent**: Quand `paste_method: Direct` et aucun outil natif X11 (xdotool), auto-fallback vers clipboard + paste shortcut au lieu d'enigo text() buggy
+- **D-Bus timeout 200ms**: Les appels D-Bus pour la détection de fenêtre ne bloquent plus indéfiniment
+
+### Fixed
+
+- **Enigo text() X11 — mots mangés**: Auto-fallback clipboard quand xdotool absent, enigo text() n'est plus utilisé pour le texte (uniquement pour les raccourcis clavier)
+- **AZERTY keyboard garbling**: wtype/ydotool ne sont plus utilisés pour le direct typing sur X11 (keycodes QWERTY incompatibles avec AZERTY), seul xdotool est fiable sur X11
+- **Overlay focus — paste vers mauvaise fenêtre**: L'overlay est caché immédiatement (pas d'animation 300ms) avant le paste pour que le focus revienne à l'app cible
+- **Terminal detection timing**: La détection terminal se fait APRÈS le clipboard set + délai focus (pas avant), pour détecter la vraie fenêtre cible au lieu de KaraokeTyper
+
 ## [1.2.0] - 2026-03-11
 
 ### Changed

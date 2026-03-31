@@ -1399,12 +1399,27 @@ impl TextOutput {
         }
     }
 
+    /// Check if ydotoold daemon is running (required for reliable ydotool).
+    /// Without the daemon, ydotool runs in degraded mode with random key delays.
+    #[cfg(target_os = "linux")]
+    fn is_ydotoold_running() -> bool {
+        std::process::Command::new("pgrep")
+            .arg("ydotoold")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
     /// Send paste shortcut via ydotool using raw Linux input keycodes.
     /// ydotool uses format: <keycode>:<pressed> where 1=down, 0=up.
     /// Keycodes: KEY_LEFTCTRL=29, KEY_LEFTSHIFT=42, KEY_V=47, KEY_INSERT=110
     /// Matches Handy's send_key_combo_via_ydotool() implementation.
+    /// REQUIRES ydotoold daemon — without it, keycodes arrive with random delays.
     #[cfg(target_os = "linux")]
     fn try_ydotool_shortcut(paste_method: &PasteMethod) -> Result<(), String> {
+        if !Self::is_ydotoold_running() {
+            return Err("ydotoold daemon not running".to_string());
+        }
         let args: Vec<&str> = match paste_method {
             PasteMethod::CtrlShiftV => {
                 crate::dev_log!("[OUTPUT] Using ydotool for Ctrl+Shift+V (keycodes: 29+42+47)...");

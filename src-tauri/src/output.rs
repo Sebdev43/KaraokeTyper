@@ -671,34 +671,44 @@ impl TextOutput {
         session == "wayland" || !display.is_empty()
     }
 
-    /// Set clipboard text. On Wayland: wl-copy (proper text/plain MIME type).
-    /// On X11: arboard (X11 selection protocol).
+    /// Set clipboard text using the most reliable method for the platform.
+    /// Linux Wayland: wl-copy (proper text/plain MIME type)
+    /// Linux X11: xclip -selection clipboard → xsel --clipboard → tauri plugin
+    /// Other: tauri-plugin-clipboard-manager
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
             if Self::is_wayland() {
-                crate::dev_log!("[OUTPUT] Using wl-copy for Wayland clipboard");
+                // Wayland: wl-copy sets proper text/plain MIME type
+                if Self::is_tool_available("wl-copy") {
+                    crate::dev_log!("[OUTPUT] Using wl-copy for clipboard");
+                    let status = std::process::Command::new("wl-copy")
+                        .arg("--")
+                        .arg(text)
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .map_err(|e| format!("Failed to run wl-copy: {}", e))?;
 
-                // Use .status() — blocks until wl-copy finishes forking its daemon.
-                // No idle sleep needed. Matches Handy's write_clipboard_via_wl_copy().
-                let status = std::process::Command::new("wl-copy")
-                    .arg("--")
-                    .arg(text)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .map_err(|e| format!("Failed to run wl-copy: {}", e))?;
-
-                if status.success() {
-                    crate::dev_log!("[OUTPUT] ✅ wl-copy set clipboard");
+                    if status.success() {
+                        crate::dev_log!("[OUTPUT] ✅ wl-copy set clipboard");
+                        return Ok(());
+                    }
+                    crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed ({})", status);
+                }
+            } else {
+                // X11: prefer xclip/xsel (explicit text/plain CLIPBOARD selection).
+                // Tauri clipboard plugin can set wrong MIME type causing Remmina
+                // to show "image not found" instead of pasting text.
+                if Self::try_xclip_set_clipboard(text) {
                     return Ok(());
                 }
-                crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed ({}), falling back to clipboard-manager", status);
             }
         }
 
-        // Fallback: tauri-plugin-clipboard-manager (X11 or non-Linux)
+        // Fallback: tauri-plugin-clipboard-manager
+        crate::dev_log!("[OUTPUT] Using tauri clipboard plugin");
         self.app_handle
             .clipboard()
             .write_text(text.to_string())
@@ -1221,6 +1231,60 @@ impl TextOutput {
         Ok(())
     }
 
+    /// Try to set X11 clipboard via xclip or xsel (explicit text/plain CLIPBOARD selection).
+    /// Returns true if successful, false to fall through to tauri plugin.
+    #[cfg(target_os = "linux")]
+    fn try_xclip_set_clipboard(text: &str) -> bool {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        // Try xclip first
+        if Self::is_tool_available("xclip") {
+            crate::dev_log!("[OUTPUT] Using xclip -selection clipboard");
+            if let Ok(mut child) = std::process::Command::new("xclip")
+                .args(["-selection", "clipboard"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                if let Ok(status) = child.wait() {
+                    if status.success() {
+                        crate::dev_log!("[OUTPUT] ✅ xclip set clipboard");
+                        return true;
+                    }
+                }
+            }
+        }
+
+        // Try xsel as fallback
+        if Self::is_tool_available("xsel") {
+            crate::dev_log!("[OUTPUT] Using xsel --clipboard --input");
+            if let Ok(mut child) = std::process::Command::new("xsel")
+                .args(["--clipboard", "--input"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                if let Ok(status) = child.wait() {
+                    if status.success() {
+                        crate::dev_log!("[OUTPUT] ✅ xsel set clipboard");
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
     /// Check if a tool is available on PATH (cached — checked once per process).
     #[cfg(target_os = "linux")]
     fn is_tool_available(tool: &str) -> bool {
@@ -1231,7 +1295,7 @@ impl TextOutput {
 
         // Initialize cache on first call with all tools we might need
         let cache = CACHE.get_or_init(|| {
-            let tools = ["wtype", "kwtype", "xdotool", "dotool", "ydotool", "wl-copy"];
+            let tools = ["wtype", "kwtype", "xdotool", "dotool", "ydotool", "wl-copy", "xclip", "xsel"];
             let mut map = HashMap::new();
             for t in tools {
                 let available = std::process::Command::new("which")

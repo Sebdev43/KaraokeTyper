@@ -1399,25 +1399,29 @@ impl TextOutput {
         }
     }
 
+    /// Send paste shortcut via ydotool using raw Linux input keycodes.
+    /// ydotool uses format: <keycode>:<pressed> where 1=down, 0=up.
+    /// Keycodes: KEY_LEFTCTRL=29, KEY_LEFTSHIFT=42, KEY_V=47, KEY_INSERT=110
+    /// Matches Handy's send_key_combo_via_ydotool() implementation.
     #[cfg(target_os = "linux")]
     fn try_ydotool_shortcut(paste_method: &PasteMethod) -> Result<(), String> {
-        let shortcut = match paste_method {
+        let args: Vec<&str> = match paste_method {
             PasteMethod::CtrlShiftV => {
-                crate::dev_log!("[OUTPUT] Using ydotool for Ctrl+Shift+V...");
-                "ctrl+shift+v"
+                crate::dev_log!("[OUTPUT] Using ydotool for Ctrl+Shift+V (keycodes: 29+42+47)...");
+                vec!["key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]
             }
             PasteMethod::ShiftInsert => {
-                crate::dev_log!("[OUTPUT] Using ydotool for Shift+Insert...");
-                "shift+Insert"
+                crate::dev_log!("[OUTPUT] Using ydotool for Shift+Insert (keycodes: 42+110)...");
+                vec!["key", "42:1", "110:1", "110:0", "42:0"]
             }
             _ => {
-                crate::dev_log!("[OUTPUT] Using ydotool for Ctrl+V...");
-                "ctrl+v"
+                crate::dev_log!("[OUTPUT] Using ydotool for Ctrl+V (keycodes: 29+47)...");
+                vec!["key", "29:1", "47:1", "47:0", "29:0"]
             }
         };
 
         let output = std::process::Command::new("ydotool")
-            .args(["key", shortcut])
+            .args(&args)
             .output()
             .map_err(|e| format!("Failed to run ydotool: {}", e))?;
 

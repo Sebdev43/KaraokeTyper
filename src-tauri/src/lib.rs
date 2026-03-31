@@ -700,14 +700,14 @@ pub(crate) async fn do_stop_recording(
 
 #[tauri::command]
 #[specta::specta]
-async fn type_text(text: String) -> Result<(), String> {
-    do_type_text(text).await
+async fn type_text(text: String, app: AppHandle) -> Result<(), String> {
+    do_type_text(text, &app).await
 }
 
 /// Helper function for type_text - can be called from other modules
-pub(crate) async fn do_type_text(text: String) -> Result<(), String> {
+pub(crate) async fn do_type_text(text: String, app_handle: &AppHandle) -> Result<(), String> {
     let config = AppConfig::load().unwrap_or_default();
-    let mut output = TextOutput::new(60, config.paste_method)?;
+    let mut output = TextOutput::new(60, config.paste_method, app_handle)?;
     output.type_text(&text)?;
     Ok(())
 }
@@ -1489,6 +1489,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(AppState::default())
         .setup(|app| {
             // Create overlay window programmatically (like Handy)

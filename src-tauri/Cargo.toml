@@ -54,7 +54,7 @@ zip = "2.2"
 ringbuf = "0.4"
 
 # Clipboard (cross-platform: Windows/macOS/Linux+Wayland)
-arboard = "3.4"
+tauri-plugin-clipboard-manager = "2"
 
 # Keyboard simulation (cross-platform)
 enigo = "0.6"

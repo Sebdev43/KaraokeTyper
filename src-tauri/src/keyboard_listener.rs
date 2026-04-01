@@ -4,6 +4,8 @@ use tauri::AppHandle;
 
 // On Windows/macOS: full rdev-based implementation
 #[cfg(not(target_os = "linux"))]
+use crate::config::AppConfig;
+#[cfg(not(target_os = "linux"))]
 use rdev::{listen, Event, EventType, Key};
 #[cfg(not(target_os = "linux"))]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,8 +15,6 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(not(target_os = "linux"))]
 use tokio::sync::mpsc;
-#[cfg(not(target_os = "linux"))]
-use crate::config::AppConfig;
 
 /// Hotkey events for push-to-talk (used on Windows/macOS only)
 #[cfg(not(target_os = "linux"))]
@@ -119,7 +119,13 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
 
                             // Type the text using helper function
                             let config = AppConfig::load().unwrap_or_default();
-                            match crate::do_type_text(transcription, &app_clone, config.paste_method).await {
+                            match crate::do_type_text(
+                                transcription,
+                                &app_clone,
+                                config.paste_method,
+                            )
+                            .await
+                            {
                                 Ok(_) => {
                                     crate::dev_log!("[KEYBOARD] Text pasted successfully");
                                 }

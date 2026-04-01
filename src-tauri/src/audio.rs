@@ -58,7 +58,8 @@ fn scopeguard<T, F: FnOnce(T)>(value: T, f: F) -> ScopeGuard<T, F> {
 
 /// Validate device names to prevent command injection via pactl
 fn is_valid_device_name(name: &str) -> bool {
-    name.chars().all(|c| c.is_alphanumeric() || "_.:-,=".contains(c))
+    name.chars()
+        .all(|c| c.is_alphanumeric() || "_.:-,=".contains(c))
 }
 
 /// Delay before auto-closing the stream after recording stops (releases mic device)
@@ -123,7 +124,9 @@ impl AudioCapture {
         self.close_stream();
 
         // Track if this is a Bluetooth device (for auto-close logic)
-        let is_bt = device_name.map(|n| n.starts_with("bluez_input.")).unwrap_or(false);
+        let is_bt = device_name
+            .map(|n| n.starts_with("bluez_input."))
+            .unwrap_or(false);
         self.is_bluetooth.store(is_bt, Ordering::Relaxed);
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
@@ -230,7 +233,9 @@ impl AudioCapture {
             if let Err(panic_payload) = h.join() {
                 crate::dev_log!(
                     "[AUDIO/WORKER] Worker thread panicked: {:?}",
-                    panic_payload.downcast_ref::<&str>().unwrap_or(&"unknown panic")
+                    panic_payload
+                        .downcast_ref::<&str>()
+                        .unwrap_or(&"unknown panic")
                 );
             }
         }
@@ -289,7 +294,6 @@ impl AudioCapture {
 
         Ok(StopHandle { reply_rx })
     }
-
 }
 
 /// Handle returned by `stop_recording()`. Call `wait()` to get the audio buffer.

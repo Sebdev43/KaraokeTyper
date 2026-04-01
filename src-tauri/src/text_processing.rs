@@ -60,8 +60,7 @@ pub fn process_transcription(
 /// Preserves punctuation attached to surrounding words.
 fn remove_filler_words(text: &str) -> String {
     let fillers_fr = [
-        "euh", "heu", "bah", "ben", "beh", "hein", "hmm", "hm", "mm",
-        "ah", "oh", "eh",
+        "euh", "heu", "bah", "ben", "beh", "hein", "hmm", "hm", "mm", "ah", "oh", "eh",
     ];
     let fillers_en = [
         "uh", "um", "uhm", "umm", "hmm", "hm", "mm", "ah", "oh", "eh",
@@ -76,8 +75,8 @@ fn remove_filler_words(text: &str) -> String {
             .trim_matches(|c: char| c.is_ascii_punctuation())
             .to_lowercase();
 
-        let is_filler = fillers_fr.contains(&clean.as_str())
-            || fillers_en.contains(&clean.as_str());
+        let is_filler =
+            fillers_fr.contains(&clean.as_str()) || fillers_en.contains(&clean.as_str());
 
         if !is_filler {
             result.push(word);
@@ -169,7 +168,9 @@ fn apply_custom_words(text: &str, custom_words: &[String], threshold: f32) -> St
 
             let adjusted_distance = distance * soundex_bonus;
 
-            if adjusted_distance < threshold && (best_match.is_none() || adjusted_distance < best_match.unwrap().1) {
+            if adjusted_distance < threshold
+                && (best_match.is_none() || adjusted_distance < best_match.unwrap().1)
+            {
                 best_match = Some((cw.as_str(), adjusted_distance));
             }
         }
@@ -435,8 +436,8 @@ mod tests {
             "euh je je je veux installer Wisper",
             &custom,
             0.3,
-            true,  // filler removal
-            true,  // stutter collapse
+            true, // filler removal
+            true, // stutter collapse
         );
         assert_eq!(result, "je veux installer Whisper");
     }

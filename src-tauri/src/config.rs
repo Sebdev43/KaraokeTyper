@@ -94,9 +94,15 @@ pub struct AppConfig {
     pub stutter_collapse_enabled: bool,
 }
 
-fn default_true() -> bool { true }
-fn default_volume() -> f32 { 0.7 }
-fn default_custom_words_threshold() -> f32 { 0.3 }
+fn default_true() -> bool {
+    true
+}
+fn default_volume() -> f32 {
+    0.7
+}
+fn default_custom_words_threshold() -> f32 {
+    0.3
+}
 
 /// Auto-detect GPU: enable if compiled with GPU support
 fn auto_detect_gpu() -> bool {
@@ -200,7 +206,10 @@ mod tests {
         assert_eq!(config.key_delay_ms, 8);
         assert_eq!(config.language, "fr");
         // use_gpu depends on compile-time features (auto-detect)
-        assert_eq!(config.use_gpu, cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal"));
+        assert_eq!(
+            config.use_gpu,
+            cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal")
+        );
         assert!(config.gpu_device_index.is_none());
         assert!(config.model_path.is_none());
         assert!(config.audio_device_name.is_none());
@@ -255,7 +264,10 @@ mod tests {
 
         let config: AppConfig = serde_json::from_str(json).unwrap();
         // use_gpu depends on compile-time features (auto-detect)
-        assert_eq!(config.use_gpu, cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal"));
+        assert_eq!(
+            config.use_gpu,
+            cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal")
+        );
         assert!(config.gpu_device_index.is_none());
         assert!(config.model_path.is_none());
         assert!(config.audio_device_name.is_none());

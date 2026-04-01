@@ -109,20 +109,26 @@ pub async fn cleanup_app_data(app_handle: AppHandle) -> Result<String, String> {
     let mut cleaned = Vec::new();
     let mut errors = Vec::new();
 
-    let _ = app_handle.emit("cleanup-progress", serde_json::json!({
-        "status": "starting",
-        "message": "Starting cleanup..."
-    }));
+    let _ = app_handle.emit(
+        "cleanup-progress",
+        serde_json::json!({
+            "status": "starting",
+            "message": "Starting cleanup..."
+        }),
+    );
 
     for (name, path) in paths {
         if !path.exists() {
             continue;
         }
 
-        let _ = app_handle.emit("cleanup-progress", serde_json::json!({
-            "status": "cleaning",
-            "message": format!("Removing {}...", name)
-        }));
+        let _ = app_handle.emit(
+            "cleanup-progress",
+            serde_json::json!({
+                "status": "cleaning",
+                "message": format!("Removing {}...", name)
+            }),
+        );
 
         let result = if path.is_dir() {
             fs::remove_dir_all(&path)
@@ -142,10 +148,13 @@ pub async fn cleanup_app_data(app_handle: AppHandle) -> Result<String, String> {
         }
     }
 
-    let _ = app_handle.emit("cleanup-progress", serde_json::json!({
-        "status": "complete",
-        "message": "Cleanup complete"
-    }));
+    let _ = app_handle.emit(
+        "cleanup-progress",
+        serde_json::json!({
+            "status": "complete",
+            "message": "Cleanup complete"
+        }),
+    );
 
     if errors.is_empty() {
         Ok(format!(

@@ -1,20 +1,20 @@
 use crate::config::PasteMethod;
-use tauri::AppHandle;
-use tauri_plugin_clipboard_manager::ClipboardExt;
 use std::thread;
 use std::time::Duration;
+use tauri::AppHandle;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 #[cfg(target_os = "linux")]
 mod linux_output {
+    #[cfg(test)]
+    use std::collections::HashMap;
     use std::fs::OpenOptions;
     use std::os::unix::io::IntoRawFd;
     use std::sync::Mutex;
-    use std::thread;
-    use std::time::Duration;
-    #[cfg(test)]
-    use std::collections::HashMap;
     #[cfg(test)]
     use std::sync::OnceLock;
+    use std::thread;
+    use std::time::Duration;
 
     /// Singleton UInput device — created once, reused for all paste/type operations.
     /// Avoids creating a new /dev/input/eventN on every paste.
@@ -477,23 +477,55 @@ pub struct TextOutput {
 
 impl TextOutput {
     const KNOWN_TERMINALS: &'static [&'static str] = &[
-        "gnome-terminal", "gnome-terminal-server", "org.gnome.terminal",
-        "konsole", "xterm", "urxvt", "rxvt", "terminator", "tilix",
-        "alacritty", "kitty", "wezterm", "foot", "xfce4-terminal",
-        "mate-terminal", "lxterminal", "qterminal", "terminology",
-        "cool-retro-term", "guake", "tilda", "yakuake", "hyper",
-        "tabby", "warp", "iterm2", "terminal", "blackbox", "ptyxis", "ghostty",
+        "gnome-terminal",
+        "gnome-terminal-server",
+        "org.gnome.terminal",
+        "konsole",
+        "xterm",
+        "urxvt",
+        "rxvt",
+        "terminator",
+        "tilix",
+        "alacritty",
+        "kitty",
+        "wezterm",
+        "foot",
+        "xfce4-terminal",
+        "mate-terminal",
+        "lxterminal",
+        "qterminal",
+        "terminology",
+        "cool-retro-term",
+        "guake",
+        "tilda",
+        "yakuake",
+        "hyper",
+        "tabby",
+        "warp",
+        "iterm2",
+        "terminal",
+        "blackbox",
+        "ptyxis",
+        "ghostty",
     ];
 
     const KNOWN_SHELLS: &'static [&'static str] = &[
-        "bash", "zsh", "fish", "sh", "python", "node", "npm",
-        "cargo", "claude", "htop", "vim", "nvim", "ssh", "docker",
+        "bash", "zsh", "fish", "sh", "python", "node", "npm", "cargo", "claude", "htop", "vim",
+        "nvim", "ssh", "docker",
     ];
 
-    const REMOTE_DESKTOP_APPS: &'static [&'static str] = &["rustdesk", "anydesk", "vinagre", "remmina"];
+    const REMOTE_DESKTOP_APPS: &'static [&'static str] =
+        &["rustdesk", "anydesk", "vinagre", "remmina"];
 
-    pub fn new(key_delay_ms: u64, paste_method: PasteMethod, app_handle: &AppHandle) -> Result<Self, String> {
-        crate::dev_log!("[OUTPUT] Initializing text output (paste_method={:?})...", paste_method);
+    pub fn new(
+        key_delay_ms: u64,
+        paste_method: PasteMethod,
+        app_handle: &AppHandle,
+    ) -> Result<Self, String> {
+        crate::dev_log!(
+            "[OUTPUT] Initializing text output (paste_method={:?})...",
+            paste_method
+        );
         crate::dev_log!("[OUTPUT] ✅ Clipboard initialized");
 
         Ok(Self {
@@ -511,7 +543,11 @@ impl TextOutput {
             return Ok(());
         }
 
-        crate::dev_log!("[OUTPUT] Typing text: '{}' (method={:?})", text, self.paste_method);
+        crate::dev_log!(
+            "[OUTPUT] Typing text: '{}' (method={:?})",
+            text,
+            self.paste_method
+        );
 
         match self.paste_method {
             PasteMethod::Direct => {
@@ -544,7 +580,9 @@ impl TextOutput {
                         // Clipboard fallback — matches Handy's paste_via_clipboard() flow:
                         // 1. Write clipboard  2. Sleep  3. Send Ctrl+V  4. Sleep
                         // No D-Bus calls between write and paste to avoid clipboard loss.
-                        crate::dev_log!("[OUTPUT] No native typing tool — clipboard fallback (Handy flow)");
+                        crate::dev_log!(
+                            "[OUTPUT] No native typing tool — clipboard fallback (Handy flow)"
+                        );
 
                         // Step 1: Set clipboard
                         self.set_clipboard_text(text)?;
@@ -652,7 +690,9 @@ impl TextOutput {
                     use std::io::Write;
                     let _ = stdin.write_all(text.as_bytes());
                 }
-                let status = child.wait().map_err(|e| format!("wl-copy wait failed: {}", e))?;
+                let status = child
+                    .wait()
+                    .map_err(|e| format!("wl-copy wait failed: {}", e))?;
 
                 if status.success() {
                     crate::dev_log!("[OUTPUT] ✅ wl-copy set clipboard");
@@ -693,7 +733,6 @@ impl TextOutput {
             .write_text(text.to_string())
             .map_err(|e| format!("Failed to copy to clipboard: {}", e))
     }
-
 
     /// Send the paste shortcut based on the configured paste_method.
     /// Uses the user's explicit choice — no auto-detection here.
@@ -820,17 +859,28 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn check_terminal_via_extension() -> Option<bool> {
-        let output = Self::run_gdbus_with_timeout(&[
-            "call", "--session", "--dest", "org.gnome.Shell",
-            "--object-path", "/org/karaoketyper/FocusedWindow",
-            "--method", "org.karaoketyper.FocusedWindow.GetFocusedWindow",
-        ], 200)?;
+        let output = Self::run_gdbus_with_timeout(
+            &[
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Shell",
+                "--object-path",
+                "/org/karaoketyper/FocusedWindow",
+                "--method",
+                "org.karaoketyper.FocusedWindow.GetFocusedWindow",
+            ],
+            200,
+        )?;
         Some(Self::classify_window_from_dbus(&output))
     }
 
     #[cfg(target_os = "linux")]
     fn classify_window_from_dbus(dbus_output: &str) -> bool {
-        let trimmed = dbus_output.trim().trim_start_matches('(').trim_end_matches(')');
+        let trimmed = dbus_output
+            .trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')');
         let parts: Vec<&str> = trimmed.splitn(2, ", ").collect();
         if parts.len() < 2 {
             return false;
@@ -838,11 +888,19 @@ impl TextOutput {
         let wm_class = parts[0].trim().trim_matches('\'').to_lowercase();
         let title = parts[1].trim().trim_matches('\'').to_lowercase();
 
-        crate::dev_log!("[OUTPUT] Window: wm_class='{}', title='{}'", wm_class, title);
+        crate::dev_log!(
+            "[OUTPUT] Window: wm_class='{}', title='{}'",
+            wm_class,
+            title
+        );
 
         for term in Self::KNOWN_TERMINALS {
             if wm_class == *term || wm_class.ends_with(&format!(".{}", term)) {
-                crate::dev_log!("[OUTPUT] Terminal detected: {} (matched '{}')", wm_class, term);
+                crate::dev_log!(
+                    "[OUTPUT] Terminal detected: {} (matched '{}')",
+                    wm_class,
+                    term
+                );
                 return true;
             }
         }
@@ -870,12 +928,17 @@ impl TextOutput {
                         return true;
                     }
                 }
-                let first_segment = title.split(" \u{2014} ").next()
+                let first_segment = title
+                    .split(" \u{2014} ")
+                    .next()
                     .unwrap_or(&title)
-                    .split(" - ").next()
-                    .unwrap_or("").trim();
+                    .split(" - ")
+                    .next()
+                    .unwrap_or("")
+                    .trim();
                 for shell in Self::KNOWN_SHELLS {
-                    if first_segment == *shell || first_segment.starts_with(&format!("{}:", shell)) {
+                    if first_segment == *shell || first_segment.starts_with(&format!("{}:", shell))
+                    {
                         crate::dev_log!("[OUTPUT] {} terminal detected: '{}'", editor, shell);
                         return true;
                     }
@@ -910,9 +973,15 @@ impl TextOutput {
                 if stdout.contains(editor) {
                     for shell in Self::KNOWN_SHELLS {
                         if let Some(title_start) = stdout.split('|').nth(1) {
-                            let first_segment = title_start.split(" - ").next().unwrap_or("").trim();
-                            if first_segment == *shell || first_segment.starts_with(&format!("{}:", shell)) {
-                                crate::dev_log!("[OUTPUT] GNOME Eval detected VS Code terminal: {}", shell);
+                            let first_segment =
+                                title_start.split(" - ").next().unwrap_or("").trim();
+                            if first_segment == *shell
+                                || first_segment.starts_with(&format!("{}:", shell))
+                            {
+                                crate::dev_log!(
+                                    "[OUTPUT] GNOME Eval detected VS Code terminal: {}",
+                                    shell
+                                );
                                 return Some(true);
                             }
                         }
@@ -939,17 +1008,27 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn check_remote_desktop_via_extension() -> Option<bool> {
-        let output = Self::run_gdbus_with_timeout(&[
-            "call", "--session", "--dest", "org.gnome.Shell",
-            "--object-path", "/org/karaoketyper/FocusedWindow",
-            "--method", "org.karaoketyper.FocusedWindow.GetFocusedWindow",
-        ], 200)?;
+        let output = Self::run_gdbus_with_timeout(
+            &[
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Shell",
+                "--object-path",
+                "/org/karaoketyper/FocusedWindow",
+                "--method",
+                "org.karaoketyper.FocusedWindow.GetFocusedWindow",
+            ],
+            200,
+        )?;
 
         let trimmed = output.trim().trim_start_matches('(').trim_end_matches(')');
-        let wm_class = trimmed.split_once(", ")
+        let wm_class = trimmed
+            .split_once(", ")
             .map(|(first, _)| first)
             .unwrap_or("")
-            .trim().trim_matches('\'')
+            .trim()
+            .trim_matches('\'')
             .to_lowercase();
 
         for app in Self::REMOTE_DESKTOP_APPS {
@@ -1027,7 +1106,8 @@ impl TextOutput {
 
             crate::dev_log!(
                 "[OUTPUT] Direct typing: is_wayland={}, kde={}",
-                is_wayland, is_kde
+                is_wayland,
+                is_kde
             );
 
             if is_wayland {
@@ -1054,7 +1134,10 @@ impl TextOutput {
                 // that get garbled on AZERTY/QWERTZ layouts.
                 if Self::is_tool_available("xdotool") {
                     crate::dev_log!("[OUTPUT] Direct: using xdotool");
-                    return Self::run_direct_tool("xdotool", &["type", "--clearmodifiers", "--", text]);
+                    return Self::run_direct_tool(
+                        "xdotool",
+                        &["type", "--clearmodifiers", "--", text],
+                    );
                 }
             }
             crate::dev_log!("[OUTPUT] No native tool found, falling back to enigo");
@@ -1072,7 +1155,8 @@ impl TextOutput {
             .map_err(|e| format!("Failed to create enigo: {}", e))?;
 
         crate::dev_log!("[OUTPUT] enigo: typing {} chars directly...", text.len());
-        enigo.text(text)
+        enigo
+            .text(text)
             .map_err(|e| format!("enigo text() failed: {}", e))?;
 
         crate::dev_log!("[OUTPUT] ✅ enigo direct typing complete");
@@ -1097,7 +1181,11 @@ impl TextOutput {
                 .output()
                 .map(|o| o.status.success())
                 .unwrap_or(false);
-            crate::dev_log!("[OUTPUT] Tool '{}': {}", tool, if available { "available" } else { "not found" });
+            crate::dev_log!(
+                "[OUTPUT] Tool '{}': {}",
+                tool,
+                if available { "available" } else { "not found" }
+            );
             available
         })
     }
@@ -1158,37 +1246,48 @@ impl TextOutput {
         match paste_method {
             PasteMethod::CtrlShiftV => {
                 crate::dev_log!("[OUTPUT] Using enigo for Ctrl+Shift+V...");
-                enigo.key(Key::Control, enigo::Direction::Press)
+                enigo
+                    .key(Key::Control, enigo::Direction::Press)
                     .map_err(|e| format!("enigo Ctrl press: {}", e))?;
-                enigo.key(Key::Shift, enigo::Direction::Press)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Press)
                     .map_err(|e| format!("enigo Shift press: {}", e))?;
-                enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+                enigo
+                    .key(Key::Unicode('v'), enigo::Direction::Click)
                     .map_err(|e| format!("enigo V click: {}", e))?;
                 thread::sleep(Duration::from_millis(50));
-                enigo.key(Key::Shift, enigo::Direction::Release)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Release)
                     .map_err(|e| format!("enigo Shift release: {}", e))?;
-                enigo.key(Key::Control, enigo::Direction::Release)
+                enigo
+                    .key(Key::Control, enigo::Direction::Release)
                     .map_err(|e| format!("enigo Ctrl release: {}", e))?;
             }
             PasteMethod::ShiftInsert => {
                 crate::dev_log!("[OUTPUT] Using enigo for Shift+Insert...");
-                enigo.key(Key::Shift, enigo::Direction::Press)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Press)
                     .map_err(|e| format!("enigo Shift press: {}", e))?;
-                enigo.key(Key::Other(0x6C), enigo::Direction::Click) // Insert key
+                enigo
+                    .key(Key::Other(0x6C), enigo::Direction::Click) // Insert key
                     .map_err(|e| format!("enigo Insert click: {}", e))?;
                 thread::sleep(Duration::from_millis(50));
-                enigo.key(Key::Shift, enigo::Direction::Release)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Release)
                     .map_err(|e| format!("enigo Shift release: {}", e))?;
             }
             _ => {
                 // Default: Ctrl+V
                 crate::dev_log!("[OUTPUT] Using enigo for Ctrl+V...");
-                enigo.key(Key::Control, enigo::Direction::Press)
+                enigo
+                    .key(Key::Control, enigo::Direction::Press)
                     .map_err(|e| format!("enigo Ctrl press: {}", e))?;
-                enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+                enigo
+                    .key(Key::Unicode('v'), enigo::Direction::Click)
                     .map_err(|e| format!("enigo V click: {}", e))?;
                 thread::sleep(Duration::from_millis(50));
-                enigo.key(Key::Control, enigo::Direction::Release)
+                enigo
+                    .key(Key::Control, enigo::Direction::Release)
                     .map_err(|e| format!("enigo Ctrl release: {}", e))?;
             }
         }
@@ -1199,16 +1298,14 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn try_uinput_shortcut(paste_method: &PasteMethod) -> Result<(), String> {
-        linux_output::with_uinput(|device| {
-            match paste_method {
-                PasteMethod::CtrlShiftV => {
-                    crate::dev_log!("[OUTPUT] Using uinput for Ctrl+Shift+V...");
-                    device.ctrl_shift_v()
-                }
-                _ => {
-                    crate::dev_log!("[OUTPUT] Using uinput for Ctrl+V...");
-                    device.ctrl_v()
-                }
+        linux_output::with_uinput(|device| match paste_method {
+            PasteMethod::CtrlShiftV => {
+                crate::dev_log!("[OUTPUT] Using uinput for Ctrl+Shift+V...");
+                device.ctrl_shift_v()
+            }
+            _ => {
+                crate::dev_log!("[OUTPUT] Using uinput for Ctrl+V...");
+                device.ctrl_v()
             }
         })
     }
@@ -1306,7 +1403,10 @@ impl TextOutput {
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| format!("Failed to create enigo instance: {}", e))?;
 
-        crate::dev_log!("[OUTPUT] Sending paste shortcut with enigo ({:?})...", self.paste_method);
+        crate::dev_log!(
+            "[OUTPUT] Sending paste shortcut with enigo ({:?})...",
+            self.paste_method
+        );
 
         #[cfg(target_os = "macos")]
         let modifier = Key::Meta;
@@ -1315,35 +1415,42 @@ impl TextOutput {
 
         match self.paste_method {
             PasteMethod::CtrlShiftV => {
-                enigo.key(modifier, enigo::Direction::Press)
+                enigo
+                    .key(modifier, enigo::Direction::Press)
                     .map_err(|e| format!("Failed to press modifier: {}", e))?;
-                enigo.key(Key::Shift, enigo::Direction::Press)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Press)
                     .map_err(|e| format!("Failed to press Shift: {}", e))?;
                 thread::sleep(Duration::from_millis(10));
-                enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+                enigo
+                    .key(Key::Unicode('v'), enigo::Direction::Click)
                     .map_err(|e| format!("Failed to press V: {}", e))?;
                 thread::sleep(Duration::from_millis(10));
-                enigo.key(Key::Shift, enigo::Direction::Release)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Release)
                     .map_err(|e| format!("Failed to release Shift: {}", e))?;
-                enigo.key(modifier, enigo::Direction::Release)
+                enigo
+                    .key(modifier, enigo::Direction::Release)
                     .map_err(|e| format!("Failed to release modifier: {}", e))?;
             }
             _ => {
                 // Default: Ctrl+V / Cmd+V
-                enigo.key(modifier, enigo::Direction::Press)
+                enigo
+                    .key(modifier, enigo::Direction::Press)
                     .map_err(|e| format!("Failed to press modifier: {}", e))?;
                 thread::sleep(Duration::from_millis(10));
-                enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+                enigo
+                    .key(Key::Unicode('v'), enigo::Direction::Click)
                     .map_err(|e| format!("Failed to press V: {}", e))?;
                 thread::sleep(Duration::from_millis(10));
-                enigo.key(modifier, enigo::Direction::Release)
+                enigo
+                    .key(modifier, enigo::Direction::Release)
                     .map_err(|e| format!("Failed to release modifier: {}", e))?;
             }
         }
 
         Ok(())
     }
-
 }
 
 #[cfg(test)]
@@ -1398,7 +1505,9 @@ mod tests {
         #[test]
         fn test_is_tool_available_nonexistent() {
             // A tool that definitely doesn't exist
-            assert!(!TextOutput::is_tool_available("this_tool_does_not_exist_xyz"));
+            assert!(!TextOutput::is_tool_available(
+                "this_tool_does_not_exist_xyz"
+            ));
         }
 
         #[test]
@@ -1436,7 +1545,8 @@ mod tests {
             for c in accented {
                 assert!(
                     !keymap.contains_key(&c),
-                    "Accented char '{}' unexpectedly in keymap", c
+                    "Accented char '{}' unexpectedly in keymap",
+                    c
                 );
             }
         }

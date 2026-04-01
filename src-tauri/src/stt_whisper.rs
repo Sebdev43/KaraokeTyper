@@ -26,9 +26,15 @@ static GPU_FAILURE_COUNT: AtomicU32 = AtomicU32::new(0);
 /// Record a GPU failure and return the new failure count
 pub fn record_gpu_failure() -> u32 {
     let count = GPU_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    eprintln!("[GPU] Failure recorded. Total consecutive failures: {}", count);
+    eprintln!(
+        "[GPU] Failure recorded. Total consecutive failures: {}",
+        count
+    );
     if count >= MAX_GPU_FAILURES {
-        eprintln!("[GPU] GPU auto-disabled after {} consecutive failures", count);
+        eprintln!(
+            "[GPU] GPU auto-disabled after {} consecutive failures",
+            count
+        );
     }
     count
 }
@@ -119,7 +125,10 @@ impl GpuInitResult {
         Self {
             mode: "cpu".to_string(),
             device_name: None,
-            fallback_reason: Some(format!("GPU auto-disabled after {} consecutive failures", MAX_GPU_FAILURES)),
+            fallback_reason: Some(format!(
+                "GPU auto-disabled after {} consecutive failures",
+                MAX_GPU_FAILURES
+            )),
             failure_count: get_gpu_failure_count(),
         }
     }
@@ -131,14 +140,31 @@ fn clean_transcription(text: &str) -> String {
 
     // Remove common Whisper hallucination patterns at start/end
     let artifacts = [
-        "???", "?", "...", "…",
-        "[Music]", "[Musique]", "[Applause]", "[Applaudissements]",
-        "[Silence]", "[Rires]", "[Laughter]", "[BLANK_AUDIO]",
-        "(musique)", "(music)", "(silence)",
-        "♪", "♫", "🎵",
-        "Sous-titres", "Subtitles", "sous-titres réalisés",
-        "Merci d'avoir regardé", "Thanks for watching",
-        "À bientôt", "à la prochaine",
+        "???",
+        "?",
+        "...",
+        "…",
+        "[Music]",
+        "[Musique]",
+        "[Applause]",
+        "[Applaudissements]",
+        "[Silence]",
+        "[Rires]",
+        "[Laughter]",
+        "[BLANK_AUDIO]",
+        "(musique)",
+        "(music)",
+        "(silence)",
+        "♪",
+        "♫",
+        "🎵",
+        "Sous-titres",
+        "Subtitles",
+        "sous-titres réalisés",
+        "Merci d'avoir regardé",
+        "Thanks for watching",
+        "À bientôt",
+        "à la prochaine",
     ];
 
     // Remove artifacts from start
@@ -153,7 +179,11 @@ fn clean_transcription(text: &str) -> String {
         }
 
         // Remove leading punctuation that doesn't make sense
-        while result.starts_with('?') || result.starts_with('.') || result.starts_with('!') || result.starts_with(',') {
+        while result.starts_with('?')
+            || result.starts_with('.')
+            || result.starts_with('!')
+            || result.starts_with(',')
+        {
             result = result[1..].trim_start().to_string();
         }
 
@@ -169,7 +199,9 @@ fn clean_transcription(text: &str) -> String {
 
         for artifact in &artifacts {
             if result.to_lowercase().ends_with(&artifact.to_lowercase()) {
-                result = result[..result.len() - artifact.len()].trim_end().to_string();
+                result = result[..result.len() - artifact.len()]
+                    .trim_end()
+                    .to_string();
             }
         }
 
@@ -198,7 +230,12 @@ impl WhisperSttEngine {
     /// * `language` - Language code (e.g., "fr", "en", "auto")
     /// * `use_gpu` - Enable GPU acceleration (requires compile-time GPU features)
     /// * `gpu_device_index` - Optional GPU device index for multi-GPU systems
-    pub fn new(model_path: &str, language: &str, use_gpu: bool, gpu_device_index: Option<u32>) -> Self {
+    pub fn new(
+        model_path: &str,
+        language: &str,
+        use_gpu: bool,
+        gpu_device_index: Option<u32>,
+    ) -> Self {
         Self {
             context: Mutex::new(None),
             model_path: PathBuf::from(model_path),
@@ -237,7 +274,10 @@ impl WhisperSttEngine {
 
         // If GPU disabled by failures, use CPU directly
         if self.use_gpu && gpu_available && gpu_disabled_by_failures {
-            println!("[Whisper] GPU requested but disabled due to {} consecutive failures", get_gpu_failure_count());
+            println!(
+                "[Whisper] GPU requested but disabled due to {} consecutive failures",
+                get_gpu_failure_count()
+            );
 
             let mut cpu_params = WhisperContextParameters::default();
             cpu_params.use_gpu(false);
@@ -248,7 +288,10 @@ impl WhisperSttEngine {
             let mut guard = self.context.lock().unwrap_or_else(|e| e.into_inner());
             *guard = Some(ctx);
 
-            println!("[Whisper] Model loaded (CPU - GPU disabled): {}", self.model_path.display());
+            println!(
+                "[Whisper] Model loaded (CPU - GPU disabled): {}",
+                self.model_path.display()
+            );
             return Ok(GpuInitResult::cpu_disabled_by_failures());
         }
 
@@ -284,13 +327,14 @@ impl WhisperSttEngine {
                     let mut cpu_params = WhisperContextParameters::default();
                     cpu_params.use_gpu(false);
 
-                    let ctx = WhisperContext::new_with_params(model_path_str, cpu_params)
-                        .map_err(|e| {
+                    let ctx = WhisperContext::new_with_params(model_path_str, cpu_params).map_err(
+                        |e| {
                             WhisperError::ModelLoadError(format!(
                                 "GPU failed ({}), CPU fallback also failed: {:?}",
                                 error_msg, e
                             ))
-                        })?;
+                        },
+                    )?;
 
                     (ctx, GpuInitResult::cpu_fallback(error_msg))
                 }
@@ -309,7 +353,11 @@ impl WhisperSttEngine {
         let mut guard = self.context.lock().unwrap_or_else(|e| e.into_inner());
         *guard = Some(ctx);
 
-        println!("[Whisper] Model loaded ({}): {}", init_result.mode, self.model_path.display());
+        println!(
+            "[Whisper] Model loaded ({}): {}",
+            init_result.mode,
+            self.model_path.display()
+        );
 
         Ok(init_result)
     }
@@ -323,7 +371,10 @@ impl WhisperSttEngine {
     }
 
     pub fn is_loaded(&self) -> bool {
-        self.context.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+        self.context
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
     }
 
     /// Transcribe audio data
@@ -333,11 +384,15 @@ impl WhisperSttEngine {
     ///
     /// # Returns
     /// Transcribed text or error
-    pub fn transcribe(&self, audio_data: &[f32], initial_prompt: Option<&str>) -> Result<String, WhisperError> {
+    pub fn transcribe(
+        &self,
+        audio_data: &[f32],
+        initial_prompt: Option<&str>,
+    ) -> Result<String, WhisperError> {
         let guard = self.context.lock().unwrap_or_else(|e| e.into_inner());
-        let ctx = guard
-            .as_ref()
-            .ok_or_else(|| WhisperError::TranscriptionError("Engine not initialized".to_string()))?;
+        let ctx = guard.as_ref().ok_or_else(|| {
+            WhisperError::TranscriptionError("Engine not initialized".to_string())
+        })?;
 
         if audio_data.is_empty() {
             return Err(WhisperError::InvalidAudio("Empty audio data".to_string()));
@@ -354,7 +409,11 @@ impl WhisperSttEngine {
         #[cfg(debug_assertions)]
         {
             let duration = audio_data.len() as f32 / 16000.0;
-            println!("[Whisper] Transcribing {:.2}s of audio ({} samples)", duration, audio_data.len());
+            println!(
+                "[Whisper] Transcribing {:.2}s of audio ({} samples)",
+                duration,
+                audio_data.len()
+            );
         }
 
         // GPU: use Greedy to minimize VRAM usage and speed up inference
@@ -420,7 +479,8 @@ impl WhisperSttEngine {
             .map_err(|e| WhisperError::TranscriptionError(format!("{:?}", e)))?;
 
         // Collect all segments
-        let num_segments = state.full_n_segments()
+        let num_segments = state
+            .full_n_segments()
             .map_err(|e| WhisperError::TranscriptionError(format!("{:?}", e)))?;
 
         let mut result = String::new();
@@ -438,7 +498,6 @@ impl WhisperSttEngine {
 
         Ok(result)
     }
-
 }
 
 impl Drop for WhisperSttEngine {
@@ -477,7 +536,10 @@ mod tests {
         assert_eq!(clean_transcription("[Music] Hello"), "Hello");
         assert_eq!(clean_transcription("[BLANK_AUDIO]"), "");
         assert_eq!(clean_transcription("♪ ♫ some text ♪"), "some text");
-        assert_eq!(clean_transcription("[Silence] Bonjour [Musique]"), "Bonjour");
+        assert_eq!(
+            clean_transcription("[Silence] Bonjour [Musique]"),
+            "Bonjour"
+        );
     }
 
     #[test]

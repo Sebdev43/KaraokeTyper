@@ -1,21 +1,21 @@
 #[macro_use]
 mod logging;
 
+mod app_data;
 mod audio;
+mod audio_devices;
+mod audio_feedback;
 mod autostart;
 mod config;
+mod gnome_extension;
 mod gpu;
 mod keyboard_listener;
 mod model_downloader;
+mod ollama_client;
 mod output;
 mod stt_whisper;
-mod vad;
-mod audio_devices;
-mod audio_feedback;
-mod gnome_extension;
-mod app_data;
-mod ollama_client;
 mod text_processing;
+mod vad;
 
 // Linux-specific modules
 #[cfg(target_os = "linux")]
@@ -43,7 +43,6 @@ pub struct SystemInfo {
     pub display_server: String,
     pub desktop_environment: String,
 }
-
 
 /// GPU acceleration status
 #[derive(Clone, Serialize, Type)]
@@ -89,7 +88,9 @@ impl SttEngine {
     pub fn new(config: &AppConfig) -> Result<Self, String> {
         // Use model_path if provided AND it's a valid local file, otherwise resolve from model name
         // This prevents using URLs or invalid paths that were incorrectly saved in config
-        let resolved_path = config.model_path.clone()
+        let resolved_path = config
+            .model_path
+            .clone()
             .filter(|p| {
                 // Reject URLs
                 if p.starts_with("http://") || p.starts_with("https://") {
@@ -99,16 +100,23 @@ impl SttEngine {
                 // Check if file exists
                 let exists = std::path::Path::new(p).exists();
                 if !exists {
-                    dev_log!("[STT] model_path doesn't exist, will resolve from model name: {}", p);
+                    dev_log!(
+                        "[STT] model_path doesn't exist, will resolve from model name: {}",
+                        p
+                    );
                 }
                 exists
             })
-            .or_else(|| {
-                model_downloader::get_model_path(&config.model)
-            });
+            .or_else(|| model_downloader::get_model_path(&config.model));
 
-        let model_path = resolved_path.ok_or("No model downloaded. Download a model from Settings → STT Models.")?;
-        let engine = WhisperSttEngine::new(&model_path, &config.language, config.use_gpu, config.gpu_device_index);
+        let model_path = resolved_path
+            .ok_or("No model downloaded. Download a model from Settings → STT Models.")?;
+        let engine = WhisperSttEngine::new(
+            &model_path,
+            &config.language,
+            config.use_gpu,
+            config.gpu_device_index,
+        );
 
         // Initialize the Whisper context by loading the model
         // Returns GpuInitResult with info about which mode was actually used
@@ -117,7 +125,11 @@ impl SttEngine {
         Ok(SttEngine { engine })
     }
 
-    pub fn transcribe(&self, audio_data: &[f32], initial_prompt: Option<&str>) -> Result<String, String> {
+    pub fn transcribe(
+        &self,
+        audio_data: &[f32],
+        initial_prompt: Option<&str>,
+    ) -> Result<String, String> {
         self.engine
             .transcribe(audio_data, initial_prompt)
             .map_err(|e| e.to_string())
@@ -273,7 +285,8 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
 
     dev_log!(
         "[STT] Loading whisper-rs model: {} (language: {})",
-        config.model, config.language
+        config.model,
+        config.language
     );
 
     let engine = SttEngine::new(&config).map_err(|e| {
@@ -295,14 +308,20 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
     {
         let vad_model_path = app_handle
             .path()
-            .resolve("models/silero_vad_v4.onnx", tauri::path::BaseDirectory::Resource)
+            .resolve(
+                "models/silero_vad_v4.onnx",
+                tauri::path::BaseDirectory::Resource,
+            )
             .map_err(|e| format!("Failed to resolve VAD model path: {}", e))?;
 
         if vad_model_path.exists() {
             match vad::SileroVad::new(&vad_model_path, 0.3) {
                 Ok(silero) => {
                     let smoothed = vad::SmoothedVad::new(Box::new(silero), 15, 15, 2);
-                    let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
+                    let capture = state
+                        .audio_capture
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     capture.set_vad(smoothed);
                     dev_log!("[VAD] ✓ Silero VAD v4 initialized (threshold: 0.3)");
                 }
@@ -311,14 +330,20 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
                 }
             }
         } else {
-            dev_log!("[VAD] ⚠️ VAD model not found at {:?} — recording without VAD", vad_model_path);
+            dev_log!(
+                "[VAD] ⚠️ VAD model not found at {:?} — recording without VAD",
+                vad_model_path
+            );
         }
     }
 
     // Pre-open audio worker now so first PTT press is instant.
     // The worker thread handles ALSA enumeration (~2s) in the background.
     {
-        let mut capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
+        let mut capture = state
+            .audio_capture
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let device_name = {
             let config = state.config.lock().unwrap();
             config.audio_device_name.clone()
@@ -326,7 +351,10 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
         dev_log!("[AUDIO] Spawning audio worker (pre-open)...");
         match capture.open_stream(device_name.as_deref()) {
             Ok(()) => dev_log!("[AUDIO] ✅ Audio worker spawned — stream opening in background"),
-            Err(e) => dev_log!("[AUDIO] ⚠️ Pre-open failed: {} — will retry on first PTT", e),
+            Err(e) => dev_log!(
+                "[AUDIO] ⚠️ Pre-open failed: {} — will retry on first PTT",
+                e
+            ),
         }
     }
 
@@ -349,12 +377,18 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
 
 #[tauri::command]
 #[specta::specta]
-async fn check_ollama_status(state: State<'_, AppState>) -> Result<ollama_client::OllamaStatus, String> {
+async fn check_ollama_status(
+    state: State<'_, AppState>,
+) -> Result<ollama_client::OllamaStatus, String> {
     let (url, model, enabled) = {
         let cfg = state.config.lock().unwrap();
         (
-            cfg.ollama_url.clone().unwrap_or_else(|| "http://localhost:11434".to_string()),
-            cfg.ollama_model.clone().unwrap_or_else(|| "mistral".to_string()),
+            cfg.ollama_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:11434".to_string()),
+            cfg.ollama_model
+                .clone()
+                .unwrap_or_else(|| "mistral".to_string()),
             cfg.ollama_enabled,
         )
     };
@@ -409,18 +443,30 @@ pub(crate) async fn do_start_recording(
 
     // Open worker if not already running, then send Start command
     {
-        let mut capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
+        let mut capture = state
+            .audio_capture
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         if !capture.is_stream_open() {
             let device_name = {
                 let config = state.config.lock().unwrap();
                 config.audio_device_name.clone()
             };
-            dev_log!("[TIMING] T+{}ms: Spawning audio worker...", t0.elapsed().as_millis());
+            dev_log!(
+                "[TIMING] T+{}ms: Spawning audio worker...",
+                t0.elapsed().as_millis()
+            );
             capture.open_stream(device_name.as_deref())?;
-            dev_log!("[TIMING] T+{}ms: Worker spawned (stream opening in background)", t0.elapsed().as_millis());
+            dev_log!(
+                "[TIMING] T+{}ms: Worker spawned (stream opening in background)",
+                t0.elapsed().as_millis()
+            );
         } else {
-            dev_log!("[TIMING] T+{}ms: Worker already running (instant)", t0.elapsed().as_millis());
+            dev_log!(
+                "[TIMING] T+{}ms: Worker already running (instant)",
+                t0.elapsed().as_millis()
+            );
         }
 
         // Send Start command — queued in channel, processed after stream is ready
@@ -499,7 +545,10 @@ pub(crate) async fn do_stop_recording(
     // Send Stop command (non-blocking), then drop the Mutex before waiting.
     // This prevents holding the lock during the blocking recv (up to 5s).
     let stop_handle = {
-        let capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
+        let capture = state
+            .audio_capture
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         capture.stop_recording()?
     };
     // Mutex is released — now block waiting for the worker's reply
@@ -549,12 +598,11 @@ pub(crate) async fn do_stop_recording(
     // Add silence padding at START and END to prevent Whisper from cutting off words
     // START padding: compensates for CPAL stream startup delay
     // END padding: prevents Whisper from truncating the last words
-    let start_padding_samples = 3200;  // 200ms at 16kHz (covers pipeline startup delay)
-    let end_padding_samples = 16000;   // 1000ms at 16kHz (increased for better end capture)
+    let start_padding_samples = 3200; // 200ms at 16kHz (covers pipeline startup delay)
+    let end_padding_samples = 16000; // 1000ms at 16kHz (increased for better end capture)
 
-    let mut padded_audio = Vec::with_capacity(
-        start_padding_samples + audio_data.len() + end_padding_samples
-    );
+    let mut padded_audio =
+        Vec::with_capacity(start_padding_samples + audio_data.len() + end_padding_samples);
 
     // Add silence at START (compensates for pipeline startup delay)
     padded_audio.extend(std::iter::repeat_n(0.0f32, start_padding_samples));
@@ -597,7 +645,11 @@ pub(crate) async fn do_stop_recording(
 
     // Use spawn_blocking to offload CPU-intensive Whisper transcription
     // Lazy reload is done INSIDE the lock to prevent race with idle watcher
-    let prompt_for_whisper = if initial_prompt.is_empty() { None } else { Some(initial_prompt.clone()) };
+    let prompt_for_whisper = if initial_prompt.is_empty() {
+        None
+    } else {
+        Some(initial_prompt.clone())
+    };
     let transcription = tokio::task::spawn_blocking(move || {
         let mut stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -661,14 +713,20 @@ pub(crate) async fn do_stop_recording(
             let cfg = state.config.lock().unwrap();
             (
                 cfg.ollama_enabled,
-                cfg.ollama_url.clone().unwrap_or_else(|| "http://localhost:11434".to_string()),
-                cfg.ollama_model.clone().unwrap_or_else(|| "mistral".to_string()),
+                cfg.ollama_url
+                    .clone()
+                    .unwrap_or_else(|| "http://localhost:11434".to_string()),
+                cfg.ollama_model
+                    .clone()
+                    .unwrap_or_else(|| "mistral".to_string()),
                 cfg.language.clone(),
             )
         };
         if ollama_enabled && !transcription.is_empty() {
             dev_log!("[OLLAMA] Correcting text with model '{}'...", ollama_model);
-            match ollama_client::correct_text(&ollama_url, &ollama_model, &language, &transcription).await {
+            match ollama_client::correct_text(&ollama_url, &ollama_model, &language, &transcription)
+                .await
+            {
                 Ok(corrected) => {
                     if corrected != transcription {
                         dev_log!("[OLLAMA] Corrected: '{}' -> '{}'", transcription, corrected);
@@ -706,7 +764,11 @@ async fn type_text(text: String, app: AppHandle) -> Result<(), String> {
 }
 
 /// Helper function for type_text - can be called from other modules
-pub(crate) async fn do_type_text(text: String, app_handle: &AppHandle, paste_method: crate::config::PasteMethod) -> Result<(), String> {
+pub(crate) async fn do_type_text(
+    text: String,
+    app_handle: &AppHandle,
+    paste_method: crate::config::PasteMethod,
+) -> Result<(), String> {
     let mut output = TextOutput::new(60, paste_method, app_handle)?;
     output.type_text(&text)?;
     Ok(())
@@ -773,7 +835,11 @@ fn create_overlay_window(app_handle: &AppHandle) {
 
     match builder.build() {
         Ok(_window) => {
-            dev_log!("[OVERLAY] Window created successfully (hidden, {}x{})", OVERLAY_WIDTH, OVERLAY_HEIGHT);
+            dev_log!(
+                "[OVERLAY] Window created successfully (hidden, {}x{})",
+                OVERLAY_WIDTH,
+                OVERLAY_HEIGHT
+            );
         }
         Err(e) => {
             dev_log!("[OVERLAY] Failed to create overlay window: {}", e);
@@ -811,10 +877,18 @@ pub(crate) fn show_overlay_with_state(app: &AppHandle, state: &str) {
                         let x = monitor_x + (monitor_w - overlay_w) / 2.0;
                         let y = monitor_y + 20.0; // 20px from top of monitor
 
-                        let _ = window.set_position(tauri::Position::Logical(
-                            tauri::LogicalPosition { x, y },
-                        ));
-                        dev_log!("[OVERLAY] Positioned at ({}, {}) on monitor at ({}, {})", x, y, pos.x, pos.y);
+                        let _ =
+                            window.set_position(tauri::Position::Logical(tauri::LogicalPosition {
+                                x,
+                                y,
+                            }));
+                        dev_log!(
+                            "[OVERLAY] Positioned at ({}, {}) on monitor at ({}, {})",
+                            x,
+                            y,
+                            pos.x,
+                            pos.y
+                        );
                         break;
                     }
                 }
@@ -831,9 +905,8 @@ pub(crate) fn show_overlay_with_state(app: &AppHandle, state: &str) {
                 let x = monitor_x + (monitor_w - overlay_w) / 2.0;
                 let y = monitor_y + 20.0;
 
-                let _ = window.set_position(tauri::Position::Logical(
-                    tauri::LogicalPosition { x, y },
-                ));
+                let _ =
+                    window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
                 dev_log!("[OVERLAY] Positioned on primary monitor at ({}, {})", x, y);
             }
         }
@@ -909,7 +982,10 @@ fn get_cursor_position() -> Option<(i32, i32)> {
     {
         // Win32 GetCursorPos
         if let Ok(output) = std::process::Command::new("powershell")
-            .args(["-Command", "[System.Windows.Forms.Cursor]::Position | ForEach-Object { \"$($_.X) $($_.Y)\" }"])
+            .args([
+                "-Command",
+                "[System.Windows.Forms.Cursor]::Position | ForEach-Object { \"$($_.X) $($_.Y)\" }",
+            ])
             .output()
         {
             if output.status.success() {
@@ -940,7 +1016,6 @@ async fn hide_overlay(app: AppHandle) -> Result<(), String> {
     hide_overlay_animated(&app);
     Ok(())
 }
-
 
 #[derive(Clone, Serialize, Type)]
 struct StatusEvent {
@@ -988,12 +1063,21 @@ async fn save_settings(
     // Re-open audio worker on new device if device changed
     if old_device != new_config.audio_device_name {
         let device_name = new_config.audio_device_name.clone();
-        let mut capture = state.audio_capture.lock().unwrap_or_else(|e| e.into_inner());
+        let mut capture = state
+            .audio_capture
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // close_stream() shuts down the old worker thread
         capture.close_stream();
         match capture.open_stream(device_name.as_deref()) {
-            Ok(()) => dev_log!("[AUDIO] ✅ Audio worker re-spawned on new device: {:?}", device_name),
-            Err(e) => dev_log!("[AUDIO] ⚠️ Worker re-spawn failed: {} — will retry on next PTT", e),
+            Ok(()) => dev_log!(
+                "[AUDIO] ✅ Audio worker re-spawned on new device: {:?}",
+                device_name
+            ),
+            Err(e) => dev_log!(
+                "[AUDIO] ⚠️ Worker re-spawn failed: {} — will retry on next PTT",
+                e
+            ),
         }
     }
 
@@ -1003,7 +1087,11 @@ async fn save_settings(
         || old_model_path != new_config.model_path
         || old_use_gpu != new_config.use_gpu;
     if stt_needs_reload {
-        dev_log!("[STT] Settings changed — reloading engine (model: {}, lang: {})", new_config.model, new_config.language);
+        dev_log!(
+            "[STT] Settings changed — reloading engine (model: {}, lang: {})",
+            new_config.model,
+            new_config.language
+        );
         stt_whisper::suppress_whisper_cpp_logs();
         match SttEngine::new(&new_config) {
             Ok(engine) => {
@@ -1011,7 +1099,10 @@ async fn save_settings(
                 dev_log!("[STT] ✅ Engine reloaded successfully");
             }
             Err(e) => {
-                dev_log!("[STT] ⚠️ Engine reload failed: {} — keeping current engine", e);
+                dev_log!(
+                    "[STT] ⚠️ Engine reload failed: {} — keeping current engine",
+                    e
+                );
             }
         }
     }
@@ -1099,7 +1190,11 @@ async fn transcribe_audio(
         let cfg = state.config.lock().unwrap();
         text_processing::build_initial_prompt(&cfg.custom_words, &cfg.language)
     };
-    let prompt_for_whisper = if initial_prompt.is_empty() { None } else { Some(initial_prompt) };
+    let prompt_for_whisper = if initial_prompt.is_empty() {
+        None
+    } else {
+        Some(initial_prompt)
+    };
 
     // Clone Arc to move into spawn_blocking
     let stt_engine_arc = Arc::clone(&state.stt_engine);
@@ -1219,7 +1314,6 @@ fn log_from_frontend(message: String) {
     dev_log!("[FRONTEND] {}", message);
 }
 
-
 /// Get system information for Settings UI
 #[tauri::command]
 #[specta::specta]
@@ -1255,9 +1349,9 @@ fn get_gpu_info() -> Result<GpuInfo, String> {
     let failure_count = stt_whisper::get_gpu_failure_count();
     let disabled_by_failures = stt_whisper::is_gpu_disabled_by_failures();
 
-    let recommended_model = result.vram_mb.map(|vram| {
-        gpu::recommended_model_for_vram(vram).to_string()
-    });
+    let recommended_model = result
+        .vram_mb
+        .map(|vram| gpu::recommended_model_for_vram(vram).to_string());
 
     Ok(GpuInfo {
         available: result.available,
@@ -1279,14 +1373,23 @@ fn get_gpu_status() -> Result<GpuStatus, String> {
 
     // Determine current mode based on failure state
     let (mode, fallback_reason) = if disabled {
-        ("cpu".to_string(), Some(format!("GPU auto-disabled after {} consecutive failures", failure_count)))
+        (
+            "cpu".to_string(),
+            Some(format!(
+                "GPU auto-disabled after {} consecutive failures",
+                failure_count
+            )),
+        )
     } else {
         // Without active engine context, we report based on compile-time features
         let gpu_compiled = cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal");
         if gpu_compiled {
             ("gpu".to_string(), None)
         } else {
-            ("cpu".to_string(), Some("GPU not compiled in this build".to_string()))
+            (
+                "cpu".to_string(),
+                Some("GPU not compiled in this build".to_string()),
+            )
         }
     };
 
@@ -1305,7 +1408,6 @@ fn reset_gpu_failure_count() -> Result<String, String> {
     stt_whisper::reset_gpu_failures();
     Ok("GPU failure counter reset. GPU will be tried again on next initialization.".to_string())
 }
-
 
 /// Get list of installed models with their metadata
 #[tauri::command]
@@ -1344,7 +1446,10 @@ async fn download_model(
         Ok(engine) => {
             let mut stt = state.stt_engine.lock().unwrap_or_else(|e| e.into_inner());
             *stt = Some(engine);
-            dev_log!("[STT] ✅ STT engine reinitialized with model: {}", model_name);
+            dev_log!(
+                "[STT] ✅ STT engine reinitialized with model: {}",
+                model_name
+            );
 
             app_handle
                 .emit(
@@ -1380,7 +1485,10 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
 
         // 1. Check evdev permissions
         let evdev_ok = check_evdev_permissions();
-        dev_log!("[SETUP] evdev permissions: {}", if evdev_ok { "OK" } else { "needed" });
+        dev_log!(
+            "[SETUP] evdev permissions: {}",
+            if evdev_ok { "OK" } else { "needed" }
+        );
         if !evdev_ok {
             actions.push("evdev permissions".to_string());
             needs_restart = true;
@@ -1392,7 +1500,10 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
-        dev_log!("[SETUP] xdotool: {}", if xdotool_ok { "OK" } else { "needed" });
+        dev_log!(
+            "[SETUP] xdotool: {}",
+            if xdotool_ok { "OK" } else { "needed" }
+        );
         if !xdotool_ok {
             actions.push("xdotool".to_string());
         }
@@ -1419,7 +1530,8 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
         let mut script = String::from("#!/bin/sh\nset -e\n");
 
         // Install packages via apt (Debian/Ubuntu) or dnf (Fedora) or pacman (Arch)
-        let packages: Vec<&str> = actions.iter()
+        let packages: Vec<&str> = actions
+            .iter()
             .filter(|a| *a != "evdev permissions")
             .map(|a| a.as_str())
             .collect();
@@ -1449,7 +1561,12 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
         let shell = app_handle.shell();
         match shell
             .command("pkexec")
-            .args(["sh", script_path.to_str().unwrap_or("/tmp/karaoketyper-install.sh")])
+            .args([
+                "sh",
+                script_path
+                    .to_str()
+                    .unwrap_or("/tmp/karaoketyper-install.sh"),
+            ])
             .output()
             .await
         {
@@ -1457,7 +1574,10 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
                 let _ = std::fs::remove_file(&script_path);
                 if output.status.success() {
                     let msg = if needs_restart {
-                        format!("Installed: {}. Please restart the application.", actions.join(", "))
+                        format!(
+                            "Installed: {}. Please restart the application.",
+                            actions.join(", ")
+                        )
                     } else {
                         format!("Installed: {} ✅", actions.join(", "))
                     };
@@ -1483,7 +1603,6 @@ async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, St
     }
 }
 
-
 #[tauri::command]
 #[specta::specta]
 fn get_autostart_enabled() -> bool {
@@ -1505,8 +1624,8 @@ async fn set_autostart_enabled(enabled: bool) -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Build the invoke handler with tauri-specta for type-safe TypeScript bindings
-    let builder = tauri_specta::Builder::<tauri::Wry>::new()
-        .commands(tauri_specta::collect_commands![
+    let builder =
+        tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
             init_stt,
             start_recording,
             stop_recording,

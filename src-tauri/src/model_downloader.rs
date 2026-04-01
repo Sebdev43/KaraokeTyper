@@ -127,7 +127,11 @@ pub fn get_model_path(model_name: &str) -> Option<String> {
     let model = models.iter().find(|m| m.name == model_name)?;
 
     if is_model_installed(model) {
-        Some(get_model_file_path(model_name).to_string_lossy().to_string())
+        Some(
+            get_model_file_path(model_name)
+                .to_string_lossy()
+                .to_string(),
+        )
     } else {
         None
     }

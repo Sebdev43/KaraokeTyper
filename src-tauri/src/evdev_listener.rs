@@ -312,7 +312,11 @@ fn monitor_device_with_reconnect(config: DeviceMonitorConfig) {
                 return;
             }
             Err(e) => {
-                let attempts = config.device_state.reconnect_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let attempts = config
+                    .device_state
+                    .reconnect_attempts
+                    .fetch_add(1, Ordering::SeqCst)
+                    + 1;
 
                 if attempts > MAX_RECONNECT_ATTEMPTS {
                     crate::dev_log!(
@@ -415,15 +419,19 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                     // Check if all required modifiers are pressed
                     let modifiers_ok = (!config.hotkey_config.require_ctrl
                         || config.state.ctrl_pressed.load(Ordering::SeqCst))
-                        && (!config.hotkey_config.require_alt || config.state.alt_pressed.load(Ordering::SeqCst))
-                        && (!config.hotkey_config.require_shift || config.state.shift_pressed.load(Ordering::SeqCst));
+                        && (!config.hotkey_config.require_alt
+                            || config.state.alt_pressed.load(Ordering::SeqCst))
+                        && (!config.hotkey_config.require_shift
+                            || config.state.shift_pressed.load(Ordering::SeqCst));
 
                     if pressed && !config.state.trigger_pressed.load(Ordering::SeqCst) {
                         config.state.trigger_pressed.store(true, Ordering::SeqCst);
 
                         if modifiers_ok && !config.state.is_recording.load(Ordering::SeqCst) {
                             let t0 = std::time::Instant::now();
-                            crate::dev_log!("[TIMING] ========== RECORDING SESSION START ==========");
+                            crate::dev_log!(
+                                "[TIMING] ========== RECORDING SESSION START =========="
+                            );
                             crate::dev_log!("[TIMING] T+0ms: Hotkey PRESSED");
                             config.state.is_recording.store(true, Ordering::SeqCst);
 
@@ -435,7 +443,10 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
 
                             // Show overlay centered on cursor's monitor
                             crate::show_overlay_with_state(&config.app_handle, "recording");
-                            crate::dev_log!("[TIMING] T+{}ms: overlay shown", t0.elapsed().as_millis());
+                            crate::dev_log!(
+                                "[TIMING] T+{}ms: overlay shown",
+                                t0.elapsed().as_millis()
+                            );
 
                             // Start recording
                             let app_clone = config.app_handle.clone();
@@ -467,7 +478,10 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                                 let guard = state.recording_start_time.lock().unwrap();
                                 guard.unwrap_or_else(std::time::Instant::now)
                             };
-                            crate::dev_log!("[TIMING] T+{}ms: Hotkey RELEASED", t0.elapsed().as_millis());
+                            crate::dev_log!(
+                                "[TIMING] T+{}ms: Hotkey RELEASED",
+                                t0.elapsed().as_millis()
+                            );
                             config.state.is_recording.store(false, Ordering::SeqCst);
 
                             // Stop recording, transcribe, and type
@@ -501,7 +515,9 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                                             // hide takes 300ms but paste happens at 150ms,
                                             // causing Ctrl+V to go to the overlay instead
                                             // of the target app.
-                                            if let Some(window) = app_clone.get_webview_window("overlay") {
+                                            if let Some(window) =
+                                                app_clone.get_webview_window("overlay")
+                                            {
                                                 let _ = window.hide();
                                             }
                                             crate::dev_log!(
@@ -518,7 +534,13 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                                                 t0.elapsed().as_millis()
                                             );
                                             let config = AppConfig::load().unwrap_or_default();
-                                            if let Err(e) = do_type_text(transcription, &app_clone, config.paste_method).await {
+                                            if let Err(e) = do_type_text(
+                                                transcription,
+                                                &app_clone,
+                                                config.paste_method,
+                                            )
+                                            .await
+                                            {
                                                 crate::dev_log!(
                                                     "[TIMING] T+{}ms: paste FAILED: {}",
                                                     t0.elapsed().as_millis(),

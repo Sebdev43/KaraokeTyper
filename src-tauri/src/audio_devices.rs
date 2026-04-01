@@ -71,12 +71,15 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
             for line in stdout.lines() {
                 let line = line.trim();
                 if line.starts_with("Name:") {
-                    if let (Some(name), Some(desc)) = (current_name.take(), current_description.take()) {
+                    if let (Some(name), Some(desc)) =
+                        (current_name.take(), current_description.take())
+                    {
                         add_pactl_device(&name, &desc, &mut devices, &mut index);
                     }
                     current_name = Some(line.trim_start_matches("Name:").trim().to_string());
                 } else if line.starts_with("Description:") {
-                    current_description = Some(line.trim_start_matches("Description:").trim().to_string());
+                    current_description =
+                        Some(line.trim_start_matches("Description:").trim().to_string());
                 }
             }
             if let (Some(name), Some(desc)) = (current_name, current_description) {
@@ -96,7 +99,10 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for bt_dev in parse_bt_cards_from_pactl(&stdout) {
-                let already_listed = devices.iter().any(|d| d.raw_name.starts_with(&format!("bluez_input.{}", bt_dev.mac)));
+                let already_listed = devices.iter().any(|d| {
+                    d.raw_name
+                        .starts_with(&format!("bluez_input.{}", bt_dev.mac))
+                });
                 if !already_listed {
                     let raw_name = format!("bluez_input.{}.0", bt_dev.mac);
                     devices.push(AudioDevice {
@@ -105,7 +111,11 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
                         index,
                     });
                     index += 1;
-                    crate::dev_log!("[DEVICES] Added BT device from card: {} ({})", bt_dev.description, bt_dev.mac);
+                    crate::dev_log!(
+                        "[DEVICES] Added BT device from card: {} ({})",
+                        bt_dev.description,
+                        bt_dev.mac
+                    );
                 }
             }
         }
@@ -115,7 +125,9 @@ async fn get_audio_devices_linux() -> Result<Vec<AudioDevice>, String> {
     for dev in &devices {
         crate::dev_log!(
             "[DEVICES]   [{}] {} -> {}",
-            dev.index, dev.name, dev.raw_name
+            dev.index,
+            dev.name,
+            dev.raw_name
         );
     }
 
@@ -134,7 +146,8 @@ fn parse_bt_cards_from_pactl(output: &str) -> Vec<BtCardInfo> {
     let cards: Vec<&str> = output.split("\nCard #").collect();
 
     for card in cards {
-        let card_name = card.lines()
+        let card_name = card
+            .lines()
             .find(|l| l.contains("device.name") && l.contains("bluez_card."))
             .and_then(|l| l.split('"').nth(1));
 
@@ -154,12 +167,16 @@ fn parse_bt_cards_from_pactl(output: &str) -> Vec<BtCardInfo> {
             continue;
         }
 
-        let mac = card_name.strip_prefix("bluez_card.").unwrap_or("").to_string();
+        let mac = card_name
+            .strip_prefix("bluez_card.")
+            .unwrap_or("")
+            .to_string();
         if mac.is_empty() || !is_valid_bt_mac(&mac) {
             continue;
         }
 
-        let description = card.lines()
+        let description = card
+            .lines()
             .find(|l| l.contains("device.description"))
             .and_then(|l| l.split('"').nth(1))
             .unwrap_or("Bluetooth Headset")
@@ -173,7 +190,10 @@ fn parse_bt_cards_from_pactl(output: &str) -> Vec<BtCardInfo> {
 #[cfg(target_os = "linux")]
 fn is_valid_bt_mac(mac: &str) -> bool {
     let parts: Vec<&str> = mac.split('_').collect();
-    parts.len() == 6 && parts.iter().all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
+    parts.len() == 6
+        && parts
+            .iter()
+            .all(|p| p.len() == 2 && p.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 #[cfg(target_os = "linux")]
@@ -203,7 +223,11 @@ fn format_device_emoji(description: &str) -> &'static str {
     let lower = description.to_lowercase();
     if lower.contains("bluetooth") || lower.contains("bluez") {
         "🎧"
-    } else if lower.contains("046d") || lower.contains("0x46d") || lower.contains("webcam") || lower.contains("c270") {
+    } else if lower.contains("046d")
+        || lower.contains("0x46d")
+        || lower.contains("webcam")
+        || lower.contains("c270")
+    {
         "📷"
     } else if lower.contains("usb") {
         "🎤"
@@ -227,16 +251,21 @@ fn read_alsa_card_names() -> Vec<(String, String)> {
     let lines: Vec<&str> = content.lines().collect();
     for chunk in lines.chunks(2) {
         if let Some(first_line) = chunk.first() {
-            if let (Some(bracket_start), Some(bracket_end)) = (first_line.find('['), first_line.find(']')) {
-                let card_id = first_line[bracket_start + 1..bracket_end].trim().to_string();
+            if let (Some(bracket_start), Some(bracket_end)) =
+                (first_line.find('['), first_line.find(']'))
+            {
+                let card_id = first_line[bracket_start + 1..bracket_end]
+                    .trim()
+                    .to_string();
 
-                let description = if let Some(usb_name) = resolve_usb_card_name(&card_id, &usb_names) {
-                    usb_name
-                } else if let Some(dash_pos) = first_line.find(" - ") {
-                    first_line[dash_pos + 3..].trim().to_string()
-                } else {
-                    card_id.clone()
-                };
+                let description =
+                    if let Some(usb_name) = resolve_usb_card_name(&card_id, &usb_names) {
+                        usb_name
+                    } else if let Some(dash_pos) = first_line.find(" - ") {
+                        first_line[dash_pos + 3..].trim().to_string()
+                    } else {
+                        card_id.clone()
+                    };
 
                 cards.push((card_id, description));
             }
@@ -275,7 +304,10 @@ fn parse_lsusb() -> std::collections::HashMap<String, String> {
 }
 
 #[cfg(target_os = "linux")]
-fn resolve_usb_card_name(card_id: &str, usb_names: &std::collections::HashMap<String, String>) -> Option<String> {
+fn resolve_usb_card_name(
+    card_id: &str,
+    usb_names: &std::collections::HashMap<String, String>,
+) -> Option<String> {
     if !card_id.starts_with('U') {
         return None;
     }

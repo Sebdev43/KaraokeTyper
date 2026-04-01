@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
+use ort::session::Session;
 use ort::value::Tensor;
 
 const WHISPER_SAMPLE_RATE: u32 = 16000;
@@ -69,14 +69,15 @@ impl SileroVad {
         let c_tensor = Tensor::from_array(([2usize, 1, 64], self.c_data.clone()))
             .map_err(|e| format!("VAD c tensor error: {e}"))?;
 
-        let result = self.session.run(
-            ort::inputs![
+        let result = self
+            .session
+            .run(ort::inputs![
                 "input" => input_tensor,
                 "sr" => sr_tensor,
                 "h" => h_tensor,
                 "c" => c_tensor
-            ]
-        ).map_err(|e| format!("VAD inference error: {e}"))?;
+            ])
+            .map_err(|e| format!("VAD inference error: {e}"))?;
 
         // Update internal state tensors
         let (_, hn_data) = result
@@ -249,7 +250,10 @@ mod tests {
         let frame = vec![0.0f32; SILERO_FRAME_SAMPLES];
 
         assert!(matches!(vad.push_frame(&frame).unwrap(), VadFrame::Noise));
-        assert!(matches!(vad.push_frame(&frame).unwrap(), VadFrame::Speech(_)));
+        assert!(matches!(
+            vad.push_frame(&frame).unwrap(),
+            VadFrame::Speech(_)
+        ));
     }
 
     #[test]
@@ -260,8 +264,14 @@ mod tests {
 
         vad.push_frame(&frame).unwrap(); // onset 1
         vad.push_frame(&frame).unwrap(); // onset 2 -> speech
-        assert!(matches!(vad.push_frame(&frame).unwrap(), VadFrame::Speech(_))); // hangover 2
-        assert!(matches!(vad.push_frame(&frame).unwrap(), VadFrame::Speech(_))); // hangover 1
+        assert!(matches!(
+            vad.push_frame(&frame).unwrap(),
+            VadFrame::Speech(_)
+        )); // hangover 2
+        assert!(matches!(
+            vad.push_frame(&frame).unwrap(),
+            VadFrame::Speech(_)
+        )); // hangover 1
         assert!(matches!(vad.push_frame(&frame).unwrap(), VadFrame::Noise));
     }
 

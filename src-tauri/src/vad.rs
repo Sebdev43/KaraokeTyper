@@ -50,8 +50,8 @@ impl SileroVad {
 
         Ok(Self {
             session,
-            h_data: vec![0.0f32; 2 * 1 * 64],
-            c_data: vec![0.0f32; 2 * 1 * 64],
+            h_data: vec![0.0f32; 128],
+            c_data: vec![0.0f32; 128],
             threshold,
         })
     }

@@ -377,7 +377,7 @@ impl WhisperSttEngine {
         let cpu_count = std::thread::available_parallelism()
             .map(|n| n.get() as i32)
             .unwrap_or(2);
-        let n_threads = (cpu_count / 2).max(1).min(8);
+        let n_threads = (cpu_count / 2).clamp(1, 8);
         params.set_n_threads(n_threads);
 
         // Set language (empty string means auto-detect)

@@ -117,6 +117,22 @@ struct DeviceState {
     is_active: AtomicBool,
 }
 
+struct HotkeyState {
+    ctrl_pressed: Arc<AtomicBool>,
+    alt_pressed: Arc<AtomicBool>,
+    shift_pressed: Arc<AtomicBool>,
+    trigger_pressed: Arc<AtomicBool>,
+    is_recording: Arc<AtomicBool>,
+}
+
+struct DeviceMonitorConfig {
+    device_path: PathBuf,
+    app_handle: AppHandle,
+    state: HotkeyState,
+    hotkey_config: Arc<HotkeyConfig>,
+    device_state: Arc<DeviceState>,
+}
+
 /// Find input devices that can handle our hotkey
 fn find_input_devices(hotkey: &HotkeyConfig) -> Result<Vec<PathBuf>, String> {
     let mut devices = Vec::new();
@@ -245,18 +261,21 @@ pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
             .await
             .insert(device_path.clone(), state.clone());
 
-        spawn_device_monitor(
-            device_path,
-            app_handle.clone(),
-            ctrl_pressed.clone(),
-            alt_pressed.clone(),
-            shift_pressed.clone(),
-            trigger_pressed.clone(),
-            is_recording.clone(),
-            hotkey_config.clone(),
-            state,
-            device_states.clone(),
-        );
+        let config = DeviceMonitorConfig {
+            device_path: device_path.clone(),
+            app_handle: app_handle.clone(),
+            state: HotkeyState {
+                ctrl_pressed: ctrl_pressed.clone(),
+                alt_pressed: alt_pressed.clone(),
+                shift_pressed: shift_pressed.clone(),
+                trigger_pressed: trigger_pressed.clone(),
+                is_recording: is_recording.clone(),
+            },
+            hotkey_config: hotkey_config.clone(),
+            device_state: state,
+        };
+
+        spawn_device_monitor(config);
     }
 
     crate::dev_log!("[EVDEV] ✅ Push-to-talk listener started!");
@@ -265,94 +284,50 @@ pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn spawn_device_monitor(
-    device_path: PathBuf,
-    app_handle: AppHandle,
-    ctrl_pressed: Arc<AtomicBool>,
-    alt_pressed: Arc<AtomicBool>,
-    shift_pressed: Arc<AtomicBool>,
-    trigger_pressed: Arc<AtomicBool>,
-    is_recording: Arc<AtomicBool>,
-    hotkey_config: Arc<HotkeyConfig>,
-    state: Arc<DeviceState>,
-    device_states: Arc<Mutex<HashMap<PathBuf, Arc<DeviceState>>>>,
-) {
-    let path_clone = device_path.clone();
-
+fn spawn_device_monitor(config: DeviceMonitorConfig) {
     // Use std::thread::spawn instead of tokio::task::spawn_blocking.
     // These are infinite loops that never return — spawn_blocking is designed
     // for tasks that "eventually finish" and would exhaust tokio's blocking pool.
     std::thread::spawn(move || {
-        monitor_device_with_reconnect(
-            path_clone,
-            app_handle,
-            ctrl_pressed,
-            alt_pressed,
-            shift_pressed,
-            trigger_pressed,
-            is_recording,
-            hotkey_config,
-            state,
-            device_states,
-        );
+        monitor_device_with_reconnect(config);
     });
 }
 
-fn monitor_device_with_reconnect(
-    device_path: PathBuf,
-    app_handle: AppHandle,
-    ctrl_pressed: Arc<AtomicBool>,
-    alt_pressed: Arc<AtomicBool>,
-    shift_pressed: Arc<AtomicBool>,
-    trigger_pressed: Arc<AtomicBool>,
-    is_recording: Arc<AtomicBool>,
-    hotkey_config: Arc<HotkeyConfig>,
-    state: Arc<DeviceState>,
-    _device_states: Arc<Mutex<HashMap<PathBuf, Arc<DeviceState>>>>,
-) {
+fn monitor_device_with_reconnect(config: DeviceMonitorConfig) {
     loop {
-        if !state.is_active.load(Ordering::SeqCst) {
+        if !config.device_state.is_active.load(Ordering::SeqCst) {
             crate::dev_log!(
                 "[EVDEV] Device {} marked inactive, stopping monitor",
-                device_path.display()
+                config.device_path.display()
             );
             return;
         }
 
-        match monitor_input_device(
-            &device_path,
-            &app_handle,
-            &ctrl_pressed,
-            &alt_pressed,
-            &shift_pressed,
-            &trigger_pressed,
-            &is_recording,
-            &hotkey_config,
-        ) {
+        match monitor_input_device(&config) {
             Ok(()) => {
                 crate::dev_log!(
                     "[EVDEV] Device {} monitor exited cleanly",
-                    device_path.display()
+                    config.device_path.display()
                 );
                 return;
             }
             Err(e) => {
-                let attempts = state.reconnect_attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                let attempts = config.device_state.reconnect_attempts.fetch_add(1, Ordering::SeqCst) + 1;
 
                 if attempts > MAX_RECONNECT_ATTEMPTS {
                     crate::dev_log!(
                         "[EVDEV] Max reconnect attempts ({}) reached for {}, giving up",
                         MAX_RECONNECT_ATTEMPTS,
-                        device_path.display()
+                        config.device_path.display()
                     );
-                    state.is_active.store(false, Ordering::SeqCst);
+                    config.device_state.is_active.store(false, Ordering::SeqCst);
                     return;
                 }
 
                 let delay = RECONNECT_DELAY_MS * 2u64.pow(attempts - 1);
                 crate::dev_log!(
                     "[EVDEV] Device {} error: {}. Reconnecting in {}ms (attempt {}/{})",
-                    device_path.display(),
+                    config.device_path.display(),
                     e,
                     delay,
                     attempts,
@@ -361,40 +336,31 @@ fn monitor_device_with_reconnect(
 
                 std::thread::sleep(Duration::from_millis(delay));
 
-                if !device_path.exists() {
+                if !config.device_path.exists() {
                     crate::dev_log!(
                         "[EVDEV] Device {} no longer exists, waiting for reconnect...",
-                        device_path.display()
+                        config.device_path.display()
                     );
                     continue;
                 }
 
                 crate::dev_log!(
                     "[EVDEV] Attempting to reconnect to {}...",
-                    device_path.display()
+                    config.device_path.display()
                 );
             }
         }
     }
 }
 
-fn monitor_input_device(
-    device_path: &PathBuf,
-    app_handle: &AppHandle,
-    ctrl_pressed: &Arc<AtomicBool>,
-    alt_pressed: &Arc<AtomicBool>,
-    shift_pressed: &Arc<AtomicBool>,
-    trigger_pressed: &Arc<AtomicBool>,
-    is_recording: &Arc<AtomicBool>,
-    hotkey_config: &HotkeyConfig,
-) -> Result<(), String> {
-    let mut device = Device::open(device_path)
-        .map_err(|e| format!("Failed to open {}: {}", device_path.display(), e))?;
+fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
+    let mut device = Device::open(&config.device_path)
+        .map_err(|e| format!("Failed to open {}: {}", config.device_path.display(), e))?;
 
     let device_name = device.name().unwrap_or("unknown").to_string();
     crate::dev_log!(
         "[EVDEV] Connected to: {} ({})",
-        device_path.display(),
+        config.device_path.display(),
         device_name
     );
 
@@ -412,32 +378,32 @@ fn monitor_input_device(
                 match key {
                     Key::KEY_LEFTCTRL | Key::KEY_RIGHTCTRL => {
                         if pressed {
-                            ctrl_pressed.store(true, Ordering::SeqCst);
+                            config.state.ctrl_pressed.store(true, Ordering::SeqCst);
                         } else if released {
-                            ctrl_pressed.store(false, Ordering::SeqCst);
+                            config.state.ctrl_pressed.store(false, Ordering::SeqCst);
                         }
                     }
                     Key::KEY_LEFTALT | Key::KEY_RIGHTALT => {
                         if pressed {
-                            alt_pressed.store(true, Ordering::SeqCst);
+                            config.state.alt_pressed.store(true, Ordering::SeqCst);
                         } else if released {
-                            alt_pressed.store(false, Ordering::SeqCst);
+                            config.state.alt_pressed.store(false, Ordering::SeqCst);
                         }
                     }
                     Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => {
                         if pressed {
-                            shift_pressed.store(true, Ordering::SeqCst);
+                            config.state.shift_pressed.store(true, Ordering::SeqCst);
                         } else if released {
-                            shift_pressed.store(false, Ordering::SeqCst);
+                            config.state.shift_pressed.store(false, Ordering::SeqCst);
                         }
                     }
                     _ => {}
                 }
 
                 // Check if this is the trigger key/button
-                let is_trigger = if let Some(trigger_key) = hotkey_config.trigger_key {
+                let is_trigger = if let Some(trigger_key) = config.hotkey_config.trigger_key {
                     key == trigger_key
-                } else if let Some(btn_code) = hotkey_config.trigger_mouse_btn {
+                } else if let Some(btn_code) = config.hotkey_config.trigger_mouse_btn {
                     // Check mouse buttons by their code
                     let key_code = key.code();
                     key_code == btn_code
@@ -447,32 +413,32 @@ fn monitor_input_device(
 
                 if is_trigger {
                     // Check if all required modifiers are pressed
-                    let modifiers_ok = (!hotkey_config.require_ctrl
-                        || ctrl_pressed.load(Ordering::SeqCst))
-                        && (!hotkey_config.require_alt || alt_pressed.load(Ordering::SeqCst))
-                        && (!hotkey_config.require_shift || shift_pressed.load(Ordering::SeqCst));
+                    let modifiers_ok = (!config.hotkey_config.require_ctrl
+                        || config.state.ctrl_pressed.load(Ordering::SeqCst))
+                        && (!config.hotkey_config.require_alt || config.state.alt_pressed.load(Ordering::SeqCst))
+                        && (!config.hotkey_config.require_shift || config.state.shift_pressed.load(Ordering::SeqCst));
 
-                    if pressed && !trigger_pressed.load(Ordering::SeqCst) {
-                        trigger_pressed.store(true, Ordering::SeqCst);
+                    if pressed && !config.state.trigger_pressed.load(Ordering::SeqCst) {
+                        config.state.trigger_pressed.store(true, Ordering::SeqCst);
 
-                        if modifiers_ok && !is_recording.load(Ordering::SeqCst) {
+                        if modifiers_ok && !config.state.is_recording.load(Ordering::SeqCst) {
                             let t0 = std::time::Instant::now();
                             crate::dev_log!("[TIMING] ========== RECORDING SESSION START ==========");
                             crate::dev_log!("[TIMING] T+0ms: Hotkey PRESSED");
-                            is_recording.store(true, Ordering::SeqCst);
+                            config.state.is_recording.store(true, Ordering::SeqCst);
 
                             // Store t0 in AppState
                             {
-                                let state = app_handle.state::<AppState>();
+                                let state = config.app_handle.state::<AppState>();
                                 *state.recording_start_time.lock().unwrap() = Some(t0);
                             }
 
                             // Show overlay centered on cursor's monitor
-                            crate::show_overlay_with_state(&app_handle, "recording");
+                            crate::show_overlay_with_state(&config.app_handle, "recording");
                             crate::dev_log!("[TIMING] T+{}ms: overlay shown", t0.elapsed().as_millis());
 
                             // Start recording
-                            let app_clone = app_handle.clone();
+                            let app_clone = config.app_handle.clone();
                             tauri::async_runtime::spawn(async move {
                                 crate::dev_log!(
                                     "[TIMING] T+{}ms: async spawn started",
@@ -493,19 +459,19 @@ fn monitor_input_device(
                             });
                         }
                     } else if released {
-                        trigger_pressed.store(false, Ordering::SeqCst);
+                        config.state.trigger_pressed.store(false, Ordering::SeqCst);
 
-                        if is_recording.load(Ordering::SeqCst) {
+                        if config.state.is_recording.load(Ordering::SeqCst) {
                             let t0 = {
-                                let state = app_handle.state::<AppState>();
+                                let state = config.app_handle.state::<AppState>();
                                 let guard = state.recording_start_time.lock().unwrap();
                                 guard.unwrap_or_else(std::time::Instant::now)
                             };
                             crate::dev_log!("[TIMING] T+{}ms: Hotkey RELEASED", t0.elapsed().as_millis());
-                            is_recording.store(false, Ordering::SeqCst);
+                            config.state.is_recording.store(false, Ordering::SeqCst);
 
                             // Stop recording, transcribe, and type
-                            let app_clone = app_handle.clone();
+                            let app_clone = config.app_handle.clone();
                             tauri::async_runtime::spawn(async move {
                                 let state = app_clone.state::<AppState>();
                                 let t0 = state

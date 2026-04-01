@@ -946,7 +946,8 @@ impl TextOutput {
         ], 200)?;
 
         let trimmed = output.trim().trim_start_matches('(').trim_end_matches(')');
-        let wm_class = trimmed.splitn(2, ", ").next()
+        let wm_class = trimmed.split_once(", ")
+            .map(|(first, _)| first)
             .unwrap_or("")
             .trim().trim_matches('\'')
             .to_lowercase();

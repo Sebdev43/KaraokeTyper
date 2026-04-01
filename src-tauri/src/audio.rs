@@ -451,7 +451,7 @@ fn flush_vad_accumulator(
     }
 
     let Ok(mut vad_guard) = vad.lock() else {
-        audio_buffer.extend(frame_acc.drain(..));
+        audio_buffer.append(frame_acc);
         return;
     };
 
@@ -471,7 +471,7 @@ fn flush_vad_accumulator(
             }
         }
     } else {
-        audio_buffer.extend(frame_acc.drain(..));
+        audio_buffer.append(frame_acc);
     }
 }
 

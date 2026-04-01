@@ -29,18 +29,13 @@ impl Default for PasteMethod {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Default)]
 pub enum ModelUnloadTimeout {
+    #[default]
     Never,
     Min5,
     Min15,
     Hour1,
-}
-
-impl Default for ModelUnloadTimeout {
-    fn default() -> Self {
-        Self::Never
-    }
 }
 
 impl ModelUnloadTimeout {

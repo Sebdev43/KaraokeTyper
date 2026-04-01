@@ -151,7 +151,7 @@ fn apply_custom_words(text: &str, custom_words: &[String], threshold: f32) -> St
 
             // Length check: skip if lengths differ by more than 30%
             let len_ratio = core_lower.len() as f32 / cw_lower.len() as f32;
-            if len_ratio < 0.7 || len_ratio > 1.3 {
+            if !(0.7..=1.3).contains(&len_ratio) {
                 continue;
             }
 
@@ -169,10 +169,8 @@ fn apply_custom_words(text: &str, custom_words: &[String], threshold: f32) -> St
 
             let adjusted_distance = distance * soundex_bonus;
 
-            if adjusted_distance < threshold {
-                if best_match.is_none() || adjusted_distance < best_match.unwrap().1 {
-                    best_match = Some((cw.as_str(), adjusted_distance));
-                }
+            if adjusted_distance < threshold && (best_match.is_none() || adjusted_distance < best_match.unwrap().1) {
+                best_match = Some((cw.as_str(), adjusted_distance));
             }
         }
 

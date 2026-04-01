@@ -677,11 +677,11 @@ pub(crate) async fn do_stop_recording(
                 }
                 Err(e) => {
                     dev_log!("[OLLAMA] ⚠️ Correction failed: {} — using original text", e);
-                    transcription.clone()
+                    transcription
                 }
             }
         } else {
-            transcription.clone()
+            transcription
         }
     };
 
@@ -701,13 +701,13 @@ pub(crate) async fn do_stop_recording(
 #[tauri::command]
 #[specta::specta]
 async fn type_text(text: String, app: AppHandle) -> Result<(), String> {
-    do_type_text(text, &app).await
+    let config = AppConfig::load().unwrap_or_default();
+    do_type_text(text, &app, config.paste_method).await
 }
 
 /// Helper function for type_text - can be called from other modules
-pub(crate) async fn do_type_text(text: String, app_handle: &AppHandle) -> Result<(), String> {
-    let config = AppConfig::load().unwrap_or_default();
-    let mut output = TextOutput::new(60, config.paste_method, app_handle)?;
+pub(crate) async fn do_type_text(text: String, app_handle: &AppHandle, paste_method: crate::config::PasteMethod) -> Result<(), String> {
+    let mut output = TextOutput::new(60, paste_method, app_handle)?;
     output.type_text(&text)?;
     Ok(())
 }

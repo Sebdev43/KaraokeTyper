@@ -13,6 +13,8 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(not(target_os = "linux"))]
 use tokio::sync::mpsc;
+#[cfg(not(target_os = "linux"))]
+use crate::config::AppConfig;
 
 /// Hotkey events for push-to-talk (used on Windows/macOS only)
 #[cfg(not(target_os = "linux"))]
@@ -116,7 +118,8 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
                             tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
                             // Type the text using helper function
-                            match crate::do_type_text(transcription, &app_clone).await {
+                            let config = AppConfig::load().unwrap_or_default();
+                            match crate::do_type_text(transcription, &app_clone, config.paste_method).await {
                                 Ok(_) => {
                                     crate::dev_log!("[KEYBOARD] Text pasted successfully");
                                 }

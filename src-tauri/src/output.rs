@@ -499,6 +499,22 @@ pub struct TextOutput {
 }
 
 impl TextOutput {
+    const KNOWN_TERMINALS: &'static [&'static str] = &[
+        "gnome-terminal", "gnome-terminal-server", "org.gnome.terminal",
+        "konsole", "xterm", "urxvt", "rxvt", "terminator", "tilix",
+        "alacritty", "kitty", "wezterm", "foot", "xfce4-terminal",
+        "mate-terminal", "lxterminal", "qterminal", "terminology",
+        "cool-retro-term", "guake", "tilda", "yakuake", "hyper",
+        "tabby", "warp", "iterm2", "terminal", "blackbox", "ptyxis", "ghostty",
+    ];
+
+    const KNOWN_SHELLS: &'static [&'static str] = &[
+        "bash", "zsh", "fish", "sh", "python", "node", "npm",
+        "cargo", "claude", "htop", "vim", "nvim", "ssh", "docker",
+    ];
+
+    const REMOTE_DESKTOP_APPS: &'static [&'static str] = &["rustdesk", "anydesk", "vinagre", "remmina"];
+
     pub fn new(key_delay_ms: u64, paste_method: PasteMethod, app_handle: &AppHandle) -> Result<Self, String> {
         crate::dev_log!("[OUTPUT] Initializing text output (paste_method={:?})...", paste_method);
         crate::dev_log!("[OUTPUT] ✅ Clipboard initialized");
@@ -617,14 +633,10 @@ impl TextOutput {
         Ok(())
     }
 
-    /// Set clipboard text using the best method for the current platform.
-    /// On Wayland: uses wl-copy which forks a persistent daemon to serve clipboard requests.
-    /// This avoids the race condition where arboard's X11 clipboard content disappears
-    /// when the Clipboard object is dropped before the paste key events are processed.
-    /// On X11 / non-Linux: uses arboard directly.
-    /// Set clipboard text. On Wayland: wl-copy with .status() (blocking, no idle sleep).
-    /// Robust Wayland detection: checks both XDG_SESSION_TYPE and WAYLAND_DISPLAY.
-    /// XDG_SESSION_TYPE can report "x11" even on Wayland (XWayland, Tauri, Electron).
+    /// Set clipboard text using the best tool for the platform.
+    /// Wayland: wl-copy via stdin (text/plain MIME).
+    /// X11: xclip -selection clipboard → tauri plugin fallback.
+    /// Other: tauri-plugin-clipboard-manager.
     #[cfg(target_os = "linux")]
     fn is_wayland() -> bool {
         let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
@@ -633,23 +645,26 @@ impl TextOutput {
     }
 
     /// Set clipboard text using the best tool for the platform.
-    /// Wayland: wl-copy (text/plain MIME, persistent daemon)
-    /// X11: xclip -selection clipboard (proper text/plain for Remmina) → tauri plugin
-    /// Other: tauri-plugin-clipboard-manager
+    /// Wayland: wl-copy via stdin (text/plain MIME).
+    /// X11: xclip -selection clipboard → tauri plugin fallback.
+    /// Other: tauri-plugin-clipboard-manager.
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
-            // Wayland: wl-copy
+            // Wayland: wl-copy via stdin
             if Self::is_wayland() && Self::is_tool_available("wl-copy") {
                 crate::dev_log!("[OUTPUT] Using wl-copy for clipboard");
-                let status = std::process::Command::new("wl-copy")
-                    .arg("--")
-                    .arg(text)
-                    .stdin(std::process::Stdio::null())
+                let mut child = std::process::Command::new("wl-copy")
+                    .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
-                    .status()
+                    .spawn()
                     .map_err(|e| format!("Failed to run wl-copy: {}", e))?;
+                if let Some(mut stdin) = child.stdin.take() {
+                    use std::io::Write;
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                let status = child.wait().map_err(|e| format!("wl-copy wait failed: {}", e))?;
 
                 if status.success() {
                     crate::dev_log!("[OUTPUT] ✅ wl-copy set clipboard");
@@ -801,19 +816,10 @@ impl TextOutput {
     }
 
     #[cfg(target_os = "linux")]
-    fn check_terminal_via_extension() -> Option<bool> {
+    fn run_gdbus_with_timeout(args: &[&str], timeout_ms: u64) -> Option<String> {
         let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
         let mut child = std::process::Command::new("gdbus")
-            .args([
-                "call",
-                "--session",
-                "--dest",
-                "org.gnome.Shell",
-                "--object-path",
-                "/org/karaoketyper/FocusedWindow",
-                "--method",
-                "org.karaoketyper.FocusedWindow.GetFocusedWindow",
-            ])
+            .args(args)
             .env("XDG_RUNTIME_DIR", &xdg_runtime)
             .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
             .stdout(std::process::Stdio::piped())
@@ -821,8 +827,7 @@ impl TextOutput {
             .spawn()
             .ok()?;
 
-        // Timeout: 200ms max to avoid blocking paste
-        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -832,7 +837,7 @@ impl TextOutput {
                             let mut buf = String::new();
                             let mut reader = std::io::BufReader::new(stdout);
                             if reader.read_to_string(&mut buf).is_ok() {
-                                return Some(Self::classify_window_from_dbus(&buf));
+                                return Some(buf);
                             }
                         }
                     }
@@ -840,7 +845,7 @@ impl TextOutput {
                 }
                 Ok(None) => {
                     if std::time::Instant::now() > deadline {
-                        crate::dev_log!("[OUTPUT] D-Bus extension call timed out (200ms)");
+                        crate::dev_log!("[OUTPUT] D-Bus call timed out ({}ms)", timeout_ms);
                         let _ = child.kill();
                         return None;
                     }
@@ -849,6 +854,16 @@ impl TextOutput {
                 Err(_) => return None,
             }
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn check_terminal_via_extension() -> Option<bool> {
+        let output = Self::run_gdbus_with_timeout(&[
+            "call", "--session", "--dest", "org.gnome.Shell",
+            "--object-path", "/org/karaoketyper/FocusedWindow",
+            "--method", "org.karaoketyper.FocusedWindow.GetFocusedWindow",
+        ], 200)?;
+        Some(Self::classify_window_from_dbus(&output))
     }
 
     #[cfg(target_os = "linux")]
@@ -863,17 +878,8 @@ impl TextOutput {
 
         crate::dev_log!("[OUTPUT] Window: wm_class='{}', title='{}'", wm_class, title);
 
-        let terminals = [
-            "gnome-terminal", "gnome-terminal-server", "org.gnome.terminal",
-            "konsole", "xterm", "urxvt", "rxvt", "terminator", "tilix",
-            "alacritty", "kitty", "wezterm", "foot", "xfce4-terminal",
-            "mate-terminal", "lxterminal", "qterminal", "terminology",
-            "cool-retro-term", "guake", "tilda", "yakuake", "hyper",
-            "tabby", "warp", "iterm2", "terminal", "blackbox", "ptyxis", "ghostty",
-        ];
-
-        for term in terminals {
-            if wm_class == term || wm_class.ends_with(&format!(".{}", term)) {
+        for term in Self::KNOWN_TERMINALS {
+            if wm_class == *term || wm_class.ends_with(&format!(".{}", term)) {
                 crate::dev_log!("[OUTPUT] Terminal detected: {} (matched '{}')", wm_class, term);
                 return true;
             }
@@ -906,12 +912,8 @@ impl TextOutput {
                     .unwrap_or(&title)
                     .split(" - ").next()
                     .unwrap_or("").trim();
-                let shell_names = [
-                    "bash", "zsh", "fish", "sh", "python", "node", "npm",
-                    "cargo", "claude", "htop", "vim", "nvim", "ssh", "docker",
-                ];
-                for shell in shell_names {
-                    if first_segment == shell || first_segment.starts_with(&format!("{}:", shell)) {
+                for shell in Self::KNOWN_SHELLS {
+                    if first_segment == *shell || first_segment.starts_with(&format!("{}:", shell)) {
                         crate::dev_log!("[OUTPUT] {} terminal detected: '{}'", editor, shell);
                         return true;
                     }
@@ -927,92 +929,37 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn check_terminal_via_gnome_eval() -> Option<bool> {
-        let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
-        let mut child = std::process::Command::new("gdbus")
-            .args([
-                "call",
-                "--session",
-                "--dest",
-                "org.gnome.Shell",
-                "--object-path",
-                "/org/gnome/Shell",
-                "--method",
-                "org.gnome.Shell.Eval",
-                "let w = global.display.focus_window; w ? w.get_wm_class() + '|' + w.get_title() : ''",
-            ])
-            .env("XDG_RUNTIME_DIR", &xdg_runtime)
-            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
+        let stdout = Self::run_gdbus_with_timeout(&[
+            "call", "--session", "--dest", "org.gnome.Shell",
+            "--object-path", "/org/gnome/Shell",
+            "--method", "org.gnome.Shell.Eval",
+            "let w = global.display.focus_window; w ? w.get_wm_class() + '|' + w.get_title() : ''",
+        ], 200)?.to_lowercase();
 
-        // Timeout: 200ms max
-        let deadline = std::time::Instant::now() + Duration::from_millis(200);
-        let stdout_str = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    if !status.success() {
-                        return None;
-                    }
-                    if let Some(stdout) = child.stdout.take() {
-                        use std::io::Read;
-                        let mut buf = String::new();
-                        let mut reader = std::io::BufReader::new(stdout);
-                        if reader.read_to_string(&mut buf).is_ok() {
-                            break buf.to_lowercase();
-                        }
-                    }
-                    return None;
+        if stdout.contains("(true,") {
+            for term in Self::KNOWN_TERMINALS {
+                if stdout.contains(term) {
+                    crate::dev_log!("[OUTPUT] GNOME Eval detected terminal: {}", term);
+                    return Some(true);
                 }
-                Ok(None) => {
-                    if std::time::Instant::now() > deadline {
-                        crate::dev_log!("[OUTPUT] GNOME Eval call timed out (200ms)");
-                        let _ = child.kill();
-                        return None;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(_) => return None,
             }
-        };
-
-        {
-            let stdout = &stdout_str;
-            if stdout.contains("(true,") {
-                let terminals = [
-                    "gnome-terminal", "konsole", "xterm", "alacritty", "kitty",
-                    "tilix", "terminator", "urxvt", "foot", "wezterm",
-                    "blackbox", "ptyxis", "ghostty",
-                ];
-                for term in terminals {
-                    if stdout.contains(term) {
-                        crate::dev_log!("[OUTPUT] GNOME Eval detected terminal: {}", term);
-                        return Some(true);
-                    }
-                }
-                let code_editors = ["code", "code-insiders", "code-oss", "codium", "cursor"];
-                for editor in code_editors {
-                    if stdout.contains(editor) {
-                        let shell_names = [
-                            "bash", "zsh", "fish", "sh", "python", "node", "npm",
-                            "cargo", "claude", "htop", "vim", "nvim", "ssh", "docker",
-                        ];
-                        for shell in shell_names {
-                            if let Some(title_start) = stdout.split('|').nth(1) {
-                                let first_segment = title_start.split(" - ").next().unwrap_or("").trim();
-                                if first_segment == shell || first_segment.starts_with(&format!("{}:", shell)) {
-                                    crate::dev_log!("[OUTPUT] GNOME Eval detected VS Code terminal: {}", shell);
-                                    return Some(true);
-                                }
+            let code_editors = ["code", "code-insiders", "code-oss", "codium", "cursor"];
+            for editor in code_editors {
+                if stdout.contains(editor) {
+                    for shell in Self::KNOWN_SHELLS {
+                        if let Some(title_start) = stdout.split('|').nth(1) {
+                            let first_segment = title_start.split(" - ").next().unwrap_or("").trim();
+                            if first_segment == *shell || first_segment.starts_with(&format!("{}:", shell)) {
+                                crate::dev_log!("[OUTPUT] GNOME Eval detected VS Code terminal: {}", shell);
+                                return Some(true);
                             }
                         }
-                        crate::dev_log!("[OUTPUT] GNOME Eval detected VS Code editor (not terminal)");
-                        return Some(false);
                     }
+                    crate::dev_log!("[OUTPUT] GNOME Eval detected VS Code editor (not terminal)");
+                    return Some(false);
                 }
-                return Some(false);
             }
+            return Some(false);
         }
         None
     }
@@ -1030,66 +977,28 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn check_remote_desktop_via_extension() -> Option<bool> {
-        let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
-        let mut child = std::process::Command::new("gdbus")
-            .args([
-                "call",
-                "--session",
-                "--dest",
-                "org.gnome.Shell",
-                "--object-path",
-                "/org/karaoketyper/FocusedWindow",
-                "--method",
-                "org.karaoketyper.FocusedWindow.GetFocusedWindow",
-            ])
-            .env("XDG_RUNTIME_DIR", &xdg_runtime)
-            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
+        let output = Self::run_gdbus_with_timeout(&[
+            "call", "--session", "--dest", "org.gnome.Shell",
+            "--object-path", "/org/karaoketyper/FocusedWindow",
+            "--method", "org.karaoketyper.FocusedWindow.GetFocusedWindow",
+        ], 200)?;
 
-        let deadline = std::time::Instant::now() + Duration::from_millis(200);
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    if status.success() {
-                        if let Some(stdout) = child.stdout.take() {
-                            use std::io::Read;
-                            let mut buf = String::new();
-                            let mut reader = std::io::BufReader::new(stdout);
-                            if reader.read_to_string(&mut buf).is_ok() {
-                                let trimmed = buf.trim().trim_start_matches('(').trim_end_matches(')');
-                                let wm_class = trimmed.splitn(2, ", ").next()
-                                    .unwrap_or("")
-                                    .trim().trim_matches('\'')
-                                    .to_lowercase();
-                                let remote_apps = ["rustdesk", "anydesk", "vinagre"];
-                                for app in remote_apps {
-                                    if wm_class == app || wm_class.contains(app) {
-                                        crate::dev_log!(
-                                            "[OUTPUT] Remote desktop '{}' detected — forcing direct typing",
-                                            app
-                                        );
-                                        return Some(true);
-                                    }
-                                }
-                                return Some(false);
-                            }
-                        }
-                    }
-                    return None;
-                }
-                Ok(None) => {
-                    if std::time::Instant::now() > deadline {
-                        let _ = child.kill();
-                        return None;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(_) => return None,
+        let trimmed = output.trim().trim_start_matches('(').trim_end_matches(')');
+        let wm_class = trimmed.splitn(2, ", ").next()
+            .unwrap_or("")
+            .trim().trim_matches('\'')
+            .to_lowercase();
+
+        for app in Self::REMOTE_DESKTOP_APPS {
+            if wm_class == *app || wm_class.contains(app) {
+                crate::dev_log!(
+                    "[OUTPUT] Remote desktop '{}' detected — forcing direct typing",
+                    app
+                );
+                return Some(true);
             }
         }
+        Some(false)
     }
 
     /// Resolve the effective paste method for clipboard-based paste.
@@ -1347,12 +1256,7 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn try_wtype_shortcut(paste_method: &PasteMethod) -> Result<bool, String> {
-        if !std::process::Command::new("which")
-            .arg("wtype")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
+        if !Self::is_tool_available("wtype") {
             return Ok(false);
         }
 

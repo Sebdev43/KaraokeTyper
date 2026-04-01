@@ -671,12 +671,14 @@ impl TextOutput {
         session == "wayland" || !display.is_empty()
     }
 
-    /// Set clipboard text. Matches Handy's approach:
-    /// Linux Wayland: wl-copy (better Unicode/MIME handling)
-    /// Linux X11 + everywhere else: tauri-plugin-clipboard-manager
+    /// Set clipboard text using the best tool for the platform.
+    /// Wayland: wl-copy (text/plain MIME, persistent daemon)
+    /// X11: xclip -selection clipboard (proper text/plain for Remmina) → tauri plugin
+    /// Other: tauri-plugin-clipboard-manager
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
+            // Wayland: wl-copy
             if Self::is_wayland() && Self::is_tool_available("wl-copy") {
                 crate::dev_log!("[OUTPUT] Using wl-copy for clipboard");
                 let status = std::process::Command::new("wl-copy")
@@ -692,11 +694,35 @@ impl TextOutput {
                     crate::dev_log!("[OUTPUT] ✅ wl-copy set clipboard");
                     return Ok(());
                 }
-                crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed ({}), falling back to tauri plugin", status);
+                crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed, trying next method");
+            }
+
+            // X11: xclip (explicit text/plain CLIPBOARD selection — required for Remmina)
+            if !Self::is_wayland() && Self::is_tool_available("xclip") {
+                use std::io::Write;
+                crate::dev_log!("[OUTPUT] Using xclip -selection clipboard");
+                if let Ok(mut child) = std::process::Command::new("xclip")
+                    .args(["-selection", "clipboard"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(text.as_bytes());
+                    }
+                    if let Ok(status) = child.wait() {
+                        if status.success() {
+                            crate::dev_log!("[OUTPUT] ✅ xclip set clipboard");
+                            return Ok(());
+                        }
+                    }
+                }
+                crate::dev_log!("[OUTPUT] ⚠️ xclip failed, trying tauri plugin");
             }
         }
 
-        // tauri-plugin-clipboard-manager (X11 + all platforms)
+        // Fallback: tauri-plugin-clipboard-manager
         crate::dev_log!("[OUTPUT] Using tauri clipboard plugin");
         self.app_handle
             .clipboard()

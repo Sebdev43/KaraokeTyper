@@ -1369,44 +1369,118 @@ async fn download_model(
 #[tauri::command]
 #[specta::specta]
 async fn install_system_dependencies(app_handle: AppHandle) -> Result<String, String> {
-    dev_log!("[SETUP] 🚀 Checking system dependencies...");
+    dev_log!("[SETUP] Checking system dependencies...");
 
-    // Cross-platform keyboard simulation via enigo - no install needed
-    dev_log!("[SETUP] ✅ Text output: using enigo (cross-platform, no install needed)");
-
-    // Linux-specific: evdev permissions for keyboard listening
     #[cfg(target_os = "linux")]
     {
-        let evdev_ok = check_evdev_permissions();
-        dev_log!(
-            "[SETUP] evdev permissions: {}",
-            if evdev_ok { "OK" } else { "needed" }
-        );
+        use tauri_plugin_shell::ShellExt;
 
+        let mut actions: Vec<String> = Vec::new();
+        let mut needs_restart = false;
+
+        // 1. Check evdev permissions
+        let evdev_ok = check_evdev_permissions();
+        dev_log!("[SETUP] evdev permissions: {}", if evdev_ok { "OK" } else { "needed" });
         if !evdev_ok {
-            dev_log!("[SETUP] Installing evdev permissions...");
-            match install_evdev_permissions(app_handle.clone()).await {
-                Ok(_) => {
-                    dev_log!("[SETUP] ✅ evdev permissions installed");
-                    return Ok(
-                        "evdev permissions installed! Please restart the application.".to_string(),
-                    );
+            actions.push("evdev permissions".to_string());
+            needs_restart = true;
+        }
+
+        // 2. Check xdotool (X11 direct typing + paste shortcut, handles AZERTY)
+        let xdotool_ok = std::process::Command::new("which")
+            .arg("xdotool")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        dev_log!("[SETUP] xdotool: {}", if xdotool_ok { "OK" } else { "needed" });
+        if !xdotool_ok {
+            actions.push("xdotool".to_string());
+        }
+
+        // 3. Check xclip (X11 clipboard with proper text/plain MIME for Remmina)
+        let xclip_ok = std::process::Command::new("which")
+            .arg("xclip")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        dev_log!("[SETUP] xclip: {}", if xclip_ok { "OK" } else { "needed" });
+        if !xclip_ok {
+            actions.push("xclip".to_string());
+        }
+
+        if actions.is_empty() {
+            dev_log!("[SETUP] ✅ All dependencies ready");
+            return Ok("All dependencies ready ✅".to_string());
+        }
+
+        dev_log!("[SETUP] Installing: {:?}", actions);
+
+        // Build install script
+        let mut script = String::from("#!/bin/sh\nset -e\n");
+
+        // Install packages via apt (Debian/Ubuntu) or dnf (Fedora) or pacman (Arch)
+        let packages: Vec<&str> = actions.iter()
+            .filter(|a| *a != "evdev permissions")
+            .map(|a| a.as_str())
+            .collect();
+
+        if !packages.is_empty() {
+            let pkg_list = packages.join(" ");
+            script.push_str(&format!(
+                "if command -v apt-get >/dev/null 2>&1; then\n  apt-get install -y {pkg}\nelif command -v dnf >/dev/null 2>&1; then\n  dnf install -y {pkg}\nelif command -v pacman >/dev/null 2>&1; then\n  pacman -S --noconfirm {pkg}\nfi\n",
+                pkg = pkg_list
+            ));
+        }
+
+        // evdev permissions (udev rule + input group)
+        if !evdev_ok {
+            script.push_str("usermod -aG input \"$SUDO_USER\" 2>/dev/null || usermod -aG input \"$(logname)\" 2>/dev/null || true\n");
+            script.push_str("echo 'KERNEL==\"uinput\", MODE=\"0660\", GROUP=\"input\"' > /etc/udev/rules.d/99-karaoketyper-uinput.rules\n");
+            script.push_str("udevadm control --reload-rules && udevadm trigger\n");
+        }
+
+        // Write temp script and run with pkexec
+        let script_path = std::env::temp_dir().join("karaoketyper-install.sh");
+        std::fs::write(&script_path, &script)
+            .map_err(|e| format!("Failed to write install script: {}", e))?;
+
+        dev_log!("[SETUP] Running install script via pkexec...");
+
+        let shell = app_handle.shell();
+        match shell
+            .command("pkexec")
+            .args(["sh", script_path.to_str().unwrap_or("/tmp/karaoketyper-install.sh")])
+            .output()
+            .await
+        {
+            Ok(output) => {
+                let _ = std::fs::remove_file(&script_path);
+                if output.status.success() {
+                    let msg = if needs_restart {
+                        format!("Installed: {}. Please restart the application.", actions.join(", "))
+                    } else {
+                        format!("Installed: {} ✅", actions.join(", "))
+                    };
+                    dev_log!("[SETUP] ✅ {}", msg);
+                    Ok(msg)
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    dev_log!("[SETUP] ❌ Install failed: {}", stderr);
+                    Err(format!("Installation failed: {}", stderr))
                 }
-                Err(e) => {
-                    return Err(format!("evdev installation failed: {}", e));
-                }
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&script_path);
+                Err(format!("Failed to run installer: {}", e))
             }
         }
     }
 
-    // Windows/macOS: no special permissions needed
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = app_handle; // Suppress unused warning
-        dev_log!("[SETUP] ✅ No special permissions needed on this platform");
+        let _ = app_handle;
+        Ok("All dependencies ready ✅".to_string())
     }
-
-    Ok("All dependencies ready ✅".to_string())
 }
 
 

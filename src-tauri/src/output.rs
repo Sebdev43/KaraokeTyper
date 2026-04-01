@@ -570,17 +570,44 @@ impl TextOutput {
 
                         crate::dev_log!("[OUTPUT] Detected paste method: {:?}", effective_method);
 
-                        // Step 4: Send paste shortcut
+                        // Step 4: Send paste shortcut (same chain as send_paste_shortcut)
                         #[cfg(target_os = "linux")]
                         {
-                            match Self::try_enigo_shortcut(&effective_method) {
-                                Ok(()) => {}
-                                Err(e) => {
-                                    crate::dev_log!(
-                                        "[OUTPUT] enigo shortcut failed: {}, trying uinput...",
-                                        e
-                                    );
-                                    Self::try_uinput_shortcut(&effective_method)?;
+                            // X11: xdotool → ydotool → enigo (matches Handy)
+                            let mut sent = false;
+                            if !Self::is_wayland() {
+                                if Self::is_tool_available("xdotool") {
+                                    let key_combo = match &effective_method {
+                                        PasteMethod::CtrlShiftV => "ctrl+shift+v",
+                                        PasteMethod::ShiftInsert => "shift+Insert",
+                                        _ => "ctrl+v",
+                                    };
+                                    if let Ok(output) = std::process::Command::new("xdotool")
+                                        .args(["key", "--clearmodifiers", key_combo])
+                                        .output()
+                                    {
+                                        if output.status.success() {
+                                            sent = true;
+                                        }
+                                    }
+                                }
+                                if !sent && Self::is_tool_available("ydotool") {
+                                    crate::dev_log!("[OUTPUT] Using ydotool for paste shortcut");
+                                    if Self::try_ydotool_shortcut(&effective_method).is_ok() {
+                                        sent = true;
+                                    }
+                                }
+                            }
+                            if !sent {
+                                match Self::try_enigo_shortcut(&effective_method) {
+                                    Ok(()) => {}
+                                    Err(e) => {
+                                        crate::dev_log!(
+                                            "[OUTPUT] enigo shortcut failed: {}, trying uinput...",
+                                            e
+                                        );
+                                        Self::try_uinput_shortcut(&effective_method)?;
+                                    }
                                 }
                             }
                         }
@@ -644,16 +671,16 @@ impl TextOutput {
         session == "wayland" || !display.is_empty()
     }
 
-    /// Set clipboard text. On Wayland: wl-copy (proper text/plain MIME type).
-    /// On X11: arboard (X11 selection protocol).
+    /// Set clipboard text using the best tool for the platform.
+    /// Wayland: wl-copy (text/plain MIME, persistent daemon)
+    /// X11: xclip -selection clipboard (proper text/plain for Remmina) → tauri plugin
+    /// Other: tauri-plugin-clipboard-manager
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
-            if Self::is_wayland() {
-                crate::dev_log!("[OUTPUT] Using wl-copy for Wayland clipboard");
-
-                // Use .status() — blocks until wl-copy finishes forking its daemon.
-                // No idle sleep needed. Matches Handy's write_clipboard_via_wl_copy().
+            // Wayland: wl-copy
+            if Self::is_wayland() && Self::is_tool_available("wl-copy") {
+                crate::dev_log!("[OUTPUT] Using wl-copy for clipboard");
                 let status = std::process::Command::new("wl-copy")
                     .arg("--")
                     .arg(text)
@@ -667,11 +694,36 @@ impl TextOutput {
                     crate::dev_log!("[OUTPUT] ✅ wl-copy set clipboard");
                     return Ok(());
                 }
-                crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed ({}), falling back to clipboard-manager", status);
+                crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed, trying next method");
+            }
+
+            // X11: xclip (explicit text/plain CLIPBOARD selection — required for Remmina)
+            if !Self::is_wayland() && Self::is_tool_available("xclip") {
+                use std::io::Write;
+                crate::dev_log!("[OUTPUT] Using xclip -selection clipboard");
+                if let Ok(mut child) = std::process::Command::new("xclip")
+                    .args(["-selection", "clipboard"])
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    if let Some(mut stdin) = child.stdin.take() {
+                        let _ = stdin.write_all(text.as_bytes());
+                    }
+                    if let Ok(status) = child.wait() {
+                        if status.success() {
+                            crate::dev_log!("[OUTPUT] ✅ xclip set clipboard");
+                            return Ok(());
+                        }
+                    }
+                }
+                crate::dev_log!("[OUTPUT] ⚠️ xclip failed, trying tauri plugin");
             }
         }
 
-        // Fallback: tauri-plugin-clipboard-manager (X11 or non-Linux)
+        // Fallback: tauri-plugin-clipboard-manager
+        crate::dev_log!("[OUTPUT] Using tauri clipboard plugin");
         self.app_handle
             .clipboard()
             .write_text(text.to_string())
@@ -726,7 +778,28 @@ impl TextOutput {
             }
             Self::try_ydotool_shortcut(&self.paste_method)
         } else {
-            // X11: try enigo first
+            // X11: xdotool → ydotool → enigo (matches Handy's approach)
+            if Self::is_tool_available("xdotool") {
+                crate::dev_log!("[OUTPUT] Using xdotool for paste shortcut");
+                let key_combo = match &self.paste_method {
+                    PasteMethod::CtrlShiftV => "ctrl+shift+v",
+                    PasteMethod::ShiftInsert => "shift+Insert",
+                    _ => "ctrl+v",
+                };
+                let output = std::process::Command::new("xdotool")
+                    .args(["key", "--clearmodifiers", key_combo])
+                    .output()
+                    .map_err(|e| format!("xdotool failed: {}", e))?;
+                if output.status.success() {
+                    return Ok(());
+                }
+                crate::dev_log!("[OUTPUT] xdotool shortcut failed, trying ydotool...");
+            }
+            if Self::is_tool_available("ydotool") {
+                crate::dev_log!("[OUTPUT] Using ydotool for paste shortcut");
+                return Self::try_ydotool_shortcut(&self.paste_method);
+            }
+            // Fallback: enigo
             match Self::try_enigo_shortcut(&self.paste_method) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -1352,25 +1425,44 @@ impl TextOutput {
         }
     }
 
+    /// Check if ydotoold daemon is running (required for reliable ydotool).
+    /// Without the daemon, ydotool runs in degraded mode with random key delays.
+    #[cfg(target_os = "linux")]
+    fn is_ydotoold_running() -> bool {
+        std::process::Command::new("pgrep")
+            .arg("ydotoold")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Send paste shortcut via ydotool using raw Linux input keycodes.
+    /// ydotool uses format: <keycode>:<pressed> where 1=down, 0=up.
+    /// Keycodes: KEY_LEFTCTRL=29, KEY_LEFTSHIFT=42, KEY_V=47, KEY_INSERT=110
+    /// Matches Handy's send_key_combo_via_ydotool() implementation.
+    /// REQUIRES ydotoold daemon — without it, keycodes arrive with random delays.
     #[cfg(target_os = "linux")]
     fn try_ydotool_shortcut(paste_method: &PasteMethod) -> Result<(), String> {
-        let shortcut = match paste_method {
+        if !Self::is_ydotoold_running() {
+            return Err("ydotoold daemon not running".to_string());
+        }
+        let args: Vec<&str> = match paste_method {
             PasteMethod::CtrlShiftV => {
-                crate::dev_log!("[OUTPUT] Using ydotool for Ctrl+Shift+V...");
-                "ctrl+shift+v"
+                crate::dev_log!("[OUTPUT] Using ydotool for Ctrl+Shift+V (keycodes: 29+42+47)...");
+                vec!["key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"]
             }
             PasteMethod::ShiftInsert => {
-                crate::dev_log!("[OUTPUT] Using ydotool for Shift+Insert...");
-                "shift+Insert"
+                crate::dev_log!("[OUTPUT] Using ydotool for Shift+Insert (keycodes: 42+110)...");
+                vec!["key", "42:1", "110:1", "110:0", "42:0"]
             }
             _ => {
-                crate::dev_log!("[OUTPUT] Using ydotool for Ctrl+V...");
-                "ctrl+v"
+                crate::dev_log!("[OUTPUT] Using ydotool for Ctrl+V (keycodes: 29+47)...");
+                vec!["key", "29:1", "47:1", "47:0", "29:0"]
             }
         };
 
         let output = std::process::Command::new("ydotool")
-            .args(["key", shortcut])
+            .args(&args)
             .output()
             .map_err(|e| format!("Failed to run ydotool: {}", e))?;
 

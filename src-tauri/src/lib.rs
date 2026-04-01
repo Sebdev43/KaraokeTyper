@@ -852,8 +852,8 @@ pub(crate) fn hide_overlay_animated(app: &AppHandle) {
         let _ = window.emit("hide-overlay", ());
         // Hide window after fade-out animation completes (300ms)
         let window_clone = window.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             let _ = window_clone.hide();
         });
     }

@@ -6,12 +6,15 @@ use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 mod linux_output {
-    use std::collections::HashMap;
     use std::fs::OpenOptions;
     use std::os::unix::io::IntoRawFd;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
     use std::thread;
     use std::time::Duration;
+    #[cfg(test)]
+    use std::collections::HashMap;
+    #[cfg(test)]
+    use std::sync::OnceLock;
 
     /// Singleton UInput device — created once, reused for all paste/type operations.
     /// Avoids creating a new /dev/input/eventN on every paste.
@@ -123,8 +126,10 @@ mod linux_output {
     }
 
     // Thread-safe keymap using OnceLock (no unsafe needed)
+    #[cfg(test)]
     static CHAR_TO_KEY: OnceLock<HashMap<char, (u16, bool)>> = OnceLock::new();
 
+    #[cfg(test)]
     pub(crate) fn get_keymap() -> &'static HashMap<char, (u16, bool)> {
         CHAR_TO_KEY.get_or_init(|| {
             let mut map = HashMap::new();
@@ -240,6 +245,7 @@ mod linux_output {
         })
     }
 
+    #[cfg(test)]
     fn get_key_for_char(c: char) -> Option<(u16, bool)> {
         get_keymap().get(&c).copied()
     }
@@ -419,35 +425,6 @@ mod linux_output {
             self.release_key(key)
         }
 
-        pub fn type_char(&self, c: char) -> Result<(), String> {
-            if let Some((key, shift)) = get_key_for_char(c) {
-                if shift {
-                    self.press_key(KEY_LEFTSHIFT)?;
-                    thread::sleep(Duration::from_millis(2));
-                }
-
-                self.tap_key(key)?;
-
-                if shift {
-                    thread::sleep(Duration::from_millis(2));
-                    self.release_key(KEY_LEFTSHIFT)?;
-                }
-
-                Ok(())
-            } else {
-                crate::dev_log!("[UINPUT] Skipping unsupported character: {:?}", c);
-                Ok(())
-            }
-        }
-
-        pub fn type_text(&self, text: &str) -> Result<(), String> {
-            for c in text.chars() {
-                self.type_char(c)?;
-                thread::sleep(Duration::from_millis(8));
-            }
-            Ok(())
-        }
-
         pub fn ctrl_v(&self) -> Result<(), String> {
             crate::dev_log!("[UINPUT] Sending Ctrl+V...");
             self.press_key(KEY_LEFTCTRL)?;
@@ -624,6 +601,17 @@ impl TextOutput {
             }
         }
 
+        // Security: clear clipboard after paste to prevent content leaking
+        // Only for methods that used clipboard (not Direct with native tools)
+        match self.paste_method {
+            PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
+                thread::sleep(Duration::from_millis(100));
+                let _ = self.app_handle.clipboard().write_text("".to_string());
+                crate::dev_log!("[OUTPUT] Clipboard cleared after paste");
+            }
+            _ => {}
+        }
+
         crate::dev_log!(
             "[OUTPUT_TIMING] Total type_text: {}ms",
             t0.elapsed().as_millis()
@@ -706,33 +694,6 @@ impl TextOutput {
             .map_err(|e| format!("Failed to copy to clipboard: {}", e))
     }
 
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)] // Kept as alternative to clipboard+paste
-    fn type_with_ydotool(&self, text: &str) -> Result<(), String> {
-        crate::dev_log!("[OUTPUT] Using ydotool type for Wayland...");
-
-        // ydotool type with key-delay for reliability
-        let output = std::process::Command::new("ydotool")
-            .args(["type", "--key-delay", "8", "--", text])
-            .output()
-            .map_err(|e| {
-                format!(
-                    "Failed to run ydotool: {}. Install with: sudo apt install ydotool",
-                    e
-                )
-            })?;
-
-        if output.status.success() {
-            crate::dev_log!("[OUTPUT] ✅ ydotool typed text successfully");
-            Ok(())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            crate::dev_log!("[OUTPUT] ydotool stderr: {}", stderr);
-            crate::dev_log!("[OUTPUT] ydotool stdout: {}", stdout);
-            Err(format!("ydotool type failed: {}", stderr))
-        }
-    }
 
     /// Send the paste shortcut based on the configured paste_method.
     /// Uses the user's explicit choice — no auto-detection here.
@@ -797,6 +758,7 @@ impl TextOutput {
         }
 
         // Method 2: Fallback to GNOME Shell Eval (works on older GNOME versions)
+        crate::dev_log!("[OUTPUT] Trying GNOME Shell Eval fallback (deprecated on GNOME 41+)");
         if let Some(is_terminal) = Self::check_terminal_via_gnome_eval() {
             return is_terminal;
         }
@@ -1120,27 +1082,23 @@ impl TextOutput {
     #[cfg(target_os = "linux")]
     fn is_tool_available(tool: &str) -> bool {
         use std::collections::HashMap;
+        use std::sync::Mutex;
         use std::sync::OnceLock;
 
-        static CACHE: OnceLock<HashMap<String, bool>> = OnceLock::new();
+        static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
 
-        // Initialize cache on first call with all tools we might need
-        let cache = CACHE.get_or_init(|| {
-            let tools = ["wtype", "kwtype", "xdotool", "dotool", "ydotool", "wl-copy", "xclip", "xsel"];
-            let mut map = HashMap::new();
-            for t in tools {
-                let available = std::process::Command::new("which")
-                    .arg(t)
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-                crate::dev_log!("[OUTPUT] Tool '{}': {}", t, if available { "available" } else { "not found" });
-                map.insert(t.to_string(), available);
-            }
-            map
-        });
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
 
-        cache.get(tool).copied().unwrap_or(false)
+        *map.entry(tool.to_string()).or_insert_with(|| {
+            let available = std::process::Command::new("which")
+                .arg(tool)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            crate::dev_log!("[OUTPUT] Tool '{}': {}", tool, if available { "available" } else { "not found" });
+            available
+        })
     }
 
     /// Run a direct typing tool with args.
@@ -1385,32 +1343,6 @@ impl TextOutput {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn type_text_direct(&mut self, text: &str) -> Result<(), String> {
-        if text.is_empty() {
-            return Ok(());
-        }
-
-        crate::dev_log!("[OUTPUT] Typing text directly: '{}'", text);
-
-        #[cfg(target_os = "linux")]
-        {
-            linux_output::with_uinput(|device| device.type_text(text))?;
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            use enigo::{Enigo, Keyboard, Settings};
-            let mut enigo = Enigo::new(&Settings::default())
-                .map_err(|e| format!("Failed to create enigo: {}", e))?;
-            enigo
-                .text(text)
-                .map_err(|e| format!("Failed to type text: {}", e))?;
-        }
-
-        crate::dev_log!("[OUTPUT] ✅ Text typed successfully");
-        Ok(())
-    }
 }
 
 #[cfg(test)]

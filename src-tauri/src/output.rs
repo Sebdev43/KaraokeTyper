@@ -549,68 +549,30 @@ impl TextOutput {
                     let use_clipboard_fallback = false;
 
                     if use_clipboard_fallback {
-                        crate::dev_log!(
-                            "[OUTPUT] No native typing tool — clipboard fallback"
-                        );
-                        // Step 1: Set clipboard FIRST
+                        // Clipboard fallback — matches Handy's paste_via_clipboard() flow:
+                        // 1. Write clipboard  2. Sleep  3. Send Ctrl+V  4. Sleep
+                        // No D-Bus calls between write and paste to avoid clipboard loss.
+                        crate::dev_log!("[OUTPUT] No native typing tool — clipboard fallback (Handy flow)");
+
+                        // Step 1: Set clipboard
                         self.set_clipboard_text(text)?;
 
-                        // Step 2: Wait for clipboard to settle AND focus to return
-                        // to the target app (KaraokeTyper overlay releases focus)
-                        if self.key_delay_ms > 0 {
-                            thread::sleep(Duration::from_millis(self.key_delay_ms));
-                        }
+                        // Step 2: Wait for clipboard to settle
+                        thread::sleep(Duration::from_millis(self.key_delay_ms.max(50)));
 
-                        // Step 3: NOW detect terminal (after focus has returned to target)
-                        // This matches the old simulate_paste() timing that worked.
+                        // Step 3: Detect terminal THEN immediately send shortcut
                         #[cfg(target_os = "linux")]
                         let effective_method = Self::resolve_paste_method(&PasteMethod::Direct);
                         #[cfg(not(target_os = "linux"))]
                         let effective_method = PasteMethod::CtrlV;
 
-                        crate::dev_log!("[OUTPUT] Detected paste method: {:?}", effective_method);
+                        crate::dev_log!("[OUTPUT] Paste method: {:?}", effective_method);
 
-                        // Step 4: Send paste shortcut (same chain as send_paste_shortcut)
-                        #[cfg(target_os = "linux")]
-                        {
-                            // X11: xdotool → ydotool → enigo (matches Handy)
-                            let mut sent = false;
-                            if !Self::is_wayland() {
-                                if Self::is_tool_available("xdotool") {
-                                    let key_combo = match &effective_method {
-                                        PasteMethod::CtrlShiftV => "ctrl+shift+v",
-                                        PasteMethod::ShiftInsert => "shift+Insert",
-                                        _ => "ctrl+v",
-                                    };
-                                    if let Ok(output) = std::process::Command::new("xdotool")
-                                        .args(["key", "--clearmodifiers", key_combo])
-                                        .output()
-                                    {
-                                        if output.status.success() {
-                                            sent = true;
-                                        }
-                                    }
-                                }
-                                if !sent && Self::is_tool_available("ydotool") {
-                                    crate::dev_log!("[OUTPUT] Using ydotool for paste shortcut");
-                                    if Self::try_ydotool_shortcut(&effective_method).is_ok() {
-                                        sent = true;
-                                    }
-                                }
-                            }
-                            if !sent {
-                                match Self::try_enigo_shortcut(&effective_method) {
-                                    Ok(()) => {}
-                                    Err(e) => {
-                                        crate::dev_log!(
-                                            "[OUTPUT] enigo shortcut failed: {}, trying uinput...",
-                                            e
-                                        );
-                                        Self::try_uinput_shortcut(&effective_method)?;
-                                    }
-                                }
-                            }
-                        }
+                        // Step 4: Send paste shortcut via enigo (like Handy's fallback)
+                        Self::try_enigo_shortcut(&effective_method)?;
+
+                        // Step 5: Post-paste wait (like Handy's 50ms)
+                        thread::sleep(Duration::from_millis(50));
                     } else {
                         Self::try_direct_typing(text)?;
                     }

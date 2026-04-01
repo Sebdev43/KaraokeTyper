@@ -8,7 +8,7 @@ use std::time::Duration;
 mod linux_output {
     use std::collections::HashMap;
     use std::fs::OpenOptions;
-    use std::os::unix::io::AsRawFd;
+    use std::os::unix::io::IntoRawFd;
     use std::sync::{Mutex, OnceLock};
     use std::thread;
     use std::time::Duration;
@@ -257,8 +257,7 @@ mod linux_output {
                 .open("/dev/uinput")
                 .map_err(|e| format!("Failed to open /dev/uinput: {}. Make sure you have permissions (add user to 'input' group)", e))?;
 
-            let fd = file.as_raw_fd();
-            std::mem::forget(file); // Keep file descriptor open
+            let fd = file.into_raw_fd(); // Consumes File, transfers fd ownership to UInputDevice
 
             // Enable EV_KEY events
             let ret = unsafe { libc::ioctl(fd, UI_SET_EVBIT, EV_KEY as i32) };
@@ -1218,7 +1217,7 @@ impl TextOutput {
 
         // Initialize cache on first call with all tools we might need
         let cache = CACHE.get_or_init(|| {
-            let tools = ["wtype", "kwtype", "xdotool", "dotool", "ydotool", "wl-copy"];
+            let tools = ["wtype", "kwtype", "xdotool", "dotool", "ydotool", "wl-copy", "xclip", "xsel"];
             let mut map = HashMap::new();
             for t in tools {
                 let available = std::process::Command::new("which")

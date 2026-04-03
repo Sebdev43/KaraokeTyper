@@ -510,22 +510,21 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                                             transcription
                                         );
                                         if !transcription.is_empty() {
-                                            // Hide overlay IMMEDIATELY (not animated) so it
-                                            // releases focus before we paste. The animated
-                                            // hide takes 300ms but paste happens at 150ms,
-                                            // causing Ctrl+V to go to the overlay instead
-                                            // of the target app.
+                                            // Hide overlay first (required for RustDesk/remote
+                                            // desktop apps that need unambiguous focus)
                                             if let Some(window) =
                                                 app_clone.get_webview_window("overlay")
                                             {
                                                 let _ = window.hide();
                                             }
-                                            crate::dev_log!(
-                                                "[TIMING] T+{}ms: overlay hidden, waiting 150ms for focus",
-                                                t0.elapsed().as_millis()
-                                            );
+
+                                            // Wait 300ms for physical hotkey keys (Ctrl+Space)
+                                            // to fully release before sending paste keystroke.
+                                            // Prevents modifier interference: without this,
+                                            // xdotool --clearmodifiers sees Ctrl as held →
+                                            // first char typed as Ctrl+L (eaten by terminal).
                                             tokio::time::sleep(tokio::time::Duration::from_millis(
-                                                150,
+                                                300,
                                             ))
                                             .await;
 
@@ -534,23 +533,27 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                                                 t0.elapsed().as_millis()
                                             );
                                             let config = AppConfig::load().unwrap_or_default();
-                                            if let Err(e) = do_type_text(
+                                            let paste_result = do_type_text(
                                                 transcription,
                                                 &app_clone,
                                                 config.paste_method,
                                             )
-                                            .await
-                                            {
-                                                crate::dev_log!(
-                                                    "[TIMING] T+{}ms: paste FAILED: {}",
-                                                    t0.elapsed().as_millis(),
-                                                    e
-                                                );
-                                            } else {
-                                                crate::dev_log!(
-                                                    "[TIMING] T+{}ms: ========== SESSION COMPLETE ==========",
-                                                    t0.elapsed().as_millis()
-                                                );
+                                            .await;
+
+                                            match paste_result {
+                                                Ok(()) => {
+                                                    crate::dev_log!(
+                                                        "[TIMING] T+{}ms: ========== SESSION COMPLETE ==========",
+                                                        t0.elapsed().as_millis()
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    crate::dev_log!(
+                                                        "[TIMING] T+{}ms: paste FAILED: {}",
+                                                        t0.elapsed().as_millis(),
+                                                        e
+                                                    );
+                                                }
                                             }
                                         } else {
                                             crate::dev_log!(

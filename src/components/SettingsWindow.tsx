@@ -545,7 +545,7 @@ function SettingsWindow() {
 
   const handleInstallSystem = async () => {
     const confirmed = await confirm(
-      "Configurer les permissions système ?\n\nCela va :\n• Configurer evdev pour le push-to-talk\n• Peut nécessiter le redémarrage de l'application",
+      "Configurer les permissions système ?\n\nCela va :\n• Configurer evdev pour le push-to-talk\n• Installer xdotool (saisie de texte)\n• Installer xclip (clipboard pour RustDesk/Remmina)\n• Peut nécessiter le redémarrage de l'application",
       { title: "Configuration KaraokeTyper", kind: "warning" },
     );
 

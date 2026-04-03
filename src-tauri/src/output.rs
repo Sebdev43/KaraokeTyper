@@ -553,55 +553,44 @@ impl TextOutput {
             PasteMethod::Direct => {
                 let t1 = std::time::Instant::now();
 
-                // Remote desktop apps (RustDesk, AnyDesk): ALWAYS use direct typing.
-                // Their clipboard sync is unreliable on Linux, but they forward
-                // keyboard events reliably. Even enigo text() (buggy on X11) is
-                // better than clipboard that never arrives on the remote side.
+                // Remote desktop (RustDesk, AnyDesk): use DIRECT TYPING.
+                // Clipboard paste doesn't work because the local clipboard
+                // doesn't sync to the remote machine in time. xdotool type
+                // sends each character as a key event that RustDesk forwards
+                // instantly to the remote — no clipboard needed.
                 #[cfg(target_os = "linux")]
-                let force_direct = Self::is_remote_desktop_focused();
+                let is_remote = Self::is_remote_desktop_focused();
                 #[cfg(not(target_os = "linux"))]
-                let force_direct = false;
+                let is_remote = false;
 
-                if force_direct {
-                    crate::dev_log!(
-                        "[OUTPUT] Remote desktop detected — forcing direct typing (clipboard unreliable)"
-                    );
+                if is_remote {
+                    crate::dev_log!("[OUTPUT] Remote desktop — direct typing (xdotool type)");
                     Self::try_direct_typing(text)?;
                 } else {
-                    // On Linux, if no native typing tool is available, auto-fallback
-                    // to clipboard + paste shortcut. Enigo's text() on X11 has known bugs
-                    // that silently drop characters — clipboard is safer for standard apps.
+                    // Local apps: terminal → clipboard paste, other → xdotool type
                     #[cfg(target_os = "linux")]
-                    let use_clipboard_fallback = !Self::has_native_direct_tool();
+                    let use_clipboard =
+                        Self::is_terminal_focused() || !Self::has_native_direct_tool();
                     #[cfg(not(target_os = "linux"))]
-                    let use_clipboard_fallback = false;
+                    let use_clipboard = false;
 
-                    if use_clipboard_fallback {
-                        // Clipboard fallback — matches Handy's paste_via_clipboard() flow:
-                        // 1. Write clipboard  2. Sleep  3. Send Ctrl+V  4. Sleep
-                        // No D-Bus calls between write and paste to avoid clipboard loss.
-                        crate::dev_log!(
-                            "[OUTPUT] No native typing tool — clipboard fallback (Handy flow)"
-                        );
-
-                        // Step 1: Set clipboard
-                        self.set_clipboard_text(text)?;
-
-                        // Step 2: Wait for clipboard to settle
-                        thread::sleep(Duration::from_millis(self.key_delay_ms.max(50)));
-
-                        // Step 3: Detect terminal THEN immediately send shortcut
+                    if use_clipboard {
                         #[cfg(target_os = "linux")]
                         let effective_method = Self::resolve_paste_method(&PasteMethod::Direct);
                         #[cfg(not(target_os = "linux"))]
                         let effective_method = PasteMethod::CtrlV;
 
-                        crate::dev_log!("[OUTPUT] Paste method: {:?}", effective_method);
+                        crate::dev_log!("[OUTPUT] Clipboard paste ({:?})", effective_method);
 
-                        // Step 4: Send paste shortcut via enigo (like Handy's fallback)
-                        Self::try_enigo_shortcut(&effective_method)?;
+                        self.set_clipboard_text(text)?;
+                        thread::sleep(Duration::from_millis(self.key_delay_ms.max(50)));
 
-                        // Step 5: Post-paste wait (like Handy's 50ms)
+                        let saved_method = self.paste_method.clone();
+                        self.paste_method = effective_method;
+                        let shortcut_result = self.send_paste_shortcut();
+                        self.paste_method = saved_method;
+                        shortcut_result?;
+
                         thread::sleep(Duration::from_millis(50));
                     } else {
                         Self::try_direct_typing(text)?;
@@ -701,28 +690,78 @@ impl TextOutput {
                 crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed, trying next method");
             }
 
-            // X11: xclip (explicit text/plain CLIPBOARD selection — required for Remmina)
-            if !Self::is_wayland() && Self::is_tool_available("xclip") {
+            // X11: xclip → xsel → wl-copy (XWayland fallback)
+            if !Self::is_wayland() {
                 use std::io::Write;
-                crate::dev_log!("[OUTPUT] Using xclip -selection clipboard");
-                if let Ok(mut child) = std::process::Command::new("xclip")
-                    .args(["-selection", "clipboard"])
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
+
+                // Try xclip first (most reliable for X11 clipboard)
+                if Self::is_tool_available("xclip") {
+                    crate::dev_log!("[OUTPUT] Using xclip -selection clipboard");
+                    if let Ok(mut child) = std::process::Command::new("xclip")
+                        .args(["-selection", "clipboard"])
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                    {
+                        if let Some(mut stdin) = child.stdin.take() {
+                            let _ = stdin.write_all(text.as_bytes());
+                        }
+                        if let Ok(status) = child.wait() {
+                            if status.success() {
+                                crate::dev_log!("[OUTPUT] ✅ xclip set clipboard");
+                                return Ok(());
+                            }
+                        }
+                    }
+                    crate::dev_log!("[OUTPUT] ⚠️ xclip failed, trying next");
+                }
+
+                // Try xsel (often pre-installed)
+                if Self::is_tool_available("xsel") {
+                    crate::dev_log!("[OUTPUT] Using xsel --clipboard --input");
+                    if let Ok(mut child) = std::process::Command::new("xsel")
+                        .args(["--clipboard", "--input"])
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                    {
+                        if let Some(mut stdin) = child.stdin.take() {
+                            let _ = stdin.write_all(text.as_bytes());
+                        }
+                        if let Ok(status) = child.wait() {
+                            if status.success() {
+                                crate::dev_log!("[OUTPUT] ✅ xsel set clipboard");
+                                return Ok(());
+                            }
+                        }
+                    }
+                    crate::dev_log!("[OUTPUT] ⚠️ xsel failed, trying next");
+                }
+
+                // XWayland: Tauri reports X11 but wl-copy still works
+                // because the real session is Wayland. Essential for clipboard
+                // sync with apps like RustDesk that monitor Wayland clipboard.
+                if Self::is_tool_available("wl-copy") {
+                    crate::dev_log!("[OUTPUT] Using wl-copy (XWayland fallback)");
+                    let mut child = std::process::Command::new("wl-copy")
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .map_err(|e| format!("Failed to run wl-copy: {}", e))?;
                     if let Some(mut stdin) = child.stdin.take() {
                         let _ = stdin.write_all(text.as_bytes());
                     }
                     if let Ok(status) = child.wait() {
                         if status.success() {
-                            crate::dev_log!("[OUTPUT] ✅ xclip set clipboard");
+                            crate::dev_log!("[OUTPUT] ✅ wl-copy set clipboard (XWayland)");
                             return Ok(());
                         }
                     }
+                    crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed, trying tauri plugin");
                 }
-                crate::dev_log!("[OUTPUT] ⚠️ xclip failed, trying tauri plugin");
             }
         }
 
@@ -771,18 +810,39 @@ impl TextOutput {
                 }
                 crate::dev_log!("[OUTPUT] xdotool shortcut failed, trying ydotool...");
             }
-            if Self::is_tool_available("ydotool") {
-                crate::dev_log!("[OUTPUT] Using ydotool for paste shortcut");
-                return Self::try_ydotool_shortcut(&self.paste_method);
-            }
-            // Fallback: enigo
-            match Self::try_enigo_shortcut(&self.paste_method) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    crate::dev_log!("[OUTPUT] enigo failed: {}, trying uinput...", e);
+            // XWayland: wtype works even when Tauri reports X11
+            if Self::is_tool_available("wtype") {
+                crate::dev_log!("[OUTPUT] Trying wtype (XWayland)");
+                match Self::try_wtype_shortcut(&self.paste_method) {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {
+                        crate::dev_log!("[OUTPUT] wtype not suitable, trying next...");
+                    }
+                    Err(e) => {
+                        crate::dev_log!("[OUTPUT] wtype failed: {}, trying next...", e);
+                    }
                 }
             }
-            Self::try_uinput_shortcut(&self.paste_method)
+            if Self::is_tool_available("ydotool") {
+                crate::dev_log!("[OUTPUT] Using ydotool for paste shortcut");
+                match Self::try_ydotool_shortcut(&self.paste_method) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        crate::dev_log!("[OUTPUT] ydotool failed: {}, trying enigo...", e);
+                    }
+                }
+            }
+            // Fallback: uinput (kernel-level key events) → enigo (XTest)
+            // UInput is preferred over enigo for remote desktop apps:
+            // its kernel events are processed by X11 like physical key presses,
+            // while enigo's XTest events may be handled differently by RustDesk.
+            match Self::try_uinput_shortcut(&self.paste_method) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    crate::dev_log!("[OUTPUT] uinput failed: {}, trying enigo...", e);
+                }
+            }
+            Self::try_enigo_shortcut(&self.paste_method)
         }
     }
 

@@ -112,20 +112,20 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
                         Ok(transcription) => {
                             crate::dev_log!("[KEYBOARD] Transcription: {}", transcription);
 
-                            crate::hide_overlay_animated(&app_clone);
-
                             // Wait for physical keys to fully release
                             tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
-                            // Type the text using helper function
+                            // Paste BEFORE hiding overlay (like Handy) — target app
+                            // keeps focus while overlay is visible, no chars lost.
                             let config = AppConfig::load().unwrap_or_default();
-                            match crate::do_type_text(
-                                transcription,
-                                &app_clone,
-                                config.paste_method,
-                            )
-                            .await
-                            {
+                            let paste_result =
+                                crate::do_type_text(transcription, &app_clone, config.paste_method)
+                                    .await;
+
+                            // Hide overlay AFTER paste completes
+                            crate::hide_overlay_animated(&app_clone);
+
+                            match paste_result {
                                 Ok(_) => {
                                     crate::dev_log!("[KEYBOARD] Text pasted successfully");
                                 }

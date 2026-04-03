@@ -48,7 +48,7 @@
       "deb": {
         "section": "utils",
         "priority": "optional",
-        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libasound2"],
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libasound2", "xclip", "xdotool"],
         "postRemoveScript": "debian/postrm"
       }
     }

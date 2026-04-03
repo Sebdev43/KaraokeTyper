@@ -380,7 +380,45 @@ fn run_worker(
                     crate::dev_log!("[AUDIO/WORKER] Recording started (buffer cleared)");
                 }
                 Cmd::Stop(reply_tx) => {
+                    // Note: recording=false is set before the wait intentionally.
+                    // New Cmd::Start during the wait is deferred to the next loop iteration.
                     recording = false;
+
+                    // First-PTT race fix: if buffer is empty, wait for audio to arrive.
+                    // On first PTT, ALSA can take 2s+ to open. Both Start and Stop
+                    // queue before the stream produces any samples, resulting in 0 audio.
+                    // Wait up to 500ms for the first chunk — instant on subsequent PTTs.
+                    if audio_buffer.is_empty() {
+                        crate::dev_log!(
+                            "[AUDIO/WORKER] Buffer empty on Stop — waiting up to 500ms for audio..."
+                        );
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_millis(500);
+                        let mut data_received = false;
+                        while std::time::Instant::now() < deadline {
+                            match sample_rx.recv_timeout(std::time::Duration::from_millis(10)) {
+                                Ok(samples) => {
+                                    process_audio(
+                                        &samples,
+                                        &vad,
+                                        &mut frame_accumulator,
+                                        &mut audio_buffer,
+                                    );
+                                    data_received = true;
+                                    // Break once data processed (even if VAD discarded it as noise)
+                                    break;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                            }
+                        }
+                        if data_received {
+                            crate::dev_log!(
+                                "[AUDIO/WORKER] Audio arrived, buffer: {} samples",
+                                audio_buffer.len()
+                            );
+                        }
+                    }
 
                     // Drain any audio chunks captured but not yet consumed
                     while let Ok(remaining) = sample_rx.try_recv() {

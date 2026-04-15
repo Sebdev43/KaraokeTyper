@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
   AudioDevice,
+  EngineType,
   GpuInfo,
   GpuStatus,
   ModelInfo,
@@ -17,6 +18,7 @@ interface SettingsState {
   selectedDeviceName: string;
 
   // STT settings
+  sttBackend: EngineType;
   model: string;
   language: string;
 
@@ -66,6 +68,7 @@ interface SettingsState {
   // Actions
   setAudioDevices: (devices: AudioDevice[]) => void;
   setSelectedDevice: (index: number, name?: string) => void;
+  setSttBackend: (backend: EngineType) => void;
   setModel: (model: string) => void;
   setLanguage: (language: string) => void;
   setShortcut: (shortcut: string) => void;
@@ -98,6 +101,7 @@ const initialState = {
   audioDevices: [],
   selectedDevice: 0,
   selectedDeviceName: "",
+  sttBackend: "whisper" as EngineType,
   model: "ggml-small",
   language: "fr",
   shortcut: "Ctrl+Space",
@@ -137,6 +141,8 @@ export const useSettingsStore = create<SettingsState>()(
           selectedDevice: index,
           ...(name !== undefined && { selectedDeviceName: name }),
         }),
+
+      setSttBackend: (backend) => set({ sttBackend: backend }),
 
       setModel: (model) => set({ model }),
 
@@ -188,6 +194,7 @@ export const useSettingsStore = create<SettingsState>()(
       partialize: (state) => ({
         selectedDevice: state.selectedDevice,
         selectedDeviceName: state.selectedDeviceName,
+        sttBackend: state.sttBackend,
         model: state.model,
         language: state.language,
         shortcut: state.shortcut,

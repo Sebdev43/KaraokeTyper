@@ -82,6 +82,9 @@ ollama-rs = { version = "0.2", features = ["stream"], optional = true }
 # String similarity for custom word matching (Levenshtein distance)
 strsim = "0.11"
 
+# Typed errors for the STT dispatcher
+thiserror = "1"
+
 # evdev for low-level keyboard access on Wayland (fallback)
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.12"

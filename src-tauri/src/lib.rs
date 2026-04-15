@@ -13,6 +13,7 @@ mod keyboard_listener;
 mod model_downloader;
 mod ollama_client;
 mod output;
+mod stt;
 mod stt_whisper;
 mod text_processing;
 mod vad;

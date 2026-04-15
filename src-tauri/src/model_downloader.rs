@@ -185,22 +185,6 @@ fn get_onnx_models() -> Vec<ModelInfo> {
             speed_score: 0.95,
             coming_soon: true,
         },
-        ModelInfo {
-            name: "voxtral-mini-4b-realtime".to_string(),
-            display_name: "Voxtral Mini 4B Realtime (Q4, self-hosted)".to_string(),
-            size_mb: 2500,
-            url: String::new(),
-            installed: false,
-            description: "2.5 GB • FR/EN/ES/DE • WER FR ≈ 4.9 % • Auto-hébergé (Burn/wgpu)"
-                .to_string(),
-            engine_type: EngineType::Voxtral,
-            is_directory: true,
-            supported_languages: vec!["fr".into(), "en".into(), "es".into(), "de".into()],
-            is_recommended: false,
-            accuracy_score: 0.90,
-            speed_score: 0.70,
-            coming_soon: true,
-        },
     ]
 }
 

@@ -943,9 +943,6 @@ function SettingsWindow() {
                       <SelectItem value="moonshine" disabled>
                         Moonshine — ultra-léger (EN) · bientôt
                       </SelectItem>
-                      <SelectItem value="voxtral" disabled>
-                        Voxtral Mini — auto-hébergé (FR WER ≈ 4.9 %) · bientôt
-                      </SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">

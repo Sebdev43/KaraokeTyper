@@ -53,9 +53,9 @@ pub fn load(engine_type: EngineType, model_path: &Path) -> Result<LoadedEngine, 
                 .map_err(|e| SttError::LoadError(format!("whisper: {e}")))?;
             Ok(LoadedEngine::Whisper(engine))
         }
-        EngineType::SenseVoice | EngineType::Moonshine | EngineType::MistralApi => {
+        EngineType::SenseVoice | EngineType::Moonshine => {
             Err(SttError::BackendUnavailable(format!(
-                "backend {} not enabled yet (added in a later lot)",
+                "backend {} not enabled yet (ONNX feature pending)",
                 engine_type.as_str()
             )))
         }

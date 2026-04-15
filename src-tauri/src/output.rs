@@ -246,6 +246,7 @@ mod linux_output {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     fn get_key_for_char(c: char) -> Option<(u16, bool)> {
         get_keymap().get(&c).copied()
     }

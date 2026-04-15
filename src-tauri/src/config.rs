@@ -94,16 +94,9 @@ pub struct AppConfig {
     /// Enable stutter collapse ("je je je veux" → "je veux")
     #[serde(default = "default_true")]
     pub stutter_collapse_enabled: bool,
-    /// Selected speech-to-text backend (Whisper by default for backwards compat).
+    /// Selected speech-to-text backend (Whisper by default, all backends are self-hosted).
     #[serde(default)]
     pub stt_backend: EngineType,
-    /// Optional Mistral API key (only used when `stt_backend == MistralApi`).
-    #[serde(default)]
-    pub mistral_api_key: Option<String>,
-    /// Override base URL for the Mistral-compatible API. Defaults to
-    /// `https://api.mistral.ai/v1` when None.
-    #[serde(default)]
-    pub mistral_base_url: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -149,8 +142,6 @@ impl Default for AppConfig {
             filler_removal_enabled: true,
             stutter_collapse_enabled: true,
             stt_backend: EngineType::default(),
-            mistral_api_key: None,
-            mistral_base_url: None,
         }
     }
 }
@@ -253,6 +244,7 @@ mod tests {
             custom_words_threshold: 0.25,
             filler_removal_enabled: true,
             stutter_collapse_enabled: true,
+            stt_backend: EngineType::default(),
         };
 
         let json = serde_json::to_string(&config).unwrap();

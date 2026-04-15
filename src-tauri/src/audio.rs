@@ -19,8 +19,15 @@
 //! after `stream.play()` succeeds.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+
+/// Pre-roll duration: audio captured *before* the user presses PTT is prepended
+/// to the recording so the first syllable of the phrase isn't lost to the
+/// reaction-time gap between speaking and pressing the hotkey.
+/// 500 ms @ 16 kHz = 8000 samples (comparable to Handy's 450 ms prefill).
+const PRE_ROLL_MS: usize = 500;
 
 use crate::vad::{SmoothedVad, VadFrame, VoiceActivityDetector, SILERO_FRAME_SAMPLES};
 
@@ -210,7 +217,7 @@ impl AudioCapture {
             );
 
             // ── Step 4: Worker loop — process samples + commands ──
-            run_worker(vad, sample_rx, cmd_rx);
+            run_worker(vad, sample_rx, cmd_rx, target_rate);
 
             // _guard drop sets is_open=false and logs on exit (including panic unwind)
         });
@@ -332,11 +339,17 @@ fn run_worker(
     vad: Arc<Mutex<Option<SmoothedVad>>>,
     sample_rx: mpsc::Receiver<Vec<f32>>,
     cmd_rx: mpsc::Receiver<Cmd>,
+    target_rate: u32,
 ) {
     let mut audio_buffer: Vec<f32> = Vec::new();
     let mut frame_accumulator: Vec<f32> = Vec::new();
     let mut recording = false;
     let mut first_callback_logged = false;
+
+    // Ring buffer holding the last PRE_ROLL_MS of audio captured while NOT recording.
+    // Prepended to audio_buffer on Cmd::Start to recover the phrase onset.
+    let pre_roll_capacity: usize = (target_rate as usize) * PRE_ROLL_MS / 1000;
+    let mut pre_roll: VecDeque<f32> = VecDeque::with_capacity(pre_roll_capacity);
 
     loop {
         // Wait for audio samples with timeout — allows Shutdown to be processed
@@ -358,6 +371,14 @@ fn run_worker(
                     first_callback_logged = true;
                 }
                 process_audio(samples, &vad, &mut frame_accumulator, &mut audio_buffer);
+            } else if pre_roll_capacity > 0 {
+                // Not recording: keep the last PRE_ROLL_MS of audio as pre-roll.
+                for &s in samples.iter() {
+                    if pre_roll.len() == pre_roll_capacity {
+                        pre_roll.pop_front();
+                    }
+                    pre_roll.push_back(s);
+                }
             }
         }
 
@@ -377,7 +398,21 @@ fn run_worker(
                         }
                     }
 
-                    crate::dev_log!("[AUDIO/WORKER] Recording started (buffer cleared)");
+                    // Prepend pre-roll: raw samples captured just before PTT press.
+                    // Bypasses VAD — this audio is already known to precede speech onset
+                    // and running it through VAD would risk discarding it as silence.
+                    let pre_roll_len = pre_roll.len();
+                    if pre_roll_len > 0 {
+                        audio_buffer.reserve(pre_roll_len);
+                        audio_buffer.extend(pre_roll.drain(..));
+                        crate::dev_log!(
+                            "[AUDIO/WORKER] Recording started (pre-roll {} samples / {}ms prepended)",
+                            pre_roll_len,
+                            pre_roll_len * 1000 / target_rate as usize
+                        );
+                    } else {
+                        crate::dev_log!("[AUDIO/WORKER] Recording started (no pre-roll available)");
+                    }
                 }
                 Cmd::Stop(reply_tx) => {
                     // Note: recording=false is set before the wait intentionally.

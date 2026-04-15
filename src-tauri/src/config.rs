@@ -3,6 +3,8 @@ use specta::Type;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::stt::EngineType;
+
 /// How text is pasted into the focused application.
 /// Inspired by Handy's approach: user picks the method, no auto-detection.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
@@ -92,6 +94,16 @@ pub struct AppConfig {
     /// Enable stutter collapse ("je je je veux" → "je veux")
     #[serde(default = "default_true")]
     pub stutter_collapse_enabled: bool,
+    /// Selected speech-to-text backend (Whisper by default for backwards compat).
+    #[serde(default)]
+    pub stt_backend: EngineType,
+    /// Optional Mistral API key (only used when `stt_backend == MistralApi`).
+    #[serde(default)]
+    pub mistral_api_key: Option<String>,
+    /// Override base URL for the Mistral-compatible API. Defaults to
+    /// `https://api.mistral.ai/v1` when None.
+    #[serde(default)]
+    pub mistral_base_url: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -136,6 +148,9 @@ impl Default for AppConfig {
             custom_words_threshold: default_custom_words_threshold(),
             filler_removal_enabled: true,
             stutter_collapse_enabled: true,
+            stt_backend: EngineType::default(),
+            mistral_api_key: None,
+            mistral_base_url: None,
         }
     }
 }

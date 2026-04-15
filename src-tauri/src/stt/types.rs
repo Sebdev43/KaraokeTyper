@@ -9,6 +9,9 @@ pub enum EngineType {
     Whisper,
     SenseVoice,
     Moonshine,
+    /// Mistral Voxtral Mini 4B Realtime (auto-hébergé via voxtral-mini-realtime-rs).
+    /// Requires `--features voxtral` at compile time.
+    Voxtral,
 }
 
 impl EngineType {
@@ -18,6 +21,7 @@ impl EngineType {
             Self::Whisper => "whisper",
             Self::SenseVoice => "sense-voice",
             Self::Moonshine => "moonshine",
+            Self::Voxtral => "voxtral",
         }
     }
 
@@ -27,6 +31,7 @@ impl EngineType {
             Self::Whisper => "Whisper",
             Self::SenseVoice => "SenseVoice",
             Self::Moonshine => "Moonshine (EN)",
+            Self::Voxtral => "Voxtral Mini (self-hosted)",
         }
     }
 }
@@ -46,6 +51,7 @@ mod tests {
             (EngineType::Whisper, "\"whisper\""),
             (EngineType::SenseVoice, "\"sense-voice\""),
             (EngineType::Moonshine, "\"moonshine\""),
+            (EngineType::Voxtral, "\"voxtral\""),
         ] {
             let encoded = serde_json::to_string(&variant).expect("encode");
             assert_eq!(encoded, tag);
@@ -60,6 +66,7 @@ mod tests {
             EngineType::Whisper,
             EngineType::SenseVoice,
             EngineType::Moonshine,
+            EngineType::Voxtral,
         ] {
             let encoded = serde_json::to_string(&variant).expect("encode");
             let stripped = encoded.trim_matches('"');

@@ -59,6 +59,9 @@ pub fn load(engine_type: EngineType, model_path: &Path) -> Result<LoadedEngine, 
                 engine_type.as_str()
             )))
         }
+        EngineType::Voxtral => Err(SttError::BackendUnavailable(
+            "backend voxtral not compiled in — rebuild with `--features voxtral`".to_string(),
+        )),
     }
 }
 
@@ -122,7 +125,11 @@ mod tests {
     fn unavailable_backends_report_clearly() {
         // Use a path that exists so the ModelNotFound short-circuit doesn't fire.
         let existing = std::env::temp_dir();
-        for engine in [EngineType::SenseVoice, EngineType::Moonshine] {
+        for engine in [
+            EngineType::SenseVoice,
+            EngineType::Moonshine,
+            EngineType::Voxtral,
+        ] {
             match load(engine, &existing) {
                 Err(SttError::BackendUnavailable(_)) => {}
                 Err(other) => panic!("expected BackendUnavailable, got {other:?}"),

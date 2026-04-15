@@ -9,28 +9,23 @@ use super::error::SttError;
 use super::types::EngineType;
 
 /// Unified handle for any loaded speech-to-text engine.
+///
+/// Lot 2: Whisper only. SenseVoice / Moonshine / MistralApi variants are
+/// added in lots 4 and 5 once their features land in `Cargo.toml`.
 pub enum LoadedEngine {
     Whisper(WhisperEngine),
-    // Voxtral is heavy (~7 KB of state incl. model handles + GPU contexts),
-    // so we box it to keep the enum compact for the cheaper variants.
-    #[cfg(feature = "voxtral")]
-    Voxtral(Box<super::voxtral_impl::VoxtralEngine>),
 }
 
 impl LoadedEngine {
     pub fn engine_type(&self) -> EngineType {
         match self {
             Self::Whisper(_) => EngineType::Whisper,
-            #[cfg(feature = "voxtral")]
-            Self::Voxtral(_) => EngineType::Voxtral,
         }
     }
 
     pub fn backend_name(&self) -> &'static str {
         match self {
             Self::Whisper(_) => "transcribe-rs/whisper",
-            #[cfg(feature = "voxtral")]
-            Self::Voxtral(_) => "voxtral-mini-realtime",
         }
     }
 }
@@ -64,15 +59,9 @@ pub fn load(engine_type: EngineType, model_path: &Path) -> Result<LoadedEngine, 
                 engine_type.as_str()
             )))
         }
-        #[cfg(not(feature = "voxtral"))]
         EngineType::Voxtral => Err(SttError::BackendUnavailable(
             "backend voxtral not compiled in — rebuild with `--features voxtral`".to_string(),
         )),
-        #[cfg(feature = "voxtral")]
-        EngineType::Voxtral => {
-            let engine = super::voxtral_impl::VoxtralEngine::load(model_path)?;
-            Ok(LoadedEngine::Voxtral(Box::new(engine)))
-        }
     }
 }
 
@@ -106,11 +95,6 @@ pub fn transcribe(
                 .map_err(|e| SttError::TranscribeError(format!("whisper: {e}")))?;
             Ok(result.text)
         }
-        #[cfg(feature = "voxtral")]
-        LoadedEngine::Voxtral(voxtral) => {
-            let _ = (language, translate, initial_prompt); // Voxtral auto-detects language
-            voxtral.transcribe(&audio)
-        }
     }
 }
 
@@ -118,11 +102,6 @@ pub fn transcribe(
 pub fn unload(engine: &mut LoadedEngine) {
     match engine {
         LoadedEngine::Whisper(e) => e.unload_model(),
-        #[cfg(feature = "voxtral")]
-        LoadedEngine::Voxtral(_) => {
-            // Voxtral frees its GPU buffers when dropped; caller should replace
-            // the LoadedEngine with None in AppState to actually trigger drop.
-        }
     }
 }
 

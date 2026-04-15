@@ -25,8 +25,26 @@ pub fn build_initial_prompt(custom_words: &[String], language: &str) -> String {
     format!("{} {}", prefix, custom_words.join(", "))
 }
 
+/// Known Whisper hallucinations — phrases the model has memorised from its
+/// training set (subtitle corpora, YouTube captions, etc.) that it emits on
+/// silence or ambiguous audio. Matched case-insensitively; removed from the
+/// output before any other processing so they never reach the user.
+const HALLUCINATED_PHRASES: &[&str] = &[
+    "sous-titrage société radio-canada",
+    "sous-titres réalisés par la communauté d'amara.org",
+    "sous-titres réalisés par la communauté d'amara",
+    "sous-titres réalisés para la communauté d'amara.org",
+    "sous-titrage st' 501",
+    "merci d'avoir regardé cette vidéo",
+    "merci d'avoir regardé la vidéo",
+    "abonnez-vous à la chaîne",
+    "n'oubliez pas de vous abonner",
+    "thanks for watching",
+    "subtitles by the amara.org community",
+];
+
 /// Full text processing pipeline.
-/// Order: filler removal → stutter collapse → custom words → whitespace normalization.
+/// Order: hallucination strip → filler removal → stutter collapse → custom words → whitespace normalization.
 pub fn process_transcription(
     text: &str,
     custom_words: &[String],
@@ -38,7 +56,7 @@ pub fn process_transcription(
         return String::new();
     }
 
-    let mut result = text.to_string();
+    let mut result = strip_hallucinated_phrases(text);
 
     if filler_removal {
         result = remove_filler_words(&result);
@@ -54,6 +72,35 @@ pub fn process_transcription(
 
     // Final whitespace normalization
     normalize_whitespace(&result)
+}
+
+/// Remove any occurrence of a known hallucinated phrase (case-insensitive).
+///
+/// Whisper hallucinations are usually appended verbatim at sentence boundaries,
+/// so a simple substring match is enough. We don't touch partial matches —
+/// each phrase is anchored on its full form.
+fn strip_hallucinated_phrases(text: &str) -> String {
+    let mut out = text.to_string();
+    // Repeat-pass: the model sometimes emits the same phrase twice in a row.
+    loop {
+        let lower = out.to_lowercase();
+        let mut removed_any = false;
+        for phrase in HALLUCINATED_PHRASES {
+            if let Some(idx) = lower.find(phrase) {
+                let end = idx + phrase.len();
+                let mut next = String::with_capacity(out.len() - phrase.len());
+                next.push_str(&out[..idx]);
+                next.push_str(&out[end..]);
+                out = next;
+                removed_any = true;
+                break;
+            }
+        }
+        if !removed_any {
+            break;
+        }
+    }
+    out
 }
 
 /// Remove filler words common in French and English speech.
@@ -446,6 +493,42 @@ mod tests {
     fn test_process_transcription_empty() {
         let result = process_transcription("", &[], 0.3, true, true);
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn strips_radio_canada_hallucination_even_with_processing_disabled() {
+        let result = process_transcription(
+            "vérifie la config. Sous-titrage Société Radio-Canada",
+            &[],
+            0.3,
+            false,
+            false,
+        );
+        assert_eq!(result, "vérifie la config.");
+    }
+
+    #[test]
+    fn strips_repeated_hallucinations() {
+        let result = process_transcription(
+            "Bonjour. Sous-titrage Société Radio-Canada Sous-titrage Société Radio-Canada",
+            &[],
+            0.3,
+            false,
+            false,
+        );
+        assert_eq!(result, "Bonjour.");
+    }
+
+    #[test]
+    fn strips_amara_hallucination() {
+        let result = process_transcription(
+            "Merci. Sous-titres réalisés par la communauté d'Amara.org",
+            &[],
+            0.3,
+            false,
+            false,
+        );
+        assert_eq!(result, "Merci.");
     }
 
     #[test]

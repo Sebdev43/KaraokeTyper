@@ -260,6 +260,19 @@ mod tests {
     }
 
     #[test]
+    fn legacy_config_without_stt_backend_defaults_to_whisper() {
+        let json = r#"{
+            "shortcut": "Ctrl+Space",
+            "audio_device_index": 0,
+            "model": "ggml-small",
+            "key_delay_ms": 8,
+            "language": "fr"
+        }"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.stt_backend, EngineType::Whisper);
+    }
+
+    #[test]
     fn test_deserialize_with_missing_optional_fields() {
         let json = r#"{
             "shortcut": "Ctrl+Space",

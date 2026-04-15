@@ -30,3 +30,40 @@ impl EngineType {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_is_whisper() {
+        assert_eq!(EngineType::default(), EngineType::Whisper);
+    }
+
+    #[test]
+    fn serde_kebab_case_roundtrip() {
+        for (variant, tag) in [
+            (EngineType::Whisper, "\"whisper\""),
+            (EngineType::SenseVoice, "\"sense-voice\""),
+            (EngineType::Moonshine, "\"moonshine\""),
+        ] {
+            let encoded = serde_json::to_string(&variant).expect("encode");
+            assert_eq!(encoded, tag);
+            let decoded: EngineType = serde_json::from_str(tag).expect("decode");
+            assert_eq!(decoded, variant);
+        }
+    }
+
+    #[test]
+    fn as_str_matches_serialized_tag() {
+        for variant in [
+            EngineType::Whisper,
+            EngineType::SenseVoice,
+            EngineType::Moonshine,
+        ] {
+            let encoded = serde_json::to_string(&variant).expect("encode");
+            let stripped = encoded.trim_matches('"');
+            assert_eq!(stripped, variant.as_str());
+        }
+    }
+}

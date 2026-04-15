@@ -101,3 +101,33 @@ pub fn unload(engine: &mut LoadedEngine) {
         LoadedEngine::Whisper(e) => e.unload_model(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_missing_file_returns_model_not_found() {
+        let bogus = std::path::PathBuf::from("/tmp/this-does-not-exist-__stt__");
+        match load(EngineType::Whisper, &bogus) {
+            Err(SttError::ModelNotFound(msg)) => {
+                assert!(msg.contains("this-does-not-exist"))
+            }
+            Err(other) => panic!("expected ModelNotFound, got {other:?}"),
+            Ok(_) => panic!("expected error, got ok"),
+        }
+    }
+
+    #[test]
+    fn unavailable_backends_report_clearly() {
+        // Use a path that exists so the ModelNotFound short-circuit doesn't fire.
+        let existing = std::env::temp_dir();
+        for engine in [EngineType::SenseVoice, EngineType::Moonshine] {
+            match load(engine, &existing) {
+                Err(SttError::BackendUnavailable(_)) => {}
+                Err(other) => panic!("expected BackendUnavailable, got {other:?}"),
+                Ok(_) => panic!("expected error, got ok"),
+            }
+        }
+    }
+}

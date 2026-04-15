@@ -1,3 +1,8 @@
+// Burn + wgpu transitive types are deep enough that rustc's default recursion
+// budget trips when evaluating Sync/Send bounds on LoadedEngine::Voxtral.
+// Bumping this header-only limit is the standard workaround.
+#![recursion_limit = "512"]
+
 #[macro_use]
 mod logging;
 

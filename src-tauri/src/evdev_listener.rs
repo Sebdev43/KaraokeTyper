@@ -1,46 +1,76 @@
 use evdev::{Device, EventType, InputEventKind, Key};
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Manager};
-use tokio::sync::Mutex;
 
 use crate::config::AppConfig;
 use crate::{do_start_recording, do_stop_recording, do_type_text, AppState};
 
-/// Shared, hot-swappable handle to the active hotkey configuration.
-///
-/// `start_evdev_listener` fills the `OnceLock` with an `RwLock` wrapping the
-/// initial `HotkeyConfig`. `reconfigure` takes a write lock and replaces the
-/// inner value so running device monitors pick up the new hotkey on their
-/// next event without needing to be restarted.
-static ACTIVE_HOTKEY: std::sync::OnceLock<Arc<std::sync::RwLock<HotkeyConfig>>> =
-    std::sync::OnceLock::new();
+/// Shared listener state so `reconfigure()` can swap the hotkey AND spawn
+/// additional device monitors when the new shortcut targets a different
+/// device class (e.g. keyboard-only → mouse-only). Populated once by
+/// `start_evdev_listener`.
+struct ListenerHandle {
+    hotkey: std::sync::RwLock<HotkeyConfig>,
+    state: HotkeyState,
+    app_handle: AppHandle,
+    device_paths: std::sync::Mutex<HashSet<PathBuf>>,
+}
 
-/// Replace the live hotkey configuration with the one parsed from `shortcut`.
-/// No-op if the evdev listener has not been started yet.
+static ACTIVE_LISTENER: std::sync::OnceLock<Arc<ListenerHandle>> = std::sync::OnceLock::new();
+
+/// Replace the live hotkey configuration with the one parsed from `shortcut`
+/// and spawn monitors for any `/dev/input/event*` device that matches the new
+/// shortcut but isn't already being watched. No-op if the evdev listener has
+/// not been started yet.
 pub(crate) fn reconfigure(shortcut: &str) {
-    if let Some(shared) = ACTIVE_HOTKEY.get() {
-        let new_cfg = HotkeyConfig::parse(shortcut);
-        match shared.write() {
-            Ok(mut guard) => {
-                *guard = new_cfg;
-                crate::dev_log!("[EVDEV] 🔁 Hotkey reconfigured live: {}", shortcut);
-            }
-            Err(poisoned) => {
-                // Recover from a poisoned lock rather than panic.
-                let mut guard = poisoned.into_inner();
-                *guard = new_cfg;
-                crate::dev_log!(
-                    "[EVDEV] 🔁 Hotkey reconfigured (lock recovered): {}",
-                    shortcut
-                );
+    let Some(handle) = ACTIVE_LISTENER.get() else {
+        crate::dev_log!("[EVDEV] ⚠️ reconfigure called before listener start — ignored");
+        return;
+    };
+
+    let new_cfg = HotkeyConfig::parse(shortcut);
+
+    match handle.hotkey.write() {
+        Ok(mut guard) => *guard = new_cfg.clone(),
+        Err(poisoned) => *poisoned.into_inner() = new_cfg.clone(),
+    }
+    crate::dev_log!("[EVDEV] 🔁 Hotkey reconfigured live: {}", shortcut);
+
+    // Cover device-class transitions (keyboard-only ↔ mouse-only): spawn
+    // monitors for newly-matching devices that aren't watched yet. Existing
+    // threads keep running and pick up the new hotkey via the RwLock snapshot.
+    match find_input_devices(&new_cfg) {
+        Ok(paths) => {
+            let mut watched = match handle.device_paths.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            for path in paths {
+                if watched.insert(path.clone()) {
+                    crate::dev_log!(
+                        "[EVDEV] ➕ Watching new device for reconfigured hotkey: {}",
+                        path.display()
+                    );
+                    let device_state = Arc::new(DeviceState {
+                        _path: path.clone(),
+                        reconnect_attempts: AtomicU32::new(0),
+                        is_active: AtomicBool::new(true),
+                    });
+                    spawn_device_monitor(DeviceMonitorConfig {
+                        device_path: path,
+                        app_handle: handle.app_handle.clone(),
+                        state: handle.state.clone(),
+                        hotkey_config: Arc::clone(handle),
+                        device_state,
+                    });
+                }
             }
         }
-    } else {
-        crate::dev_log!("[EVDEV] ⚠️ reconfigure called before listener start — ignored");
+        Err(e) => crate::dev_log!("[EVDEV] ⚠️ reconfigure re-enumerate failed: {}", e),
     }
 }
 
@@ -151,6 +181,7 @@ struct DeviceState {
     is_active: AtomicBool,
 }
 
+#[derive(Clone)]
 struct HotkeyState {
     ctrl_pressed: Arc<AtomicBool>,
     alt_pressed: Arc<AtomicBool>,
@@ -163,7 +194,7 @@ struct DeviceMonitorConfig {
     device_path: PathBuf,
     app_handle: AppHandle,
     state: HotkeyState,
-    hotkey_config: Arc<std::sync::RwLock<HotkeyConfig>>,
+    hotkey_config: Arc<ListenerHandle>,
     device_state: Arc<DeviceState>,
 }
 
@@ -274,50 +305,53 @@ pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
     let input_devices = find_input_devices(&hotkey)?;
     crate::dev_log!("[EVDEV] Monitoring {} input device(s)", input_devices.len());
 
-    let ctrl_pressed = Arc::new(AtomicBool::new(false));
-    let alt_pressed = Arc::new(AtomicBool::new(false));
-    let shift_pressed = Arc::new(AtomicBool::new(false));
-    let trigger_pressed = Arc::new(AtomicBool::new(false));
-    let is_recording = Arc::new(AtomicBool::new(false));
-    // Reuse the global hot-swap slot so `reconfigure()` can mutate it in place.
-    let hotkey_config = ACTIVE_HOTKEY
-        .get_or_init(|| Arc::new(std::sync::RwLock::new(hotkey.clone())))
-        .clone();
-    // If the listener is being (re)started with a different config, overwrite
-    // the existing entry so the new hotkey takes effect immediately.
-    if let Ok(mut guard) = hotkey_config.write() {
+    let hotkey_state = HotkeyState {
+        ctrl_pressed: Arc::new(AtomicBool::new(false)),
+        alt_pressed: Arc::new(AtomicBool::new(false)),
+        shift_pressed: Arc::new(AtomicBool::new(false)),
+        trigger_pressed: Arc::new(AtomicBool::new(false)),
+        is_recording: Arc::new(AtomicBool::new(false)),
+    };
+
+    let handle = ACTIVE_LISTENER.get_or_init(|| {
+        Arc::new(ListenerHandle {
+            hotkey: std::sync::RwLock::new(hotkey.clone()),
+            state: hotkey_state.clone(),
+            app_handle: app_handle.clone(),
+            device_paths: std::sync::Mutex::new(HashSet::new()),
+        })
+    });
+    // If re-entered (paranoia), overwrite the stored hotkey so the newer
+    // startup config wins; existing monitors pick it up on next event.
+    if let Ok(mut guard) = handle.hotkey.write() {
         *guard = hotkey;
     }
-    let device_states: Arc<Mutex<HashMap<PathBuf, Arc<DeviceState>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
 
     for device_path in input_devices {
-        let state = Arc::new(DeviceState {
+        // Record the path under the handle's lock so reconfigure() knows it's
+        // already watched.
+        let mut watched = match handle.device_paths.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if !watched.insert(device_path.clone()) {
+            continue;
+        }
+        drop(watched);
+
+        let device_state = Arc::new(DeviceState {
             _path: device_path.clone(),
             reconnect_attempts: AtomicU32::new(0),
             is_active: AtomicBool::new(true),
         });
 
-        device_states
-            .lock()
-            .await
-            .insert(device_path.clone(), state.clone());
-
-        let config = DeviceMonitorConfig {
-            device_path: device_path.clone(),
+        spawn_device_monitor(DeviceMonitorConfig {
+            device_path,
             app_handle: app_handle.clone(),
-            state: HotkeyState {
-                ctrl_pressed: ctrl_pressed.clone(),
-                alt_pressed: alt_pressed.clone(),
-                shift_pressed: shift_pressed.clone(),
-                trigger_pressed: trigger_pressed.clone(),
-                is_recording: is_recording.clone(),
-            },
-            hotkey_config: hotkey_config.clone(),
-            device_state: state,
-        };
-
-        spawn_device_monitor(config);
+            state: handle.state.clone(),
+            hotkey_config: Arc::clone(handle),
+            device_state,
+        });
     }
 
     crate::dev_log!("[EVDEV] ✅ Push-to-talk listener started!");
@@ -449,7 +483,7 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                 // Snapshot the current hotkey config under a read lock so
                 // `reconfigure()` can swap it between events without blocking
                 // the hot path for the rest of the match.
-                let hotkey_snapshot = match config.hotkey_config.read() {
+                let hotkey_snapshot = match config.hotkey_config.hotkey.read() {
                     Ok(guard) => guard.clone(),
                     Err(poisoned) => poisoned.into_inner().clone(),
                 };

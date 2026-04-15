@@ -10,6 +10,40 @@ use tokio::sync::Mutex;
 use crate::config::AppConfig;
 use crate::{do_start_recording, do_stop_recording, do_type_text, AppState};
 
+/// Shared, hot-swappable handle to the active hotkey configuration.
+///
+/// `start_evdev_listener` fills the `OnceLock` with an `RwLock` wrapping the
+/// initial `HotkeyConfig`. `reconfigure` takes a write lock and replaces the
+/// inner value so running device monitors pick up the new hotkey on their
+/// next event without needing to be restarted.
+static ACTIVE_HOTKEY: std::sync::OnceLock<Arc<std::sync::RwLock<HotkeyConfig>>> =
+    std::sync::OnceLock::new();
+
+/// Replace the live hotkey configuration with the one parsed from `shortcut`.
+/// No-op if the evdev listener has not been started yet.
+pub(crate) fn reconfigure(shortcut: &str) {
+    if let Some(shared) = ACTIVE_HOTKEY.get() {
+        let new_cfg = HotkeyConfig::parse(shortcut);
+        match shared.write() {
+            Ok(mut guard) => {
+                *guard = new_cfg;
+                crate::dev_log!("[EVDEV] 🔁 Hotkey reconfigured live: {}", shortcut);
+            }
+            Err(poisoned) => {
+                // Recover from a poisoned lock rather than panic.
+                let mut guard = poisoned.into_inner();
+                *guard = new_cfg;
+                crate::dev_log!(
+                    "[EVDEV] 🔁 Hotkey reconfigured (lock recovered): {}",
+                    shortcut
+                );
+            }
+        }
+    } else {
+        crate::dev_log!("[EVDEV] ⚠️ reconfigure called before listener start — ignored");
+    }
+}
+
 /// Parsed hotkey configuration
 #[derive(Debug, Clone)]
 struct HotkeyConfig {
@@ -129,7 +163,7 @@ struct DeviceMonitorConfig {
     device_path: PathBuf,
     app_handle: AppHandle,
     state: HotkeyState,
-    hotkey_config: Arc<HotkeyConfig>,
+    hotkey_config: Arc<std::sync::RwLock<HotkeyConfig>>,
     device_state: Arc<DeviceState>,
 }
 
@@ -245,7 +279,15 @@ pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
     let shift_pressed = Arc::new(AtomicBool::new(false));
     let trigger_pressed = Arc::new(AtomicBool::new(false));
     let is_recording = Arc::new(AtomicBool::new(false));
-    let hotkey_config = Arc::new(hotkey);
+    // Reuse the global hot-swap slot so `reconfigure()` can mutate it in place.
+    let hotkey_config = ACTIVE_HOTKEY
+        .get_or_init(|| Arc::new(std::sync::RwLock::new(hotkey.clone())))
+        .clone();
+    // If the listener is being (re)started with a different config, overwrite
+    // the existing entry so the new hotkey takes effect immediately.
+    if let Ok(mut guard) = hotkey_config.write() {
+        *guard = hotkey;
+    }
     let device_states: Arc<Mutex<HashMap<PathBuf, Arc<DeviceState>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
@@ -404,10 +446,18 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                     _ => {}
                 }
 
+                // Snapshot the current hotkey config under a read lock so
+                // `reconfigure()` can swap it between events without blocking
+                // the hot path for the rest of the match.
+                let hotkey_snapshot = match config.hotkey_config.read() {
+                    Ok(guard) => guard.clone(),
+                    Err(poisoned) => poisoned.into_inner().clone(),
+                };
+
                 // Check if this is the trigger key/button
-                let is_trigger = if let Some(trigger_key) = config.hotkey_config.trigger_key {
+                let is_trigger = if let Some(trigger_key) = hotkey_snapshot.trigger_key {
                     key == trigger_key
-                } else if let Some(btn_code) = config.hotkey_config.trigger_mouse_btn {
+                } else if let Some(btn_code) = hotkey_snapshot.trigger_mouse_btn {
                     // Check mouse buttons by their code
                     let key_code = key.code();
                     key_code == btn_code
@@ -417,11 +467,11 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
 
                 if is_trigger {
                     // Check if all required modifiers are pressed
-                    let modifiers_ok = (!config.hotkey_config.require_ctrl
+                    let modifiers_ok = (!hotkey_snapshot.require_ctrl
                         || config.state.ctrl_pressed.load(Ordering::SeqCst))
-                        && (!config.hotkey_config.require_alt
+                        && (!hotkey_snapshot.require_alt
                             || config.state.alt_pressed.load(Ordering::SeqCst))
-                        && (!config.hotkey_config.require_shift
+                        && (!hotkey_snapshot.require_shift
                             || config.state.shift_pressed.load(Ordering::SeqCst));
 
                     if pressed && !config.state.trigger_pressed.load(Ordering::SeqCst) {

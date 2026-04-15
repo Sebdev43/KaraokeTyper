@@ -1052,6 +1052,10 @@ async fn save_settings(
 
     if old_shortcut != new_config.shortcut {
         update_global_shortcut(&app_handle, &old_shortcut, &new_config.shortcut)?;
+        // Evdev listener holds its own parsed HotkeyConfig — reconfigure it in
+        // place so the new shortcut takes effect without needing a restart.
+        #[cfg(target_os = "linux")]
+        evdev_listener::reconfigure(&new_config.shortcut);
     }
 
     // Re-open audio worker on new device if device changed

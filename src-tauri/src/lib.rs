@@ -78,7 +78,7 @@ pub struct GpuStatus {
     pub failure_count: u32,
 }
 
-use stt::{EngineType, LoadedEngine};
+use stt::LoadedEngine;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -115,7 +115,7 @@ impl SttEngine {
         let model_path = resolved_path
             .ok_or("No model downloaded. Download a model from Settings → STT Models.")?;
 
-        let engine = stt::load(EngineType::Whisper, std::path::Path::new(&model_path))
+        let engine = stt::load(config.stt_backend, std::path::Path::new(&model_path))
             .map_err(|e| e.to_string())?;
 
         Ok(SttEngine {

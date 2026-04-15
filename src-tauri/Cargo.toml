@@ -91,6 +91,9 @@ thiserror = "1"
 # Pulls Burn 0.20 + wgpu 26 transitively (~200 MB of deps, 8-12 min first build).
 # Deliberately off by default to keep the standard build light.
 voxtral-mini-realtime = { git = "https://github.com/TrevorS/voxtral-mini-realtime-rs", tag = "v0.2.5", optional = true, default-features = false, features = ["wgpu", "hub", "native-tokenizer"] }
+# Burn is used directly to construct tensors for the Voxtral inference loop.
+# Version + features must match what voxtral-mini-realtime pulls transitively.
+burn = { version = "0.20", optional = true, default-features = false, features = ["std", "autodiff", "template", "autotune", "wgpu"] }
 
 # evdev for low-level keyboard access on Wayland (fallback)
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -109,6 +112,6 @@ default = []
 gpu-vulkan = []
 gpu-metal = []
 # Voxtral local backend (Burn + wgpu). Opt-in — see crate docs.
-voxtral = ["dep:voxtral-mini-realtime"]
+voxtral = ["dep:voxtral-mini-realtime", "dep:burn"]
 # Ollama integration for post-transcription text correction
 ollama = ["dep:ollama-rs"]

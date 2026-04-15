@@ -9,6 +9,9 @@ pub mod error;
 pub mod gpu_health;
 pub mod types;
 
+#[cfg(feature = "voxtral")]
+pub mod voxtral_impl;
+
 pub use engines::{load, suppress_backend_logs, transcribe, unload, LoadedEngine};
 pub use error::SttError;
 pub use types::EngineType;

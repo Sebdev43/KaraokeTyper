@@ -17,6 +17,16 @@ use crate::stt::EngineType;
 /// Base URL for Whisper GGML models on HuggingFace.
 const GGML_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
+/// Voxtral Mini 4B Q4 GGUF (2.5 GB) — hosted on TrevorJS's HF.
+const VOXTRAL_GGUF_URL: &str =
+    "https://huggingface.co/TrevorJS/voxtral-mini-realtime-gguf/resolve/main/voxtral-q4.gguf";
+/// Tekken tokenizer required by both the Q4 and BF16 paths.
+const VOXTRAL_TOKENIZER_URL: &str =
+    "https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602/resolve/main/tekken.json";
+const VOXTRAL_DIR_NAME: &str = "voxtral-mini-4b";
+const VOXTRAL_GGUF_FILENAME: &str = "voxtral-q4.gguf";
+const VOXTRAL_TOKENIZER_FILENAME: &str = "tekken.json";
+
 #[derive(Clone, Serialize, Deserialize, Type)]
 pub struct ModelInfo {
     /// Stable identifier used as config.model and filename stem.
@@ -185,10 +195,28 @@ fn get_onnx_models() -> Vec<ModelInfo> {
             speed_score: 0.95,
             coming_soon: true,
         },
-        // Voxtral Mini 4B Realtime — restored to the registry once V2 (engine
-        // port) and V3 (downloader) land. Until then we only advertise it in
-        // the backend selector as a disabled item; no download button is
-        // exposed so nothing is misleading.
+        ModelInfo {
+            name: "voxtral-mini-4b-realtime".to_string(),
+            display_name: "Voxtral Mini 4B Realtime (Q4, self-hosted)".to_string(),
+            size_mb: 2500,
+            // URL is empty because the Voxtral entry downloads two files; the
+            // registry URL is a single-file concept. The multi-file path is
+            // triggered by engine_type == Voxtral in download_model().
+            url: String::new(),
+            installed: false,
+            description:
+                "2.5 GB • FR/EN/ES/DE • WER FR ≈ 4.9 % • Auto-hébergé via voxtral-mini-realtime-rs"
+                    .to_string(),
+            engine_type: EngineType::Voxtral,
+            is_directory: true,
+            supported_languages: vec!["fr".into(), "en".into(), "es".into(), "de".into()],
+            is_recommended: false,
+            accuracy_score: 0.90,
+            speed_score: 0.70,
+            // Requires `--features voxtral` at compile time; flip to false via
+            // cfg! so the dashboard greys it out on binaries without the feature.
+            coming_soon: !cfg!(feature = "voxtral"),
+        },
     ]
 }
 
@@ -213,6 +241,13 @@ pub fn get_available_models() -> Vec<ModelInfo> {
 /// Whisper GGMLs (`ggml-small.bin`, `ggml-large-v3.bin`, …) are picked up
 /// automatically without re-downloading.
 fn is_model_installed(model: &ModelInfo) -> bool {
+    if model.engine_type == EngineType::Voxtral {
+        // Voxtral lives in its own dir with the GGUF weights + tokenizer.
+        let dir = get_models_dir().join(VOXTRAL_DIR_NAME);
+        let gguf = dir.join(VOXTRAL_GGUF_FILENAME);
+        let tokenizer = dir.join(VOXTRAL_TOKENIZER_FILENAME);
+        return gguf.exists() && tokenizer.exists();
+    }
     if model.is_directory {
         let dir = get_models_dir().join(&model.name);
         return dir.is_dir();
@@ -242,7 +277,9 @@ pub fn get_model_path(model_name: &str) -> Option<String> {
     if !is_model_installed(model) {
         return None;
     }
-    let path = if model.is_directory {
+    let path = if model.engine_type == EngineType::Voxtral {
+        get_models_dir().join(VOXTRAL_DIR_NAME)
+    } else if model.is_directory {
         get_models_dir().join(&model.name)
     } else {
         get_model_file_path(model_name)
@@ -263,6 +300,12 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
             model_info.engine_type
         ));
     }
+
+    // Voxtral has its own two-file download path (GGUF + Tekken tokenizer).
+    if model_info.engine_type == EngineType::Voxtral {
+        return download_voxtral(app_handle, model_name).await;
+    }
+
     if model_info.is_directory {
         return Err(
             "Directory-based models (ONNX) require archive extraction, which is not yet \
@@ -391,6 +434,145 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
         }),
     );
 
+    Ok(())
+}
+
+/// Download the Voxtral Mini 4B model (Q4 GGUF + Tekken tokenizer).
+///
+/// Emits `model-download-progress` events with a combined percentage across
+/// the two files, and a final `model-download-complete` event pointing at the
+/// model directory.
+async fn download_voxtral(app_handle: AppHandle, model_name: String) -> Result<(), String> {
+    let models_dir = get_models_dir();
+    let voxtral_dir = models_dir.join(VOXTRAL_DIR_NAME);
+    tokio::fs::create_dir_all(&voxtral_dir)
+        .await
+        .map_err(|e| format!("Failed to create voxtral dir: {}", e))?;
+
+    let gguf_path = voxtral_dir.join(VOXTRAL_GGUF_FILENAME);
+    let tokenizer_path = voxtral_dir.join(VOXTRAL_TOKENIZER_FILENAME);
+
+    // Rough weights for combined progress: GGUF dominates (~2.5 GB) while
+    // tokenizer is a few MB. Weight GGUF at 99%, tokenizer at 1%.
+    let gguf_weight = 0.99_f64;
+    let tokenizer_weight = 1.0 - gguf_weight;
+
+    stream_to_file(
+        &app_handle,
+        &model_name,
+        VOXTRAL_GGUF_URL,
+        &gguf_path,
+        0.0,
+        gguf_weight,
+    )
+    .await?;
+
+    stream_to_file(
+        &app_handle,
+        &model_name,
+        VOXTRAL_TOKENIZER_URL,
+        &tokenizer_path,
+        gguf_weight,
+        tokenizer_weight,
+    )
+    .await?;
+
+    let _ = app_handle.emit(
+        "model-download-progress",
+        DownloadProgress {
+            model: model_name.clone(),
+            downloaded_mb: 2500.0,
+            total_mb: 2500.0,
+            percent: 100.0,
+            status: "complete".to_string(),
+        },
+    );
+    let _ = app_handle.emit(
+        "model-download-complete",
+        serde_json::json!({
+            "model": model_name,
+            "path": voxtral_dir.to_string_lossy(),
+        }),
+    );
+
+    crate::dev_log!("[MODEL] ✅ Voxtral ready at {}", voxtral_dir.display());
+    Ok(())
+}
+
+/// Stream a single URL to `dest`, emitting combined progress computed from
+/// `base_percent` + `weight * file_progress`.
+async fn stream_to_file(
+    app_handle: &AppHandle,
+    model_name: &str,
+    url: &str,
+    dest: &std::path::Path,
+    base_percent: f64,
+    weight: f64,
+) -> Result<(), String> {
+    let temp_path = dest.with_extension("tmp");
+
+    let client = reqwest::Client::builder()
+        .user_agent("KaraokeTyper/1.0")
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to start download: {}", e))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Download failed with status: {}",
+            response.status()
+        ));
+    }
+
+    let total_size = response.content_length().unwrap_or(0);
+    let mut file = tokio::fs::File::create(&temp_path)
+        .await
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+
+    let mut downloaded: u64 = 0;
+    let mut stream = response.bytes_stream();
+    let mut last_percent: i32 = -1;
+
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| format!("Download error: {}", e))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|e| format!("Write error: {}", e))?;
+        downloaded += chunk.len() as u64;
+
+        let file_pct = if total_size > 0 {
+            downloaded as f64 / total_size as f64
+        } else {
+            0.0
+        };
+        let combined = ((base_percent + weight * file_pct) * 100.0).min(100.0);
+        let current = combined as i32;
+        if current > last_percent {
+            last_percent = current;
+            let _ = app_handle.emit(
+                "model-download-progress",
+                DownloadProgress {
+                    model: model_name.to_string(),
+                    downloaded_mb: downloaded as f64 / (1024.0 * 1024.0),
+                    total_mb: total_size as f64 / (1024.0 * 1024.0),
+                    percent: combined,
+                    status: "downloading".to_string(),
+                },
+            );
+        }
+    }
+
+    file.flush()
+        .await
+        .map_err(|e| format!("Flush error: {}", e))?;
+    drop(file);
+    tokio::fs::rename(&temp_path, dest)
+        .await
+        .map_err(|e| format!("Failed to finalize {}: {}", dest.display(), e))?;
     Ok(())
 }
 

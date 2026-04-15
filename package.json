@@ -8,8 +8,6 @@
     "build": "tsc --noUnusedLocals false --noUnusedParameters false && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:voxtral": "tauri dev -f voxtral",
-    "tauri:build:voxtral": "tauri build -f voxtral",
     "lint": "biome check src/",
     "lint:fix": "biome check --write src/",
     "format": "biome format --write src/",

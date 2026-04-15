@@ -104,10 +104,7 @@ evdev = "0.12"
 tikv-jemallocator = "0.6"
 
 [features]
-# Voxtral is part of the default set — end-user builds of the app always
-# ship with the Voxtral backend available. Developers who want a lighter
-# build can explicitly pass `--no-default-features`.
-default = ["voxtral"]
+default = []
 # GPU acceleration features (requires SDK installed for compilation)
 # Linux/Windows: cargo build --features gpu-vulkan
 # macOS: cargo build --features gpu-metal

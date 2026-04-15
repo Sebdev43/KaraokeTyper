@@ -62,9 +62,9 @@ enigo = "0.6"
 # Keyboard event listening (cross-platform)
 rdev = "0.5"
 
-# Speech-to-text (CPU by default, GPU acceleration via features)
-whisper-rs = "0.14"
-whisper-rs-sys = { version = "0.13", default-features = false }
+# Speech-to-text — unified multi-backend engine (Whisper + ONNX engines)
+# Whisper feature kept active; ONNX engines added in lot 4.
+transcribe-rs = { version = "=0.2.8", features = ["whisper"] }
 
 # Voice Activity Detection (Silero VAD v4) — direct ort usage
 # vad-rs crates.io pins ort rc.9 which doesn't compile on Rust 1.92+
@@ -98,7 +98,8 @@ default = []
 # GPU acceleration features (requires SDK installed for compilation)
 # Linux/Windows: cargo build --features gpu-vulkan
 # macOS: cargo build --features gpu-metal
-gpu-vulkan = ["whisper-rs/vulkan"]
-gpu-metal = ["whisper-rs/metal"]
+# GPU acceleration — currently inert placeholders, wired back to transcribe-rs in a later lot.
+gpu-vulkan = []
+gpu-metal = []
 # Ollama integration for post-transcription text correction
 ollama = ["dep:ollama-rs"]

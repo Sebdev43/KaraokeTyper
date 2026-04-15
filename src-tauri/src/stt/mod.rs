@@ -1,9 +1,14 @@
 // STT dispatcher — multi-backend abstraction over transcribe-rs.
-// Lot 1: types + errors only. Wired into runtime in Lot 2.
+// Several helpers are intentionally kept ahead of their callers (MistralApi
+// variants, display_name, gpu_health recorder) so later lots can wire them
+// without touching the core module.
 #![allow(dead_code, unused_imports)]
 
+pub mod engines;
 pub mod error;
+pub mod gpu_health;
 pub mod types;
 
+pub use engines::{load, suppress_backend_logs, transcribe, unload, LoadedEngine};
 pub use error::SttError;
 pub use types::EngineType;

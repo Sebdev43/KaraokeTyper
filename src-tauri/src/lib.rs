@@ -14,7 +14,6 @@ mod model_downloader;
 mod ollama_client;
 mod output;
 mod stt;
-mod stt_whisper;
 mod text_processing;
 mod vad;
 
@@ -74,31 +73,29 @@ pub struct GpuStatus {
     pub failure_count: u32,
 }
 
-use stt_whisper::WhisperSttEngine;
+use stt::{EngineType, LoadedEngine};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
-/// STT engine wrapper (native Rust whisper-rs)
+/// STT engine wrapper — dispatches over any backend supported by `stt::engines`.
 pub struct SttEngine {
-    engine: WhisperSttEngine,
+    engine: LoadedEngine,
+    language: String,
 }
 
 impl SttEngine {
     pub fn new(config: &AppConfig) -> Result<Self, String> {
         // Use model_path if provided AND it's a valid local file, otherwise resolve from model name
-        // This prevents using URLs or invalid paths that were incorrectly saved in config
         let resolved_path = config
             .model_path
             .clone()
             .filter(|p| {
-                // Reject URLs
                 if p.starts_with("http://") || p.starts_with("https://") {
                     dev_log!("[STT] Ignoring URL in model_path: {}", p);
                     return false;
                 }
-                // Check if file exists
                 let exists = std::path::Path::new(p).exists();
                 if !exists {
                     dev_log!(
@@ -112,32 +109,33 @@ impl SttEngine {
 
         let model_path = resolved_path
             .ok_or("No model downloaded. Download a model from Settings → STT Models.")?;
-        let engine = WhisperSttEngine::new(
-            &model_path,
-            &config.language,
-            config.use_gpu,
-            config.gpu_device_index,
-        );
 
-        // Initialize the Whisper context by loading the model
-        // Returns GpuInitResult with info about which mode was actually used
-        let _init_result = engine.initialize().map_err(|e| e.to_string())?;
+        let engine = stt::load(EngineType::Whisper, std::path::Path::new(&model_path))
+            .map_err(|e| e.to_string())?;
 
-        Ok(SttEngine { engine })
+        Ok(SttEngine {
+            engine,
+            language: config.language.clone(),
+        })
     }
 
     pub fn transcribe(
-        &self,
+        &mut self,
         audio_data: &[f32],
         initial_prompt: Option<&str>,
     ) -> Result<String, String> {
-        self.engine
-            .transcribe(audio_data, initial_prompt)
-            .map_err(|e| e.to_string())
+        stt::transcribe(
+            &mut self.engine,
+            audio_data.to_vec(),
+            &self.language,
+            false,
+            initial_prompt,
+        )
+        .map_err(|e| e.to_string())
     }
 
     pub fn backend_name(&self) -> &'static str {
-        "whisper-rs"
+        self.engine.backend_name()
     }
 }
 
@@ -205,12 +203,10 @@ fn start_idle_watcher(state: &AppState) {
                 .as_secs();
 
             if now - last >= timeout_secs {
-                let guard = engine.lock().unwrap();
-                if let Some(ref engine) = *guard {
-                    if engine.engine.is_loaded() {
-                        engine.engine.unload();
-                        dev_log!("[IDLE_WATCHER] Model unloaded after {}s idle", timeout_secs);
-                    }
+                let mut guard = engine.lock().unwrap();
+                if guard.is_some() {
+                    *guard = None;
+                    dev_log!("[IDLE_WATCHER] Model unloaded after {}s idle", timeout_secs);
                 }
             }
         }
@@ -267,7 +263,7 @@ fn save_debug_wav(audio_data: &[f32], path: &std::path::PathBuf) -> Result<(), S
 #[specta::specta]
 async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     // Suppress whisper.cpp C library verbose output (beam search, model loading, etc.)
-    stt_whisper::suppress_whisper_cpp_logs();
+    stt::suppress_backend_logs();
 
     let config = {
         let config = state.config.lock().unwrap();
@@ -655,10 +651,7 @@ pub(crate) async fn do_stop_recording(
         let mut stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
 
         // Lazy reload: if model was unloaded by idle watcher, re-initialize while holding lock
-        let needs_reload = match stt_engine.as_ref() {
-            Some(engine) => !engine.engine.is_loaded(),
-            None => false,
-        };
+        let needs_reload = stt_engine.is_none();
         if needs_reload {
             dev_log!("[STT] Model was unloaded by idle watcher, reloading...");
             let config = config_arc.lock().unwrap().clone();
@@ -674,7 +667,7 @@ pub(crate) async fn do_stop_recording(
             }
         }
 
-        let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
+        let engine = stt_engine.as_mut().ok_or("STT engine not initialized")?;
         engine.transcribe(&padded_audio, prompt_for_whisper.as_deref())
     })
     .await
@@ -1093,7 +1086,7 @@ async fn save_settings(
             new_config.model,
             new_config.language
         );
-        stt_whisper::suppress_whisper_cpp_logs();
+        stt::suppress_backend_logs();
         match SttEngine::new(&new_config) {
             Ok(engine) => {
                 *state.stt_engine.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
@@ -1203,8 +1196,8 @@ async fn transcribe_audio(
     // Use spawn_blocking to offload CPU-intensive Whisper transcription
     // This prevents blocking the async executor
     let transcription = tokio::task::spawn_blocking(move || {
-        let stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let engine = stt_engine.as_ref().ok_or("STT engine not initialized")?;
+        let mut stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
+        let engine = stt_engine.as_mut().ok_or("STT engine not initialized")?;
         engine.transcribe(&padded_audio, prompt_for_whisper.as_deref())
     })
     .await
@@ -1347,8 +1340,8 @@ async fn get_system_info() -> Result<SystemInfo, String> {
 #[specta::specta]
 fn get_gpu_info() -> Result<GpuInfo, String> {
     let result = gpu::detect_gpu();
-    let failure_count = stt_whisper::get_gpu_failure_count();
-    let disabled_by_failures = stt_whisper::is_gpu_disabled_by_failures();
+    let failure_count = stt::gpu_health::get_gpu_failure_count();
+    let disabled_by_failures = stt::gpu_health::is_gpu_disabled_by_failures();
 
     let recommended_model = result
         .vram_mb
@@ -1369,8 +1362,8 @@ fn get_gpu_info() -> Result<GpuInfo, String> {
 #[tauri::command]
 #[specta::specta]
 fn get_gpu_status() -> Result<GpuStatus, String> {
-    let failure_count = stt_whisper::get_gpu_failure_count();
-    let disabled = stt_whisper::is_gpu_disabled_by_failures();
+    let failure_count = stt::gpu_health::get_gpu_failure_count();
+    let disabled = stt::gpu_health::is_gpu_disabled_by_failures();
 
     // Determine current mode based on failure state
     let (mode, fallback_reason) = if disabled {
@@ -1406,7 +1399,7 @@ fn get_gpu_status() -> Result<GpuStatus, String> {
 #[tauri::command]
 #[specta::specta]
 fn reset_gpu_failure_count() -> Result<String, String> {
-    stt_whisper::reset_gpu_failures();
+    stt::gpu_health::reset_gpu_failures();
     Ok("GPU failure counter reset. GPU will be tried again on next initialization.".to_string())
 }
 

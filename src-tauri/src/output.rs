@@ -460,7 +460,7 @@ mod linux_output {
                     let ret = libc::ioctl(self.fd, UI_DEV_DESTROY, 0);
                     if ret < 0 {
                         // Don't panic in Drop — just log the failure
-                        eprintln!("[UINPUT] Warning: UI_DEV_DESTROY failed (fd={})", self.fd);
+                        crate::dev_log!("[UINPUT] Warning: UI_DEV_DESTROY failed (fd={})", self.fd);
                     }
                     libc::close(self.fd);
                 }

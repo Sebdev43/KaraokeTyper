@@ -71,9 +71,9 @@ pub fn enable_autostart() -> Result<(), String> {
             // Icon is embedded at compile time
             let icon_bytes = include_bytes!("../icons/128x128.png");
             if let Err(e) = fs::write(&icon_path, icon_bytes) {
-                println!("[AUTOSTART] ⚠️  Failed to write icon: {}", e);
+                crate::dev_log!("[AUTOSTART] ⚠️  Failed to write icon: {}", e);
             } else {
-                println!("[AUTOSTART] ✅ Icon installed at: {}", icon_path.display());
+                crate::dev_log!("[AUTOSTART] ✅ Icon installed at: {}", icon_path.display());
             }
         }
 
@@ -101,7 +101,7 @@ X-GNOME-Autostart-enabled=true
         fs::write(&path, desktop_entry)
             .map_err(|e| format!("Failed to write desktop entry: {}", e))?;
 
-        println!("[AUTOSTART] ✅ Enabled at: {}", path.display());
+        crate::dev_log!("[AUTOSTART] ✅ Enabled at: {}", path.display());
         Ok(())
     }
 
@@ -128,7 +128,7 @@ X-GNOME-Autostart-enabled=true
             .map_err(|e| format!("Failed to run reg command: {}", e))?;
 
         if output.status.success() {
-            println!("[AUTOSTART] ✅ Enabled in Windows registry");
+            crate::dev_log!("[AUTOSTART] ✅ Enabled in Windows registry");
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -175,7 +175,7 @@ X-GNOME-Autostart-enabled=true
         let path = get_autostart_path().ok_or("Failed to get autostart path")?;
         fs::write(&path, plist_content).map_err(|e| format!("Failed to write plist: {}", e))?;
 
-        println!("[AUTOSTART] ✅ Enabled at: {}", path.display());
+        crate::dev_log!("[AUTOSTART] ✅ Enabled at: {}", path.display());
         Ok(())
     }
 }
@@ -187,7 +187,7 @@ pub fn disable_autostart() -> Result<(), String> {
             if path.exists() {
                 fs::remove_file(&path)
                     .map_err(|e| format!("Failed to remove desktop entry: {}", e))?;
-                println!("[AUTOSTART] ✅ Disabled (removed {})", path.display());
+                crate::dev_log!("[AUTOSTART] ✅ Disabled (removed {})", path.display());
             }
         }
         Ok(())
@@ -209,7 +209,7 @@ pub fn disable_autostart() -> Result<(), String> {
             .map_err(|e| format!("Failed to run reg command: {}", e))?;
 
         if output.status.success() {
-            println!("[AUTOSTART] ✅ Disabled (removed from registry)");
+            crate::dev_log!("[AUTOSTART] ✅ Disabled (removed from registry)");
             Ok(())
         } else {
             Ok(())
@@ -221,7 +221,7 @@ pub fn disable_autostart() -> Result<(), String> {
         if let Some(path) = get_autostart_path() {
             if path.exists() {
                 fs::remove_file(&path).map_err(|e| format!("Failed to remove plist: {}", e))?;
-                println!("[AUTOSTART] ✅ Disabled (removed {})", path.display());
+                crate::dev_log!("[AUTOSTART] ✅ Disabled (removed {})", path.display());
             }
         }
         Ok(())

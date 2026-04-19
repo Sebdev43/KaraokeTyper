@@ -251,7 +251,10 @@ pub async fn remove_focused_window_extension() -> Result<String, String> {
             fs::remove_dir_all(&extension_path)
                 .map_err(|e| format!("Failed to remove extension: {}", e))?;
 
-            crate::dev_log!("[GNOME EXT] Extension removed: {}", extension_path.display());
+            crate::dev_log!(
+                "[GNOME EXT] Extension removed: {}",
+                extension_path.display()
+            );
 
             Ok("Extension removed!\n\nLog out and back in to complete the removal.".to_string())
         })

@@ -25,8 +25,63 @@ pub fn build_initial_prompt(custom_words: &[String], language: &str) -> String {
     format!("{} {}", prefix, custom_words.join(", "))
 }
 
+/// Known Whisper hallucinations — phrases the model has memorised from its
+/// training set (subtitle corpora, YouTube captions, etc.) that it emits on
+/// silence or ambiguous audio. Matched case-insensitively; removed from the
+/// output before any other processing so they never reach the user.
+const HALLUCINATED_PHRASES: &[&str] = &[
+    // — French —
+    "sous-titrage société radio-canada",
+    "sous-titres réalisés par la communauté d'amara.org",
+    "sous-titres réalisés par la communauté d'amara",
+    "sous-titres réalisés para la communauté d'amara.org",
+    "sous-titres faits par la communauté d'amara.org",
+    "sous-titrage st' 501",
+    "sous-titrage fr 2021",
+    "sous-titrage mfp",
+    "sous-titres par soustitreur.com",
+    "merci d'avoir regardé cette vidéo",
+    "merci d'avoir regardé la vidéo",
+    "merci d'avoir regardé",
+    "abonnez-vous à la chaîne",
+    "n'oubliez pas de vous abonner",
+    "cliquez sur la cloche",
+    "à la prochaine",
+    // — English —
+    "thanks for watching",
+    "thanks for watching!",
+    "thank you for watching",
+    "please subscribe to my channel",
+    "please like and subscribe",
+    "like and subscribe",
+    "don't forget to subscribe",
+    "see you in the next video",
+    "see you next time",
+    "subtitles by the amara.org community",
+    "captions by the amara.org community",
+    // — Spanish —
+    "subtítulos realizados por la comunidad de amara.org",
+    "gracias por ver el video",
+    "suscríbete al canal",
+    // — German —
+    "untertitelung des zdf für funk",
+    "untertitel der amara.org-community",
+    "vielen dank fürs zuschauen",
+    "danke fürs zuschauen",
+    // — Italian —
+    "sottotitoli e revisione a cura di qtss",
+    "sottotitoli creati dalla comunità amara.org",
+    "grazie per l'attenzione",
+    "grazie per aver guardato il video",
+    // — Portuguese —
+    "legendas pela comunidade amara.org",
+    "obrigado por assistir",
+    // — Dutch —
+    "ondertiteld door de amara.org gemeenschap",
+];
+
 /// Full text processing pipeline.
-/// Order: filler removal → stutter collapse → custom words → whitespace normalization.
+/// Order: hallucination strip → filler removal → stutter collapse → custom words → whitespace normalization.
 pub fn process_transcription(
     text: &str,
     custom_words: &[String],
@@ -38,7 +93,7 @@ pub fn process_transcription(
         return String::new();
     }
 
-    let mut result = text.to_string();
+    let mut result = strip_hallucinated_phrases(text);
 
     if filler_removal {
         result = remove_filler_words(&result);
@@ -56,12 +111,40 @@ pub fn process_transcription(
     normalize_whitespace(&result)
 }
 
+/// Remove any occurrence of a known hallucinated phrase (case-insensitive).
+///
+/// Whisper hallucinations are usually appended verbatim at sentence boundaries,
+/// so a simple substring match is enough. We don't touch partial matches —
+/// each phrase is anchored on its full form.
+fn strip_hallucinated_phrases(text: &str) -> String {
+    let mut out = text.to_string();
+    // Repeat-pass: the model sometimes emits the same phrase twice in a row.
+    loop {
+        let lower = out.to_lowercase();
+        let mut removed_any = false;
+        for phrase in HALLUCINATED_PHRASES {
+            if let Some(idx) = lower.find(phrase) {
+                let end = idx + phrase.len();
+                let mut next = String::with_capacity(out.len() - phrase.len());
+                next.push_str(&out[..idx]);
+                next.push_str(&out[end..]);
+                out = next;
+                removed_any = true;
+                break;
+            }
+        }
+        if !removed_any {
+            break;
+        }
+    }
+    out
+}
+
 /// Remove filler words common in French and English speech.
 /// Preserves punctuation attached to surrounding words.
 fn remove_filler_words(text: &str) -> String {
     let fillers_fr = [
-        "euh", "heu", "bah", "ben", "beh", "hein", "hmm", "hm", "mm",
-        "ah", "oh", "eh",
+        "euh", "heu", "bah", "ben", "beh", "hein", "hmm", "hm", "mm", "ah", "oh", "eh",
     ];
     let fillers_en = [
         "uh", "um", "uhm", "umm", "hmm", "hm", "mm", "ah", "oh", "eh",
@@ -76,8 +159,8 @@ fn remove_filler_words(text: &str) -> String {
             .trim_matches(|c: char| c.is_ascii_punctuation())
             .to_lowercase();
 
-        let is_filler = fillers_fr.contains(&clean.as_str())
-            || fillers_en.contains(&clean.as_str());
+        let is_filler =
+            fillers_fr.contains(&clean.as_str()) || fillers_en.contains(&clean.as_str());
 
         if !is_filler {
             result.push(word);
@@ -151,7 +234,7 @@ fn apply_custom_words(text: &str, custom_words: &[String], threshold: f32) -> St
 
             // Length check: skip if lengths differ by more than 30%
             let len_ratio = core_lower.len() as f32 / cw_lower.len() as f32;
-            if len_ratio < 0.7 || len_ratio > 1.3 {
+            if !(0.7..=1.3).contains(&len_ratio) {
                 continue;
             }
 
@@ -169,10 +252,10 @@ fn apply_custom_words(text: &str, custom_words: &[String], threshold: f32) -> St
 
             let adjusted_distance = distance * soundex_bonus;
 
-            if adjusted_distance < threshold {
-                if best_match.is_none() || adjusted_distance < best_match.unwrap().1 {
-                    best_match = Some((cw.as_str(), adjusted_distance));
-                }
+            if adjusted_distance < threshold
+                && (best_match.is_none() || adjusted_distance < best_match.unwrap().1)
+            {
+                best_match = Some((cw.as_str(), adjusted_distance));
             }
         }
 
@@ -437,8 +520,8 @@ mod tests {
             "euh je je je veux installer Wisper",
             &custom,
             0.3,
-            true,  // filler removal
-            true,  // stutter collapse
+            true, // filler removal
+            true, // stutter collapse
         );
         assert_eq!(result, "je veux installer Whisper");
     }
@@ -447,6 +530,42 @@ mod tests {
     fn test_process_transcription_empty() {
         let result = process_transcription("", &[], 0.3, true, true);
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn strips_radio_canada_hallucination_even_with_processing_disabled() {
+        let result = process_transcription(
+            "vérifie la config. Sous-titrage Société Radio-Canada",
+            &[],
+            0.3,
+            false,
+            false,
+        );
+        assert_eq!(result, "vérifie la config.");
+    }
+
+    #[test]
+    fn strips_repeated_hallucinations() {
+        let result = process_transcription(
+            "Bonjour. Sous-titrage Société Radio-Canada Sous-titrage Société Radio-Canada",
+            &[],
+            0.3,
+            false,
+            false,
+        );
+        assert_eq!(result, "Bonjour.");
+    }
+
+    #[test]
+    fn strips_amara_hallucination() {
+        let result = process_transcription(
+            "Merci. Sous-titres réalisés par la communauté d'Amara.org",
+            &[],
+            0.3,
+            false,
+            false,
+        );
+        assert_eq!(result, "Merci.");
     }
 
     #[test]

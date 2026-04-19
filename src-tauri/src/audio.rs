@@ -19,8 +19,15 @@
 //! after `stream.play()` succeeds.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+
+/// Pre-roll duration: audio captured *before* the user presses PTT is prepended
+/// to the recording so the first syllable of the phrase isn't lost to the
+/// reaction-time gap between speaking and pressing the hotkey.
+/// 500 ms @ 16 kHz = 8000 samples (comparable to Handy's 450 ms prefill).
+const PRE_ROLL_MS: usize = 500;
 
 use crate::vad::{SmoothedVad, VadFrame, VoiceActivityDetector, SILERO_FRAME_SAMPLES};
 
@@ -58,7 +65,8 @@ fn scopeguard<T, F: FnOnce(T)>(value: T, f: F) -> ScopeGuard<T, F> {
 
 /// Validate device names to prevent command injection via pactl
 fn is_valid_device_name(name: &str) -> bool {
-    name.chars().all(|c| c.is_alphanumeric() || "_.:-,=".contains(c))
+    name.chars()
+        .all(|c| c.is_alphanumeric() || "_.:-,=".contains(c))
 }
 
 /// Delay before auto-closing the stream after recording stops (releases mic device)
@@ -123,7 +131,9 @@ impl AudioCapture {
         self.close_stream();
 
         // Track if this is a Bluetooth device (for auto-close logic)
-        let is_bt = device_name.map(|n| n.starts_with("bluez_input.")).unwrap_or(false);
+        let is_bt = device_name
+            .map(|n| n.starts_with("bluez_input."))
+            .unwrap_or(false);
         self.is_bluetooth.store(is_bt, Ordering::Relaxed);
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
@@ -207,7 +217,7 @@ impl AudioCapture {
             );
 
             // ── Step 4: Worker loop — process samples + commands ──
-            run_worker(vad, sample_rx, cmd_rx);
+            run_worker(vad, sample_rx, cmd_rx, target_rate);
 
             // _guard drop sets is_open=false and logs on exit (including panic unwind)
         });
@@ -230,7 +240,9 @@ impl AudioCapture {
             if let Err(panic_payload) = h.join() {
                 crate::dev_log!(
                     "[AUDIO/WORKER] Worker thread panicked: {:?}",
-                    panic_payload.downcast_ref::<&str>().unwrap_or(&"unknown panic")
+                    panic_payload
+                        .downcast_ref::<&str>()
+                        .unwrap_or(&"unknown panic")
                 );
             }
         }
@@ -289,7 +301,6 @@ impl AudioCapture {
 
         Ok(StopHandle { reply_rx })
     }
-
 }
 
 /// Handle returned by `stop_recording()`. Call `wait()` to get the audio buffer.
@@ -328,11 +339,17 @@ fn run_worker(
     vad: Arc<Mutex<Option<SmoothedVad>>>,
     sample_rx: mpsc::Receiver<Vec<f32>>,
     cmd_rx: mpsc::Receiver<Cmd>,
+    target_rate: u32,
 ) {
     let mut audio_buffer: Vec<f32> = Vec::new();
     let mut frame_accumulator: Vec<f32> = Vec::new();
     let mut recording = false;
     let mut first_callback_logged = false;
+
+    // Ring buffer holding the last PRE_ROLL_MS of audio captured while NOT recording.
+    // Prepended to audio_buffer on Cmd::Start to recover the phrase onset.
+    let pre_roll_capacity: usize = (target_rate as usize) * PRE_ROLL_MS / 1000;
+    let mut pre_roll: VecDeque<f32> = VecDeque::with_capacity(pre_roll_capacity);
 
     loop {
         // Wait for audio samples with timeout — allows Shutdown to be processed
@@ -354,6 +371,14 @@ fn run_worker(
                     first_callback_logged = true;
                 }
                 process_audio(samples, &vad, &mut frame_accumulator, &mut audio_buffer);
+            } else if pre_roll_capacity > 0 {
+                // Not recording: keep the last PRE_ROLL_MS of audio as pre-roll.
+                for &s in samples.iter() {
+                    if pre_roll.len() == pre_roll_capacity {
+                        pre_roll.pop_front();
+                    }
+                    pre_roll.push_back(s);
+                }
             }
         }
 
@@ -373,10 +398,62 @@ fn run_worker(
                         }
                     }
 
-                    crate::dev_log!("[AUDIO/WORKER] Recording started (buffer cleared)");
+                    // Prepend pre-roll: raw samples captured just before PTT press.
+                    // Bypasses VAD — this audio is already known to precede speech onset
+                    // and running it through VAD would risk discarding it as silence.
+                    let pre_roll_len = pre_roll.len();
+                    if pre_roll_len > 0 {
+                        audio_buffer.reserve(pre_roll_len);
+                        audio_buffer.extend(pre_roll.drain(..));
+                        crate::dev_log!(
+                            "[AUDIO/WORKER] Recording started (pre-roll {} samples / {}ms prepended)",
+                            pre_roll_len,
+                            pre_roll_len * 1000 / target_rate as usize
+                        );
+                    } else {
+                        crate::dev_log!("[AUDIO/WORKER] Recording started (no pre-roll available)");
+                    }
                 }
                 Cmd::Stop(reply_tx) => {
+                    // Note: recording=false is set before the wait intentionally.
+                    // New Cmd::Start during the wait is deferred to the next loop iteration.
                     recording = false;
+
+                    // First-PTT race fix: if buffer is empty, wait for audio to arrive.
+                    // On first PTT, ALSA can take 2s+ to open. Both Start and Stop
+                    // queue before the stream produces any samples, resulting in 0 audio.
+                    // Wait up to 500ms for the first chunk — instant on subsequent PTTs.
+                    if audio_buffer.is_empty() {
+                        crate::dev_log!(
+                            "[AUDIO/WORKER] Buffer empty on Stop — waiting up to 500ms for audio..."
+                        );
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_millis(500);
+                        let mut data_received = false;
+                        while std::time::Instant::now() < deadline {
+                            match sample_rx.recv_timeout(std::time::Duration::from_millis(10)) {
+                                Ok(samples) => {
+                                    process_audio(
+                                        &samples,
+                                        &vad,
+                                        &mut frame_accumulator,
+                                        &mut audio_buffer,
+                                    );
+                                    data_received = true;
+                                    // Break once data processed (even if VAD discarded it as noise)
+                                    break;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                            }
+                        }
+                        if data_received {
+                            crate::dev_log!(
+                                "[AUDIO/WORKER] Audio arrived, buffer: {} samples",
+                                audio_buffer.len()
+                            );
+                        }
+                    }
 
                     // Drain any audio chunks captured but not yet consumed
                     while let Ok(remaining) = sample_rx.try_recv() {
@@ -451,7 +528,7 @@ fn flush_vad_accumulator(
     }
 
     let Ok(mut vad_guard) = vad.lock() else {
-        audio_buffer.extend(frame_acc.drain(..));
+        audio_buffer.append(frame_acc);
         return;
     };
 
@@ -471,7 +548,7 @@ fn flush_vad_accumulator(
             }
         }
     } else {
-        audio_buffer.extend(frame_acc.drain(..));
+        audio_buffer.append(frame_acc);
     }
 }
 

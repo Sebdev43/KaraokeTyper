@@ -292,10 +292,18 @@ filler_removal_enabled?: boolean;
 /**
  * Enable stutter collapse ("je je je veux" → "je veux")
  */
-stutter_collapse_enabled?: boolean }
+stutter_collapse_enabled?: boolean; 
+/**
+ * Selected speech-to-text backend (Whisper by default, all backends are self-hosted).
+ */
+stt_backend?: EngineType }
 export type AppDataInfo = { items: AppDataItem[]; total_size_mb: number }
 export type AppDataItem = { name: string; path: string; exists: boolean; size_mb: number }
 export type AudioDevice = { name: string; raw_name: string; index: number }
+/**
+ * Self-hosted STT backends. No cloud APIs.
+ */
+export type EngineType = "whisper" | "sense-voice" | "moonshine"
 export type GnomeExtensionStatus = { installed: boolean; enabled: boolean; is_gnome: boolean; is_wayland: boolean; path: string; needs_restart: boolean }
 /**
  * GPU acceleration status
@@ -337,7 +345,40 @@ fallback_reason: string | null;
  * Current failure count
  */
 failure_count: number }
-export type ModelInfo = { name: string; display_name: string; size_mb: number; url: string; installed: boolean; description: string }
+export type ModelInfo = { 
+/**
+ * Stable identifier used as config.model and filename stem.
+ */
+name: string; display_name: string; size_mb: number; 
+/**
+ * Remote URL. Empty for engines without a downloadable artifact (e.g. cloud APIs).
+ */
+url: string; installed: boolean; description: string; 
+/**
+ * Engine that consumes this model.
+ */
+engine_type?: EngineType; 
+/**
+ * True for ONNX engines that expect a directory of files rather than a single blob.
+ */
+is_directory?: boolean; 
+/**
+ * Languages this model can transcribe — empty means "universal/auto".
+ */
+supported_languages?: string[]; 
+/**
+ * Hint for the UI — the headline recommendation for new users.
+ */
+is_recommended?: boolean; 
+/**
+ * Indicative scores (0.0 — 1.0) for sorting in the dashboard.
+ */
+accuracy_score?: number; speed_score?: number; 
+/**
+ * True when the backend is not yet executable (transcribe-rs feature disabled).
+ * UI can grey out the entry and show a "Bientôt" badge.
+ */
+coming_soon?: boolean }
 export type ModelUnloadTimeout = "Never" | "Min5" | "Min15" | "Hour1"
 export type OllamaStatus = { available: boolean; model: string; url: string }
 /**

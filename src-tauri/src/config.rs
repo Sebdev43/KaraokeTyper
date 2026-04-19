@@ -3,6 +3,8 @@ use specta::Type;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::stt::EngineType;
+
 /// How text is pasted into the focused application.
 /// Inspired by Handy's approach: user picks the method, no auto-detection.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
@@ -29,18 +31,13 @@ impl Default for PasteMethod {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq, Default)]
 pub enum ModelUnloadTimeout {
+    #[default]
     Never,
     Min5,
     Min15,
     Hour1,
-}
-
-impl Default for ModelUnloadTimeout {
-    fn default() -> Self {
-        Self::Never
-    }
 }
 
 impl ModelUnloadTimeout {
@@ -97,11 +94,20 @@ pub struct AppConfig {
     /// Enable stutter collapse ("je je je veux" → "je veux")
     #[serde(default = "default_true")]
     pub stutter_collapse_enabled: bool,
+    /// Selected speech-to-text backend (Whisper by default, all backends are self-hosted).
+    #[serde(default)]
+    pub stt_backend: EngineType,
 }
 
-fn default_true() -> bool { true }
-fn default_volume() -> f32 { 0.7 }
-fn default_custom_words_threshold() -> f32 { 0.3 }
+fn default_true() -> bool {
+    true
+}
+fn default_volume() -> f32 {
+    0.7
+}
+fn default_custom_words_threshold() -> f32 {
+    0.3
+}
 
 /// Auto-detect GPU: enable if compiled with GPU support
 fn auto_detect_gpu() -> bool {
@@ -135,6 +141,7 @@ impl Default for AppConfig {
             custom_words_threshold: default_custom_words_threshold(),
             filler_removal_enabled: true,
             stutter_collapse_enabled: true,
+            stt_backend: EngineType::default(),
         }
     }
 }
@@ -205,7 +212,10 @@ mod tests {
         assert_eq!(config.key_delay_ms, 8);
         assert_eq!(config.language, "fr");
         // use_gpu depends on compile-time features (auto-detect)
-        assert_eq!(config.use_gpu, cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal"));
+        assert_eq!(
+            config.use_gpu,
+            cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal")
+        );
         assert!(config.gpu_device_index.is_none());
         assert!(config.model_path.is_none());
         assert!(config.audio_device_name.is_none());
@@ -234,6 +244,7 @@ mod tests {
             custom_words_threshold: 0.25,
             filler_removal_enabled: true,
             stutter_collapse_enabled: true,
+            stt_backend: EngineType::default(),
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -249,6 +260,19 @@ mod tests {
     }
 
     #[test]
+    fn legacy_config_without_stt_backend_defaults_to_whisper() {
+        let json = r#"{
+            "shortcut": "Ctrl+Space",
+            "audio_device_index": 0,
+            "model": "ggml-small",
+            "key_delay_ms": 8,
+            "language": "fr"
+        }"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.stt_backend, EngineType::Whisper);
+    }
+
+    #[test]
     fn test_deserialize_with_missing_optional_fields() {
         let json = r#"{
             "shortcut": "Ctrl+Space",
@@ -260,7 +284,10 @@ mod tests {
 
         let config: AppConfig = serde_json::from_str(json).unwrap();
         // use_gpu depends on compile-time features (auto-detect)
-        assert_eq!(config.use_gpu, cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal"));
+        assert_eq!(
+            config.use_gpu,
+            cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal")
+        );
         assert!(config.gpu_device_index.is_none());
         assert!(config.model_path.is_none());
         assert!(config.audio_device_name.is_none());

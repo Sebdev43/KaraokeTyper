@@ -1,15 +1,18 @@
 use crate::config::PasteMethod;
-use tauri::AppHandle;
-use tauri_plugin_clipboard_manager::ClipboardExt;
 use std::thread;
 use std::time::Duration;
+use tauri::AppHandle;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 #[cfg(target_os = "linux")]
 mod linux_output {
+    #[cfg(test)]
     use std::collections::HashMap;
     use std::fs::OpenOptions;
-    use std::os::unix::io::AsRawFd;
-    use std::sync::{Mutex, OnceLock};
+    use std::os::unix::io::IntoRawFd;
+    use std::sync::Mutex;
+    #[cfg(test)]
+    use std::sync::OnceLock;
     use std::thread;
     use std::time::Duration;
 
@@ -123,8 +126,10 @@ mod linux_output {
     }
 
     // Thread-safe keymap using OnceLock (no unsafe needed)
+    #[cfg(test)]
     static CHAR_TO_KEY: OnceLock<HashMap<char, (u16, bool)>> = OnceLock::new();
 
+    #[cfg(test)]
     pub(crate) fn get_keymap() -> &'static HashMap<char, (u16, bool)> {
         CHAR_TO_KEY.get_or_init(|| {
             let mut map = HashMap::new();
@@ -240,6 +245,8 @@ mod linux_output {
         })
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
     fn get_key_for_char(c: char) -> Option<(u16, bool)> {
         get_keymap().get(&c).copied()
     }
@@ -257,8 +264,7 @@ mod linux_output {
                 .open("/dev/uinput")
                 .map_err(|e| format!("Failed to open /dev/uinput: {}. Make sure you have permissions (add user to 'input' group)", e))?;
 
-            let fd = file.as_raw_fd();
-            std::mem::forget(file); // Keep file descriptor open
+            let fd = file.into_raw_fd(); // Consumes File, transfers fd ownership to UInputDevice
 
             // Enable EV_KEY events
             let ret = unsafe { libc::ioctl(fd, UI_SET_EVBIT, EV_KEY as i32) };
@@ -420,35 +426,6 @@ mod linux_output {
             self.release_key(key)
         }
 
-        pub fn type_char(&self, c: char) -> Result<(), String> {
-            if let Some((key, shift)) = get_key_for_char(c) {
-                if shift {
-                    self.press_key(KEY_LEFTSHIFT)?;
-                    thread::sleep(Duration::from_millis(2));
-                }
-
-                self.tap_key(key)?;
-
-                if shift {
-                    thread::sleep(Duration::from_millis(2));
-                    self.release_key(KEY_LEFTSHIFT)?;
-                }
-
-                Ok(())
-            } else {
-                crate::dev_log!("[UINPUT] Skipping unsupported character: {:?}", c);
-                Ok(())
-            }
-        }
-
-        pub fn type_text(&self, text: &str) -> Result<(), String> {
-            for c in text.chars() {
-                self.type_char(c)?;
-                thread::sleep(Duration::from_millis(8));
-            }
-            Ok(())
-        }
-
         pub fn ctrl_v(&self) -> Result<(), String> {
             crate::dev_log!("[UINPUT] Sending Ctrl+V...");
             self.press_key(KEY_LEFTCTRL)?;
@@ -500,8 +477,56 @@ pub struct TextOutput {
 }
 
 impl TextOutput {
-    pub fn new(key_delay_ms: u64, paste_method: PasteMethod, app_handle: &AppHandle) -> Result<Self, String> {
-        crate::dev_log!("[OUTPUT] Initializing text output (paste_method={:?})...", paste_method);
+    const KNOWN_TERMINALS: &'static [&'static str] = &[
+        "gnome-terminal",
+        "gnome-terminal-server",
+        "org.gnome.terminal",
+        "konsole",
+        "xterm",
+        "urxvt",
+        "rxvt",
+        "terminator",
+        "tilix",
+        "alacritty",
+        "kitty",
+        "wezterm",
+        "foot",
+        "xfce4-terminal",
+        "mate-terminal",
+        "lxterminal",
+        "qterminal",
+        "terminology",
+        "cool-retro-term",
+        "guake",
+        "tilda",
+        "yakuake",
+        "hyper",
+        "tabby",
+        "warp",
+        "iterm2",
+        "terminal",
+        "blackbox",
+        "ptyxis",
+        "ghostty",
+    ];
+
+    const KNOWN_SHELLS: &'static [&'static str] = &[
+        "bash", "zsh", "fish", "sh", "python", "node", "npm", "cargo", "claude", "htop", "vim",
+        "nvim", "ssh", "docker",
+    ];
+
+    const REMOTE_DESKTOP_APPS: &'static [&'static str] =
+        &["rustdesk", "anydesk", "vinagre", "remmina"];
+
+    pub fn new(
+        key_delay_ms: u64,
+        paste_method: PasteMethod,
+        app_handle: &AppHandle,
+    ) -> Result<Self, String> {
+        crate::dev_log!(
+            "[OUTPUT] Initializing text output (paste_method={:?})...",
+            paste_method
+        );
         crate::dev_log!("[OUTPUT] ✅ Clipboard initialized");
 
         Ok(Self {
@@ -519,98 +544,55 @@ impl TextOutput {
             return Ok(());
         }
 
-        crate::dev_log!("[OUTPUT] Typing text: '{}' (method={:?})", text, self.paste_method);
+        crate::dev_log!(
+            "[OUTPUT] Typing text: '{}' (method={:?})",
+            text,
+            self.paste_method
+        );
 
         match self.paste_method {
             PasteMethod::Direct => {
                 let t1 = std::time::Instant::now();
 
-                // Remote desktop apps (RustDesk, AnyDesk): ALWAYS use direct typing.
-                // Their clipboard sync is unreliable on Linux, but they forward
-                // keyboard events reliably. Even enigo text() (buggy on X11) is
-                // better than clipboard that never arrives on the remote side.
+                // Remote desktop (RustDesk, AnyDesk): use DIRECT TYPING.
+                // Clipboard paste doesn't work because the local clipboard
+                // doesn't sync to the remote machine in time. xdotool type
+                // sends each character as a key event that RustDesk forwards
+                // instantly to the remote — no clipboard needed.
                 #[cfg(target_os = "linux")]
-                let force_direct = Self::is_remote_desktop_focused();
+                let is_remote = Self::is_remote_desktop_focused();
                 #[cfg(not(target_os = "linux"))]
-                let force_direct = false;
+                let is_remote = false;
 
-                if force_direct {
-                    crate::dev_log!(
-                        "[OUTPUT] Remote desktop detected — forcing direct typing (clipboard unreliable)"
-                    );
+                if is_remote {
+                    crate::dev_log!("[OUTPUT] Remote desktop — direct typing (xdotool type)");
                     Self::try_direct_typing(text)?;
                 } else {
-                    // On Linux, if no native typing tool is available, auto-fallback
-                    // to clipboard + paste shortcut. Enigo's text() on X11 has known bugs
-                    // that silently drop characters — clipboard is safer for standard apps.
+                    // Local apps: terminal → clipboard paste, other → xdotool type
                     #[cfg(target_os = "linux")]
-                    let use_clipboard_fallback = !Self::has_native_direct_tool();
+                    let use_clipboard =
+                        Self::is_terminal_focused() || !Self::has_native_direct_tool();
                     #[cfg(not(target_os = "linux"))]
-                    let use_clipboard_fallback = false;
+                    let use_clipboard = false;
 
-                    if use_clipboard_fallback {
-                        crate::dev_log!(
-                            "[OUTPUT] No native typing tool — clipboard fallback"
-                        );
-                        // Step 1: Set clipboard FIRST
-                        self.set_clipboard_text(text)?;
-
-                        // Step 2: Wait for clipboard to settle AND focus to return
-                        // to the target app (KaraokeTyper overlay releases focus)
-                        if self.key_delay_ms > 0 {
-                            thread::sleep(Duration::from_millis(self.key_delay_ms));
-                        }
-
-                        // Step 3: NOW detect terminal (after focus has returned to target)
-                        // This matches the old simulate_paste() timing that worked.
+                    if use_clipboard {
                         #[cfg(target_os = "linux")]
                         let effective_method = Self::resolve_paste_method(&PasteMethod::Direct);
                         #[cfg(not(target_os = "linux"))]
                         let effective_method = PasteMethod::CtrlV;
 
-                        crate::dev_log!("[OUTPUT] Detected paste method: {:?}", effective_method);
+                        crate::dev_log!("[OUTPUT] Clipboard paste ({:?})", effective_method);
 
-                        // Step 4: Send paste shortcut (same chain as send_paste_shortcut)
-                        #[cfg(target_os = "linux")]
-                        {
-                            // X11: xdotool → ydotool → enigo (matches Handy)
-                            let mut sent = false;
-                            if !Self::is_wayland() {
-                                if Self::is_tool_available("xdotool") {
-                                    let key_combo = match &effective_method {
-                                        PasteMethod::CtrlShiftV => "ctrl+shift+v",
-                                        PasteMethod::ShiftInsert => "shift+Insert",
-                                        _ => "ctrl+v",
-                                    };
-                                    if let Ok(output) = std::process::Command::new("xdotool")
-                                        .args(["key", "--clearmodifiers", key_combo])
-                                        .output()
-                                    {
-                                        if output.status.success() {
-                                            sent = true;
-                                        }
-                                    }
-                                }
-                                if !sent && Self::is_tool_available("ydotool") {
-                                    crate::dev_log!("[OUTPUT] Using ydotool for paste shortcut");
-                                    if Self::try_ydotool_shortcut(&effective_method).is_ok() {
-                                        sent = true;
-                                    }
-                                }
-                            }
-                            if !sent {
-                                match Self::try_enigo_shortcut(&effective_method) {
-                                    Ok(()) => {}
-                                    Err(e) => {
-                                        crate::dev_log!(
-                                            "[OUTPUT] enigo shortcut failed: {}, trying uinput...",
-                                            e
-                                        );
-                                        Self::try_uinput_shortcut(&effective_method)?;
-                                    }
-                                }
-                            }
-                        }
+                        self.set_clipboard_text(text)?;
+                        thread::sleep(Duration::from_millis(self.key_delay_ms.max(50)));
+
+                        let saved_method = self.paste_method.clone();
+                        self.paste_method = effective_method;
+                        let shortcut_result = self.send_paste_shortcut();
+                        self.paste_method = saved_method;
+                        shortcut_result?;
+
+                        thread::sleep(Duration::from_millis(50));
                     } else {
                         Self::try_direct_typing(text)?;
                     }
@@ -647,6 +629,17 @@ impl TextOutput {
             }
         }
 
+        // Security: clear clipboard after paste to prevent content leaking
+        // Only for methods that used clipboard (not Direct with native tools)
+        match self.paste_method {
+            PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
+                thread::sleep(Duration::from_millis(100));
+                let _ = self.app_handle.clipboard().write_text("".to_string());
+                crate::dev_log!("[OUTPUT] Clipboard cleared after paste");
+            }
+            _ => {}
+        }
+
         crate::dev_log!(
             "[OUTPUT_TIMING] Total type_text: {}ms",
             t0.elapsed().as_millis()
@@ -656,14 +649,10 @@ impl TextOutput {
         Ok(())
     }
 
-    /// Set clipboard text using the best method for the current platform.
-    /// On Wayland: uses wl-copy which forks a persistent daemon to serve clipboard requests.
-    /// This avoids the race condition where arboard's X11 clipboard content disappears
-    /// when the Clipboard object is dropped before the paste key events are processed.
-    /// On X11 / non-Linux: uses arboard directly.
-    /// Set clipboard text. On Wayland: wl-copy with .status() (blocking, no idle sleep).
-    /// Robust Wayland detection: checks both XDG_SESSION_TYPE and WAYLAND_DISPLAY.
-    /// XDG_SESSION_TYPE can report "x11" even on Wayland (XWayland, Tauri, Electron).
+    /// Set clipboard text using the best tool for the platform.
+    /// Wayland: wl-copy via stdin (text/plain MIME).
+    /// X11: xclip -selection clipboard → tauri plugin fallback.
+    /// Other: tauri-plugin-clipboard-manager.
     #[cfg(target_os = "linux")]
     fn is_wayland() -> bool {
         let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
@@ -672,23 +661,28 @@ impl TextOutput {
     }
 
     /// Set clipboard text using the best tool for the platform.
-    /// Wayland: wl-copy (text/plain MIME, persistent daemon)
-    /// X11: xclip -selection clipboard (proper text/plain for Remmina) → tauri plugin
-    /// Other: tauri-plugin-clipboard-manager
+    /// Wayland: wl-copy via stdin (text/plain MIME).
+    /// X11: xclip -selection clipboard → tauri plugin fallback.
+    /// Other: tauri-plugin-clipboard-manager.
     fn set_clipboard_text(&mut self, text: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
-            // Wayland: wl-copy
+            // Wayland: wl-copy via stdin
             if Self::is_wayland() && Self::is_tool_available("wl-copy") {
                 crate::dev_log!("[OUTPUT] Using wl-copy for clipboard");
-                let status = std::process::Command::new("wl-copy")
-                    .arg("--")
-                    .arg(text)
-                    .stdin(std::process::Stdio::null())
+                let mut child = std::process::Command::new("wl-copy")
+                    .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
-                    .status()
+                    .spawn()
                     .map_err(|e| format!("Failed to run wl-copy: {}", e))?;
+                if let Some(mut stdin) = child.stdin.take() {
+                    use std::io::Write;
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                let status = child
+                    .wait()
+                    .map_err(|e| format!("wl-copy wait failed: {}", e))?;
 
                 if status.success() {
                     crate::dev_log!("[OUTPUT] ✅ wl-copy set clipboard");
@@ -697,28 +691,78 @@ impl TextOutput {
                 crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed, trying next method");
             }
 
-            // X11: xclip (explicit text/plain CLIPBOARD selection — required for Remmina)
-            if !Self::is_wayland() && Self::is_tool_available("xclip") {
+            // X11: xclip → xsel → wl-copy (XWayland fallback)
+            if !Self::is_wayland() {
                 use std::io::Write;
-                crate::dev_log!("[OUTPUT] Using xclip -selection clipboard");
-                if let Ok(mut child) = std::process::Command::new("xclip")
-                    .args(["-selection", "clipboard"])
-                    .stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
+
+                // Try xclip first (most reliable for X11 clipboard)
+                if Self::is_tool_available("xclip") {
+                    crate::dev_log!("[OUTPUT] Using xclip -selection clipboard");
+                    if let Ok(mut child) = std::process::Command::new("xclip")
+                        .args(["-selection", "clipboard"])
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                    {
+                        if let Some(mut stdin) = child.stdin.take() {
+                            let _ = stdin.write_all(text.as_bytes());
+                        }
+                        if let Ok(status) = child.wait() {
+                            if status.success() {
+                                crate::dev_log!("[OUTPUT] ✅ xclip set clipboard");
+                                return Ok(());
+                            }
+                        }
+                    }
+                    crate::dev_log!("[OUTPUT] ⚠️ xclip failed, trying next");
+                }
+
+                // Try xsel (often pre-installed)
+                if Self::is_tool_available("xsel") {
+                    crate::dev_log!("[OUTPUT] Using xsel --clipboard --input");
+                    if let Ok(mut child) = std::process::Command::new("xsel")
+                        .args(["--clipboard", "--input"])
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                    {
+                        if let Some(mut stdin) = child.stdin.take() {
+                            let _ = stdin.write_all(text.as_bytes());
+                        }
+                        if let Ok(status) = child.wait() {
+                            if status.success() {
+                                crate::dev_log!("[OUTPUT] ✅ xsel set clipboard");
+                                return Ok(());
+                            }
+                        }
+                    }
+                    crate::dev_log!("[OUTPUT] ⚠️ xsel failed, trying next");
+                }
+
+                // XWayland: Tauri reports X11 but wl-copy still works
+                // because the real session is Wayland. Essential for clipboard
+                // sync with apps like RustDesk that monitor Wayland clipboard.
+                if Self::is_tool_available("wl-copy") {
+                    crate::dev_log!("[OUTPUT] Using wl-copy (XWayland fallback)");
+                    let mut child = std::process::Command::new("wl-copy")
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()
+                        .map_err(|e| format!("Failed to run wl-copy: {}", e))?;
                     if let Some(mut stdin) = child.stdin.take() {
                         let _ = stdin.write_all(text.as_bytes());
                     }
                     if let Ok(status) = child.wait() {
                         if status.success() {
-                            crate::dev_log!("[OUTPUT] ✅ xclip set clipboard");
+                            crate::dev_log!("[OUTPUT] ✅ wl-copy set clipboard (XWayland)");
                             return Ok(());
                         }
                     }
+                    crate::dev_log!("[OUTPUT] ⚠️ wl-copy failed, trying tauri plugin");
                 }
-                crate::dev_log!("[OUTPUT] ⚠️ xclip failed, trying tauri plugin");
             }
         }
 
@@ -728,34 +772,6 @@ impl TextOutput {
             .clipboard()
             .write_text(text.to_string())
             .map_err(|e| format!("Failed to copy to clipboard: {}", e))
-    }
-
-    #[cfg(target_os = "linux")]
-    #[allow(dead_code)] // Kept as alternative to clipboard+paste
-    fn type_with_ydotool(&self, text: &str) -> Result<(), String> {
-        crate::dev_log!("[OUTPUT] Using ydotool type for Wayland...");
-
-        // ydotool type with key-delay for reliability
-        let output = std::process::Command::new("ydotool")
-            .args(["type", "--key-delay", "8", "--", text])
-            .output()
-            .map_err(|e| {
-                format!(
-                    "Failed to run ydotool: {}. Install with: sudo apt install ydotool",
-                    e
-                )
-            })?;
-
-        if output.status.success() {
-            crate::dev_log!("[OUTPUT] ✅ ydotool typed text successfully");
-            Ok(())
-        } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            crate::dev_log!("[OUTPUT] ydotool stderr: {}", stderr);
-            crate::dev_log!("[OUTPUT] ydotool stdout: {}", stdout);
-            Err(format!("ydotool type failed: {}", stderr))
-        }
     }
 
     /// Send the paste shortcut based on the configured paste_method.
@@ -795,18 +811,39 @@ impl TextOutput {
                 }
                 crate::dev_log!("[OUTPUT] xdotool shortcut failed, trying ydotool...");
             }
-            if Self::is_tool_available("ydotool") {
-                crate::dev_log!("[OUTPUT] Using ydotool for paste shortcut");
-                return Self::try_ydotool_shortcut(&self.paste_method);
-            }
-            // Fallback: enigo
-            match Self::try_enigo_shortcut(&self.paste_method) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    crate::dev_log!("[OUTPUT] enigo failed: {}, trying uinput...", e);
+            // XWayland: wtype works even when Tauri reports X11
+            if Self::is_tool_available("wtype") {
+                crate::dev_log!("[OUTPUT] Trying wtype (XWayland)");
+                match Self::try_wtype_shortcut(&self.paste_method) {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => {
+                        crate::dev_log!("[OUTPUT] wtype not suitable, trying next...");
+                    }
+                    Err(e) => {
+                        crate::dev_log!("[OUTPUT] wtype failed: {}, trying next...", e);
+                    }
                 }
             }
-            Self::try_uinput_shortcut(&self.paste_method)
+            if Self::is_tool_available("ydotool") {
+                crate::dev_log!("[OUTPUT] Using ydotool for paste shortcut");
+                match Self::try_ydotool_shortcut(&self.paste_method) {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        crate::dev_log!("[OUTPUT] ydotool failed: {}, trying enigo...", e);
+                    }
+                }
+            }
+            // Fallback: uinput (kernel-level key events) → enigo (XTest)
+            // UInput is preferred over enigo for remote desktop apps:
+            // its kernel events are processed by X11 like physical key presses,
+            // while enigo's XTest events may be handled differently by RustDesk.
+            match Self::try_uinput_shortcut(&self.paste_method) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    crate::dev_log!("[OUTPUT] uinput failed: {}, trying enigo...", e);
+                }
+            }
+            Self::try_enigo_shortcut(&self.paste_method)
         }
     }
 
@@ -821,6 +858,7 @@ impl TextOutput {
         }
 
         // Method 2: Fallback to GNOME Shell Eval (works on older GNOME versions)
+        crate::dev_log!("[OUTPUT] Trying GNOME Shell Eval fallback (deprecated on GNOME 41+)");
         if let Some(is_terminal) = Self::check_terminal_via_gnome_eval() {
             return is_terminal;
         }
@@ -840,19 +878,10 @@ impl TextOutput {
     }
 
     #[cfg(target_os = "linux")]
-    fn check_terminal_via_extension() -> Option<bool> {
+    fn run_gdbus_with_timeout(args: &[&str], timeout_ms: u64) -> Option<String> {
         let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
         let mut child = std::process::Command::new("gdbus")
-            .args([
-                "call",
-                "--session",
-                "--dest",
-                "org.gnome.Shell",
-                "--object-path",
-                "/org/karaoketyper/FocusedWindow",
-                "--method",
-                "org.karaoketyper.FocusedWindow.GetFocusedWindow",
-            ])
+            .args(args)
             .env("XDG_RUNTIME_DIR", &xdg_runtime)
             .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
             .stdout(std::process::Stdio::piped())
@@ -860,8 +889,7 @@ impl TextOutput {
             .spawn()
             .ok()?;
 
-        // Timeout: 200ms max to avoid blocking paste
-        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
@@ -871,7 +899,7 @@ impl TextOutput {
                             let mut buf = String::new();
                             let mut reader = std::io::BufReader::new(stdout);
                             if reader.read_to_string(&mut buf).is_ok() {
-                                return Some(Self::classify_window_from_dbus(&buf));
+                                return Some(buf);
                             }
                         }
                     }
@@ -879,7 +907,7 @@ impl TextOutput {
                 }
                 Ok(None) => {
                     if std::time::Instant::now() > deadline {
-                        crate::dev_log!("[OUTPUT] D-Bus extension call timed out (200ms)");
+                        crate::dev_log!("[OUTPUT] D-Bus call timed out ({}ms)", timeout_ms);
                         let _ = child.kill();
                         return None;
                     }
@@ -891,8 +919,29 @@ impl TextOutput {
     }
 
     #[cfg(target_os = "linux")]
+    fn check_terminal_via_extension() -> Option<bool> {
+        let output = Self::run_gdbus_with_timeout(
+            &[
+                "call",
+                "--session",
+                "--dest",
+                "org.gnome.Shell",
+                "--object-path",
+                "/org/karaoketyper/FocusedWindow",
+                "--method",
+                "org.karaoketyper.FocusedWindow.GetFocusedWindow",
+            ],
+            200,
+        )?;
+        Some(Self::classify_window_from_dbus(&output))
+    }
+
+    #[cfg(target_os = "linux")]
     fn classify_window_from_dbus(dbus_output: &str) -> bool {
-        let trimmed = dbus_output.trim().trim_start_matches('(').trim_end_matches(')');
+        let trimmed = dbus_output
+            .trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')');
         let parts: Vec<&str> = trimmed.splitn(2, ", ").collect();
         if parts.len() < 2 {
             return false;
@@ -900,20 +949,19 @@ impl TextOutput {
         let wm_class = parts[0].trim().trim_matches('\'').to_lowercase();
         let title = parts[1].trim().trim_matches('\'').to_lowercase();
 
-        crate::dev_log!("[OUTPUT] Window: wm_class='{}', title='{}'", wm_class, title);
+        crate::dev_log!(
+            "[OUTPUT] Window: wm_class='{}', title='{}'",
+            wm_class,
+            title
+        );
 
-        let terminals = [
-            "gnome-terminal", "gnome-terminal-server", "org.gnome.terminal",
-            "konsole", "xterm", "urxvt", "rxvt", "terminator", "tilix",
-            "alacritty", "kitty", "wezterm", "foot", "xfce4-terminal",
-            "mate-terminal", "lxterminal", "qterminal", "terminology",
-            "cool-retro-term", "guake", "tilda", "yakuake", "hyper",
-            "tabby", "warp", "iterm2", "terminal", "blackbox", "ptyxis", "ghostty",
-        ];
-
-        for term in terminals {
-            if wm_class == term || wm_class.ends_with(&format!(".{}", term)) {
-                crate::dev_log!("[OUTPUT] Terminal detected: {} (matched '{}')", wm_class, term);
+        for term in Self::KNOWN_TERMINALS {
+            if wm_class == *term || wm_class.ends_with(&format!(".{}", term)) {
+                crate::dev_log!(
+                    "[OUTPUT] Terminal detected: {} (matched '{}')",
+                    wm_class,
+                    term
+                );
                 return true;
             }
         }
@@ -941,16 +989,17 @@ impl TextOutput {
                         return true;
                     }
                 }
-                let first_segment = title.split(" \u{2014} ").next()
+                let first_segment = title
+                    .split(" \u{2014} ")
+                    .next()
                     .unwrap_or(&title)
-                    .split(" - ").next()
-                    .unwrap_or("").trim();
-                let shell_names = [
-                    "bash", "zsh", "fish", "sh", "python", "node", "npm",
-                    "cargo", "claude", "htop", "vim", "nvim", "ssh", "docker",
-                ];
-                for shell in shell_names {
-                    if first_segment == shell || first_segment.starts_with(&format!("{}:", shell)) {
+                    .split(" - ")
+                    .next()
+                    .unwrap_or("")
+                    .trim();
+                for shell in Self::KNOWN_SHELLS {
+                    if first_segment == *shell || first_segment.starts_with(&format!("{}:", shell))
+                    {
                         crate::dev_log!("[OUTPUT] {} terminal detected: '{}'", editor, shell);
                         return true;
                     }
@@ -966,92 +1015,43 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn check_terminal_via_gnome_eval() -> Option<bool> {
-        let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
-        let mut child = std::process::Command::new("gdbus")
-            .args([
-                "call",
-                "--session",
-                "--dest",
-                "org.gnome.Shell",
-                "--object-path",
-                "/org/gnome/Shell",
-                "--method",
-                "org.gnome.Shell.Eval",
-                "let w = global.display.focus_window; w ? w.get_wm_class() + '|' + w.get_title() : ''",
-            ])
-            .env("XDG_RUNTIME_DIR", &xdg_runtime)
-            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
+        let stdout = Self::run_gdbus_with_timeout(&[
+            "call", "--session", "--dest", "org.gnome.Shell",
+            "--object-path", "/org/gnome/Shell",
+            "--method", "org.gnome.Shell.Eval",
+            "let w = global.display.focus_window; w ? w.get_wm_class() + '|' + w.get_title() : ''",
+        ], 200)?.to_lowercase();
 
-        // Timeout: 200ms max
-        let deadline = std::time::Instant::now() + Duration::from_millis(200);
-        let stdout_str = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    if !status.success() {
-                        return None;
-                    }
-                    if let Some(stdout) = child.stdout.take() {
-                        use std::io::Read;
-                        let mut buf = String::new();
-                        let mut reader = std::io::BufReader::new(stdout);
-                        if reader.read_to_string(&mut buf).is_ok() {
-                            break buf.to_lowercase();
-                        }
-                    }
-                    return None;
+        if stdout.contains("(true,") {
+            for term in Self::KNOWN_TERMINALS {
+                if stdout.contains(term) {
+                    crate::dev_log!("[OUTPUT] GNOME Eval detected terminal: {}", term);
+                    return Some(true);
                 }
-                Ok(None) => {
-                    if std::time::Instant::now() > deadline {
-                        crate::dev_log!("[OUTPUT] GNOME Eval call timed out (200ms)");
-                        let _ = child.kill();
-                        return None;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(_) => return None,
             }
-        };
-
-        {
-            let stdout = &stdout_str;
-            if stdout.contains("(true,") {
-                let terminals = [
-                    "gnome-terminal", "konsole", "xterm", "alacritty", "kitty",
-                    "tilix", "terminator", "urxvt", "foot", "wezterm",
-                    "blackbox", "ptyxis", "ghostty",
-                ];
-                for term in terminals {
-                    if stdout.contains(term) {
-                        crate::dev_log!("[OUTPUT] GNOME Eval detected terminal: {}", term);
-                        return Some(true);
-                    }
-                }
-                let code_editors = ["code", "code-insiders", "code-oss", "codium", "cursor"];
-                for editor in code_editors {
-                    if stdout.contains(editor) {
-                        let shell_names = [
-                            "bash", "zsh", "fish", "sh", "python", "node", "npm",
-                            "cargo", "claude", "htop", "vim", "nvim", "ssh", "docker",
-                        ];
-                        for shell in shell_names {
-                            if let Some(title_start) = stdout.split('|').nth(1) {
-                                let first_segment = title_start.split(" - ").next().unwrap_or("").trim();
-                                if first_segment == shell || first_segment.starts_with(&format!("{}:", shell)) {
-                                    crate::dev_log!("[OUTPUT] GNOME Eval detected VS Code terminal: {}", shell);
-                                    return Some(true);
-                                }
+            let code_editors = ["code", "code-insiders", "code-oss", "codium", "cursor"];
+            for editor in code_editors {
+                if stdout.contains(editor) {
+                    for shell in Self::KNOWN_SHELLS {
+                        if let Some(title_start) = stdout.split('|').nth(1) {
+                            let first_segment =
+                                title_start.split(" - ").next().unwrap_or("").trim();
+                            if first_segment == *shell
+                                || first_segment.starts_with(&format!("{}:", shell))
+                            {
+                                crate::dev_log!(
+                                    "[OUTPUT] GNOME Eval detected VS Code terminal: {}",
+                                    shell
+                                );
+                                return Some(true);
                             }
                         }
-                        crate::dev_log!("[OUTPUT] GNOME Eval detected VS Code editor (not terminal)");
-                        return Some(false);
                     }
+                    crate::dev_log!("[OUTPUT] GNOME Eval detected VS Code editor (not terminal)");
+                    return Some(false);
                 }
-                return Some(false);
             }
+            return Some(false);
         }
         None
     }
@@ -1069,9 +1069,8 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn check_remote_desktop_via_extension() -> Option<bool> {
-        let (xdg_runtime, dbus_addr) = Self::get_dbus_env();
-        let mut child = std::process::Command::new("gdbus")
-            .args([
+        let output = Self::run_gdbus_with_timeout(
+            &[
                 "call",
                 "--session",
                 "--dest",
@@ -1080,55 +1079,29 @@ impl TextOutput {
                 "/org/karaoketyper/FocusedWindow",
                 "--method",
                 "org.karaoketyper.FocusedWindow.GetFocusedWindow",
-            ])
-            .env("XDG_RUNTIME_DIR", &xdg_runtime)
-            .env("DBUS_SESSION_BUS_ADDRESS", &dbus_addr)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
+            ],
+            200,
+        )?;
 
-        let deadline = std::time::Instant::now() + Duration::from_millis(200);
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    if status.success() {
-                        if let Some(stdout) = child.stdout.take() {
-                            use std::io::Read;
-                            let mut buf = String::new();
-                            let mut reader = std::io::BufReader::new(stdout);
-                            if reader.read_to_string(&mut buf).is_ok() {
-                                let trimmed = buf.trim().trim_start_matches('(').trim_end_matches(')');
-                                let wm_class = trimmed.splitn(2, ", ").next()
-                                    .unwrap_or("")
-                                    .trim().trim_matches('\'')
-                                    .to_lowercase();
-                                let remote_apps = ["rustdesk", "anydesk", "vinagre"];
-                                for app in remote_apps {
-                                    if wm_class == app || wm_class.contains(app) {
-                                        crate::dev_log!(
-                                            "[OUTPUT] Remote desktop '{}' detected — forcing direct typing",
-                                            app
-                                        );
-                                        return Some(true);
-                                    }
-                                }
-                                return Some(false);
-                            }
-                        }
-                    }
-                    return None;
-                }
-                Ok(None) => {
-                    if std::time::Instant::now() > deadline {
-                        let _ = child.kill();
-                        return None;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Err(_) => return None,
+        let trimmed = output.trim().trim_start_matches('(').trim_end_matches(')');
+        let wm_class = trimmed
+            .split_once(", ")
+            .map(|(first, _)| first)
+            .unwrap_or("")
+            .trim()
+            .trim_matches('\'')
+            .to_lowercase();
+
+        for app in Self::REMOTE_DESKTOP_APPS {
+            if wm_class == *app || wm_class.contains(app) {
+                crate::dev_log!(
+                    "[OUTPUT] Remote desktop '{}' detected — forcing direct typing",
+                    app
+                );
+                return Some(true);
             }
         }
+        Some(false)
     }
 
     /// Resolve the effective paste method for clipboard-based paste.
@@ -1194,7 +1167,8 @@ impl TextOutput {
 
             crate::dev_log!(
                 "[OUTPUT] Direct typing: is_wayland={}, kde={}",
-                is_wayland, is_kde
+                is_wayland,
+                is_kde
             );
 
             if is_wayland {
@@ -1221,7 +1195,10 @@ impl TextOutput {
                 // that get garbled on AZERTY/QWERTZ layouts.
                 if Self::is_tool_available("xdotool") {
                     crate::dev_log!("[OUTPUT] Direct: using xdotool");
-                    return Self::run_direct_tool("xdotool", &["type", "--clearmodifiers", "--", text]);
+                    return Self::run_direct_tool(
+                        "xdotool",
+                        &["type", "--clearmodifiers", "--", text],
+                    );
                 }
             }
             crate::dev_log!("[OUTPUT] No native tool found, falling back to enigo");
@@ -1239,7 +1216,8 @@ impl TextOutput {
             .map_err(|e| format!("Failed to create enigo: {}", e))?;
 
         crate::dev_log!("[OUTPUT] enigo: typing {} chars directly...", text.len());
-        enigo.text(text)
+        enigo
+            .text(text)
             .map_err(|e| format!("enigo text() failed: {}", e))?;
 
         crate::dev_log!("[OUTPUT] ✅ enigo direct typing complete");
@@ -1250,27 +1228,27 @@ impl TextOutput {
     #[cfg(target_os = "linux")]
     fn is_tool_available(tool: &str) -> bool {
         use std::collections::HashMap;
+        use std::sync::Mutex;
         use std::sync::OnceLock;
 
-        static CACHE: OnceLock<HashMap<String, bool>> = OnceLock::new();
+        static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
 
-        // Initialize cache on first call with all tools we might need
-        let cache = CACHE.get_or_init(|| {
-            let tools = ["wtype", "kwtype", "xdotool", "dotool", "ydotool", "wl-copy"];
-            let mut map = HashMap::new();
-            for t in tools {
-                let available = std::process::Command::new("which")
-                    .arg(t)
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-                crate::dev_log!("[OUTPUT] Tool '{}': {}", t, if available { "available" } else { "not found" });
-                map.insert(t.to_string(), available);
-            }
-            map
-        });
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
 
-        cache.get(tool).copied().unwrap_or(false)
+        *map.entry(tool.to_string()).or_insert_with(|| {
+            let available = std::process::Command::new("which")
+                .arg(tool)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            crate::dev_log!(
+                "[OUTPUT] Tool '{}': {}",
+                tool,
+                if available { "available" } else { "not found" }
+            );
+            available
+        })
     }
 
     /// Run a direct typing tool with args.
@@ -1329,37 +1307,48 @@ impl TextOutput {
         match paste_method {
             PasteMethod::CtrlShiftV => {
                 crate::dev_log!("[OUTPUT] Using enigo for Ctrl+Shift+V...");
-                enigo.key(Key::Control, enigo::Direction::Press)
+                enigo
+                    .key(Key::Control, enigo::Direction::Press)
                     .map_err(|e| format!("enigo Ctrl press: {}", e))?;
-                enigo.key(Key::Shift, enigo::Direction::Press)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Press)
                     .map_err(|e| format!("enigo Shift press: {}", e))?;
-                enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+                enigo
+                    .key(Key::Unicode('v'), enigo::Direction::Click)
                     .map_err(|e| format!("enigo V click: {}", e))?;
                 thread::sleep(Duration::from_millis(50));
-                enigo.key(Key::Shift, enigo::Direction::Release)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Release)
                     .map_err(|e| format!("enigo Shift release: {}", e))?;
-                enigo.key(Key::Control, enigo::Direction::Release)
+                enigo
+                    .key(Key::Control, enigo::Direction::Release)
                     .map_err(|e| format!("enigo Ctrl release: {}", e))?;
             }
             PasteMethod::ShiftInsert => {
                 crate::dev_log!("[OUTPUT] Using enigo for Shift+Insert...");
-                enigo.key(Key::Shift, enigo::Direction::Press)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Press)
                     .map_err(|e| format!("enigo Shift press: {}", e))?;
-                enigo.key(Key::Other(0x6C), enigo::Direction::Click) // Insert key
+                enigo
+                    .key(Key::Other(0x6C), enigo::Direction::Click) // Insert key
                     .map_err(|e| format!("enigo Insert click: {}", e))?;
                 thread::sleep(Duration::from_millis(50));
-                enigo.key(Key::Shift, enigo::Direction::Release)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Release)
                     .map_err(|e| format!("enigo Shift release: {}", e))?;
             }
             _ => {
                 // Default: Ctrl+V
                 crate::dev_log!("[OUTPUT] Using enigo for Ctrl+V...");
-                enigo.key(Key::Control, enigo::Direction::Press)
+                enigo
+                    .key(Key::Control, enigo::Direction::Press)
                     .map_err(|e| format!("enigo Ctrl press: {}", e))?;
-                enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+                enigo
+                    .key(Key::Unicode('v'), enigo::Direction::Click)
                     .map_err(|e| format!("enigo V click: {}", e))?;
                 thread::sleep(Duration::from_millis(50));
-                enigo.key(Key::Control, enigo::Direction::Release)
+                enigo
+                    .key(Key::Control, enigo::Direction::Release)
                     .map_err(|e| format!("enigo Ctrl release: {}", e))?;
             }
         }
@@ -1370,28 +1359,21 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn try_uinput_shortcut(paste_method: &PasteMethod) -> Result<(), String> {
-        linux_output::with_uinput(|device| {
-            match paste_method {
-                PasteMethod::CtrlShiftV => {
-                    crate::dev_log!("[OUTPUT] Using uinput for Ctrl+Shift+V...");
-                    device.ctrl_shift_v()
-                }
-                _ => {
-                    crate::dev_log!("[OUTPUT] Using uinput for Ctrl+V...");
-                    device.ctrl_v()
-                }
+        linux_output::with_uinput(|device| match paste_method {
+            PasteMethod::CtrlShiftV => {
+                crate::dev_log!("[OUTPUT] Using uinput for Ctrl+Shift+V...");
+                device.ctrl_shift_v()
+            }
+            _ => {
+                crate::dev_log!("[OUTPUT] Using uinput for Ctrl+V...");
+                device.ctrl_v()
             }
         })
     }
 
     #[cfg(target_os = "linux")]
     fn try_wtype_shortcut(paste_method: &PasteMethod) -> Result<bool, String> {
-        if !std::process::Command::new("which")
-            .arg("wtype")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
+        if !Self::is_tool_available("wtype") {
             return Ok(false);
         }
 
@@ -1482,7 +1464,10 @@ impl TextOutput {
         let mut enigo = Enigo::new(&Settings::default())
             .map_err(|e| format!("Failed to create enigo instance: {}", e))?;
 
-        crate::dev_log!("[OUTPUT] Sending paste shortcut with enigo ({:?})...", self.paste_method);
+        crate::dev_log!(
+            "[OUTPUT] Sending paste shortcut with enigo ({:?})...",
+            self.paste_method
+        );
 
         #[cfg(target_os = "macos")]
         let modifier = Key::Meta;
@@ -1491,59 +1476,40 @@ impl TextOutput {
 
         match self.paste_method {
             PasteMethod::CtrlShiftV => {
-                enigo.key(modifier, enigo::Direction::Press)
+                enigo
+                    .key(modifier, enigo::Direction::Press)
                     .map_err(|e| format!("Failed to press modifier: {}", e))?;
-                enigo.key(Key::Shift, enigo::Direction::Press)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Press)
                     .map_err(|e| format!("Failed to press Shift: {}", e))?;
                 thread::sleep(Duration::from_millis(10));
-                enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+                enigo
+                    .key(Key::Unicode('v'), enigo::Direction::Click)
                     .map_err(|e| format!("Failed to press V: {}", e))?;
                 thread::sleep(Duration::from_millis(10));
-                enigo.key(Key::Shift, enigo::Direction::Release)
+                enigo
+                    .key(Key::Shift, enigo::Direction::Release)
                     .map_err(|e| format!("Failed to release Shift: {}", e))?;
-                enigo.key(modifier, enigo::Direction::Release)
+                enigo
+                    .key(modifier, enigo::Direction::Release)
                     .map_err(|e| format!("Failed to release modifier: {}", e))?;
             }
             _ => {
                 // Default: Ctrl+V / Cmd+V
-                enigo.key(modifier, enigo::Direction::Press)
+                enigo
+                    .key(modifier, enigo::Direction::Press)
                     .map_err(|e| format!("Failed to press modifier: {}", e))?;
                 thread::sleep(Duration::from_millis(10));
-                enigo.key(Key::Unicode('v'), enigo::Direction::Click)
+                enigo
+                    .key(Key::Unicode('v'), enigo::Direction::Click)
                     .map_err(|e| format!("Failed to press V: {}", e))?;
                 thread::sleep(Duration::from_millis(10));
-                enigo.key(modifier, enigo::Direction::Release)
+                enigo
+                    .key(modifier, enigo::Direction::Release)
                     .map_err(|e| format!("Failed to release modifier: {}", e))?;
             }
         }
 
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub fn type_text_direct(&mut self, text: &str) -> Result<(), String> {
-        if text.is_empty() {
-            return Ok(());
-        }
-
-        crate::dev_log!("[OUTPUT] Typing text directly: '{}'", text);
-
-        #[cfg(target_os = "linux")]
-        {
-            linux_output::with_uinput(|device| device.type_text(text))?;
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            use enigo::{Enigo, Keyboard, Settings};
-            let mut enigo = Enigo::new(&Settings::default())
-                .map_err(|e| format!("Failed to create enigo: {}", e))?;
-            enigo
-                .text(text)
-                .map_err(|e| format!("Failed to type text: {}", e))?;
-        }
-
-        crate::dev_log!("[OUTPUT] ✅ Text typed successfully");
         Ok(())
     }
 }
@@ -1600,7 +1566,9 @@ mod tests {
         #[test]
         fn test_is_tool_available_nonexistent() {
             // A tool that definitely doesn't exist
-            assert!(!TextOutput::is_tool_available("this_tool_does_not_exist_xyz"));
+            assert!(!TextOutput::is_tool_available(
+                "this_tool_does_not_exist_xyz"
+            ));
         }
 
         #[test]
@@ -1638,7 +1606,8 @@ mod tests {
             for c in accented {
                 assert!(
                     !keymap.contains_key(&c),
-                    "Accented char '{}' unexpectedly in keymap", c
+                    "Accented char '{}' unexpectedly in keymap",
+                    c
                 );
             }
         }

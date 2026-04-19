@@ -17,7 +17,10 @@ pub fn play_stop_sound(volume: f32) {
 
 fn play_embedded_sound(data: &'static [u8], volume: f32) {
     // Skip if another sound is already playing
-    if PLAYING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if PLAYING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return;
     }
 

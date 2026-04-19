@@ -63,21 +63,23 @@ fn detect_vram_linux() -> Option<u32> {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Some(first_line) = stdout.trim().lines().next() {
-            if let Ok(mb) = first_line.trim().parse::<u32>() {
-                return Some(mb);
-            }
+                if let Ok(mb) = first_line.trim().parse::<u32>() {
+                    return Some(mb);
+                }
             }
         }
     }
 
     // Try AMD sysfs (AMD GPUs)
-    for entry in std::fs::read_dir("/sys/class/drm").into_iter().flatten() {
-        if let Ok(entry) = entry {
-            let vram_path = entry.path().join("device/mem_info_vram_total");
-            if let Ok(contents) = std::fs::read_to_string(&vram_path) {
-                if let Ok(bytes) = contents.trim().parse::<u64>() {
-                    return Some((bytes / (1024 * 1024)).min(u32::MAX as u64) as u32);
-                }
+    for entry in std::fs::read_dir("/sys/class/drm")
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let vram_path = entry.path().join("device/mem_info_vram_total");
+        if let Ok(contents) = std::fs::read_to_string(&vram_path) {
+            if let Ok(bytes) = contents.trim().parse::<u64>() {
+                return Some((bytes / (1024 * 1024)).min(u32::MAX as u64) as u32);
             }
         }
     }
@@ -113,16 +115,15 @@ pub fn detect_gpu() -> GpuDetectionResult {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 let lower = line.to_lowercase();
-                if lower.contains("vga") || lower.contains("3d") || lower.contains("display") {
-                    if lower.contains("nvidia")
+                if (lower.contains("vga") || lower.contains("3d") || lower.contains("display"))
+                    && (lower.contains("nvidia")
                         || lower.contains("amd")
-                        || lower.contains("intel")
-                    {
-                        if let Some(name_part) = line.split(':').nth(2) {
-                            device_name = Some(name_part.trim().to_string());
-                            has_vulkan = true;
-                            break;
-                        }
+                        || lower.contains("intel"))
+                {
+                    if let Some(name_part) = line.split(':').nth(2) {
+                        device_name = Some(name_part.trim().to_string());
+                        has_vulkan = true;
+                        break;
                     }
                 }
             }

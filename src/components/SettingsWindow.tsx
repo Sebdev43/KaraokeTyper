@@ -61,6 +61,8 @@ function SettingsWindow() {
     setSelectedDevice,
     shortcut,
     setShortcut,
+    sttBackend,
+    setSttBackend,
     model,
     setModel,
     language,
@@ -167,6 +169,7 @@ function SettingsWindow() {
       if (result.status === "ok") {
         setShortcut(result.data.shortcut);
         setSelectedDevice(result.data.audio_device_index);
+        setSttBackend(result.data.stt_backend ?? "whisper");
         setModel(result.data.model);
         setLanguage(result.data.language);
         setUseGpuAcceleration(result.data.use_gpu ?? false);
@@ -186,6 +189,7 @@ function SettingsWindow() {
   }, [
     setShortcut,
     setSelectedDevice,
+    setSttBackend,
     setModel,
     setLanguage,
     setUseGpuAcceleration,
@@ -526,6 +530,7 @@ function SettingsWindow() {
         custom_words_threshold: customWordsThreshold,
         filler_removal_enabled: fillerRemovalEnabled,
         stutter_collapse_enabled: stutterCollapseEnabled,
+        stt_backend: sttBackend,
       };
 
       const result = await commands.saveSettings(config);
@@ -545,7 +550,7 @@ function SettingsWindow() {
 
   const handleInstallSystem = async () => {
     const confirmed = await confirm(
-      "Configurer les permissions système ?\n\nCela va :\n• Configurer evdev pour le push-to-talk\n• Peut nécessiter le redémarrage de l'application",
+      "Configurer les permissions système ?\n\nCela va :\n• Configurer evdev pour le push-to-talk\n• Installer xdotool (saisie de texte)\n• Installer xclip (clipboard pour RustDesk/Remmina)\n• Peut nécessiter le redémarrage de l'application",
       { title: "Configuration KaraokeTyper", kind: "warning" },
     );
 
@@ -912,22 +917,66 @@ function SettingsWindow() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
+                  <Label htmlFor="stt-backend">Moteur STT (auto-hébergé)</Label>
+                  <Select
+                    value={sttBackend}
+                    onValueChange={(value) => {
+                      const next = value as typeof sttBackend;
+                      setSttBackend(next);
+                      const first = installedModels.find(
+                        (m) =>
+                          (m.engine_type ?? "whisper") === next && m.installed,
+                      );
+                      if (first) setModel(first.name);
+                    }}
+                  >
+                    <SelectTrigger id="stt-backend">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="whisper">
+                        Whisper — généraliste, multi-langue (FR inclus)
+                      </SelectItem>
+                      <SelectItem value="sense-voice" disabled>
+                        SenseVoice — multilingue (FR/EN/ES/DE) · bientôt
+                      </SelectItem>
+                      <SelectItem value="moonshine" disabled>
+                        Moonshine — ultra-léger (EN) · bientôt
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    100 % local. Les moteurs « bientôt » arrivent quand la
+                    feature ONNX de transcribe-rs sera activée.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
                   <Label htmlFor="model">Modèle actif</Label>
                   <Select value={model} onValueChange={setModel}>
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {installedModels.map((modelInfo) => (
-                        <SelectItem
-                          key={modelInfo.name}
-                          value={modelInfo.name}
-                          disabled={!modelInfo.installed}
-                        >
-                          {modelInfo.display_name} - {modelInfo.size_mb} MB
-                          {!modelInfo.installed && " (Non installé)"}
-                        </SelectItem>
-                      ))}
+                      {installedModels
+                        .filter(
+                          (m) => (m.engine_type ?? "whisper") === sttBackend,
+                        )
+                        .map((modelInfo) => (
+                          <SelectItem
+                            key={modelInfo.name}
+                            value={modelInfo.name}
+                            disabled={
+                              !modelInfo.installed || modelInfo.coming_soon
+                            }
+                          >
+                            {modelInfo.display_name} - {modelInfo.size_mb} MB
+                            {modelInfo.coming_soon && " (bientôt)"}
+                            {!modelInfo.installed &&
+                              !modelInfo.coming_soon &&
+                              " (Non installé)"}
+                          </SelectItem>
+                        ))}
                     </SelectContent>
                   </Select>
                   {model &&

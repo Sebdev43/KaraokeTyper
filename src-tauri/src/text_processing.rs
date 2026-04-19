@@ -30,17 +30,54 @@ pub fn build_initial_prompt(custom_words: &[String], language: &str) -> String {
 /// silence or ambiguous audio. Matched case-insensitively; removed from the
 /// output before any other processing so they never reach the user.
 const HALLUCINATED_PHRASES: &[&str] = &[
+    // — French —
     "sous-titrage société radio-canada",
     "sous-titres réalisés par la communauté d'amara.org",
     "sous-titres réalisés par la communauté d'amara",
     "sous-titres réalisés para la communauté d'amara.org",
+    "sous-titres faits par la communauté d'amara.org",
     "sous-titrage st' 501",
+    "sous-titrage fr 2021",
+    "sous-titrage mfp",
+    "sous-titres par soustitreur.com",
     "merci d'avoir regardé cette vidéo",
     "merci d'avoir regardé la vidéo",
+    "merci d'avoir regardé",
     "abonnez-vous à la chaîne",
     "n'oubliez pas de vous abonner",
+    "cliquez sur la cloche",
+    "à la prochaine",
+    // — English —
     "thanks for watching",
+    "thanks for watching!",
+    "thank you for watching",
+    "please subscribe to my channel",
+    "please like and subscribe",
+    "like and subscribe",
+    "don't forget to subscribe",
+    "see you in the next video",
+    "see you next time",
     "subtitles by the amara.org community",
+    "captions by the amara.org community",
+    // — Spanish —
+    "subtítulos realizados por la comunidad de amara.org",
+    "gracias por ver el video",
+    "suscríbete al canal",
+    // — German —
+    "untertitelung des zdf für funk",
+    "untertitel der amara.org-community",
+    "vielen dank fürs zuschauen",
+    "danke fürs zuschauen",
+    // — Italian —
+    "sottotitoli e revisione a cura di qtss",
+    "sottotitoli creati dalla comunità amara.org",
+    "grazie per l'attenzione",
+    "grazie per aver guardato il video",
+    // — Portuguese —
+    "legendas pela comunidade amara.org",
+    "obrigado por assistir",
+    // — Dutch —
+    "ondertiteld door de amara.org gemeenschap",
 ];
 
 /// Full text processing pipeline.

@@ -5,6 +5,13 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-04-19
+
+### Changed
+
+- **CI: GitHub Actions bumpées vers versions Node 24 compatibles**: `actions/checkout@v4→v5`, `actions/setup-node@v4→v5`, `actions/github-script@v7→v8`. Node runtime des builds: `20→22` (LTS). Préparation de la deadline GitHub du 16 septembre 2026 (suppression totale de Node 20 des runners)
+- **Logs release 100% silencieux**: Conversion des 11 `println!`/`eprintln!` résiduels (`config.rs`, `output.rs`, `autostart.rs`) en `crate::dev_log!` — en release builds, **aucune** sortie console côté Rust (seuls les messages de la lib ALSA système restent, non contrôlables)
+
 ## [1.3.1] - 2026-04-19
 
 ### Added

@@ -5,6 +5,17 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-04-19
+
+### Added
+
+- **Blacklist d'hallucinations Whisper multilingue** (`text_processing.rs`): 38 phrases hallucinées sur 7 langues (FR, EN, ES, DE, IT, PT, NL). Source : Reddit r/LocalLLaMA, dataset `sachaarbonel/whisper-hallucinations` (HuggingFace), papier "Careless Whisper" (FAccT 2024). Supprime les outros YouTube, watermarks de sous-titres, appels à s'abonner qui apparaissent sur silence ou audio ambigu
+- **Premier pass de strip hallucinations**: `strip_hallucinated_phrases()` applique un match case-insensitive avec double-pass pour les émissions répétées consécutives du modèle
+
+### Fixed
+
+- **Reconfiguration hotkey evdev à chaud**: `reconfigure()` couvre désormais les transitions de classe de device (clavier → souris), ce qui corrige le raccourci qui ne se mettait pas à jour au save_settings quand on passait d'un type d'input à un autre
+
 ## [1.3.0] - 2026-03-31
 
 ### Added

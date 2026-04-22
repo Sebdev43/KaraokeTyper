@@ -936,7 +936,10 @@ function SettingsWindow() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="whisper">
-                        Whisper — généraliste, multi-langue (FR inclus)
+                        Whisper — généraliste, 99 langues
+                      </SelectItem>
+                      <SelectItem value="parakeet">
+                        Parakeet V3 ⭐ — FR + 24 langues UE, très précis
                       </SelectItem>
                       <SelectItem value="sense-voice" disabled>
                         SenseVoice — multilingue (FR/EN/ES/DE) · bientôt
@@ -947,8 +950,8 @@ function SettingsWindow() {
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    100 % local. Les moteurs « bientôt » arrivent quand la
-                    feature ONNX de transcribe-rs sera activée.
+                    100 % local. Parakeet V3 auto-détecte la langue dans son set
+                    de 25. Whisper accepte une langue explicite.
                   </p>
                 </div>
 
@@ -1646,7 +1649,7 @@ function SettingsWindow() {
               <CardContent className="flex flex-col gap-4">
                 <div>
                   <p className="text-sm text-muted-foreground">
-                    KaraokeTyper v1.4.0
+                    KaraokeTyper v1.5.0
                   </p>
                   <p className="text-sm text-muted-foreground">
                     Dictée vocale hors-ligne pour{" "}

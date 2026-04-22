@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use transcribe_rs::{
-    engines::whisper::{WhisperEngine, WhisperInferenceParams},
+    engines::{
+        parakeet::{ParakeetEngine, ParakeetInferenceParams, ParakeetModelParams},
+        whisper::{WhisperEngine, WhisperInferenceParams},
+    },
     TranscriptionEngine,
 };
 
@@ -10,22 +13,26 @@ use super::types::EngineType;
 
 /// Unified handle for any loaded speech-to-text engine.
 ///
-/// Lot 2: Whisper only. SenseVoice / Moonshine / MistralApi variants are
-/// added in lots 4 and 5 once their features land in `Cargo.toml`.
+/// Currently shipped: Whisper + Parakeet V3. SenseVoice / Moonshine variants
+/// are kept as placeholders — they need their own Cargo features and have no
+/// French support so they're de-prioritized.
 pub enum LoadedEngine {
     Whisper(WhisperEngine),
+    Parakeet(ParakeetEngine),
 }
 
 impl LoadedEngine {
     pub fn engine_type(&self) -> EngineType {
         match self {
             Self::Whisper(_) => EngineType::Whisper,
+            Self::Parakeet(_) => EngineType::Parakeet,
         }
     }
 
     pub fn backend_name(&self) -> &'static str {
         match self {
             Self::Whisper(_) => "transcribe-rs/whisper",
+            Self::Parakeet(_) => "transcribe-rs/parakeet",
         }
     }
 }
@@ -52,6 +59,16 @@ pub fn load(engine_type: EngineType, model_path: &Path) -> Result<LoadedEngine, 
                 .load_model(model_path)
                 .map_err(|e| SttError::LoadError(format!("whisper: {e}")))?;
             Ok(LoadedEngine::Whisper(engine))
+        }
+        EngineType::Parakeet => {
+            // Parakeet expects the **directory** extracted from the .tar.gz
+            // (e.g. `.../models/parakeet-tdt-0.6b-v3-int8/`), not a single
+            // file. `model_downloader` extracts automatically before calling us.
+            let mut engine = ParakeetEngine::new();
+            engine
+                .load_model_with_params(model_path, ParakeetModelParams::int8())
+                .map_err(|e| SttError::LoadError(format!("parakeet: {e}")))?;
+            Ok(LoadedEngine::Parakeet(engine))
         }
         EngineType::SenseVoice | EngineType::Moonshine => {
             Err(SttError::BackendUnavailable(format!(
@@ -92,6 +109,36 @@ pub fn transcribe(
                 .map_err(|e| SttError::TranscribeError(format!("whisper: {e}")))?;
             Ok(result.text)
         }
+        LoadedEngine::Parakeet(parakeet) => {
+            // Parakeet V3 auto-detects language from its 27-language training
+            // set — no language/translate/initial_prompt hooks. We explicitly
+            // ignore those parameters to keep the engines interchangeable,
+            // but warn once per call when the caller asked for something we
+            // can't honour so the UI decision stays auditable.
+            if translate {
+                crate::dev_log!(
+                    "[STT/Parakeet] 'translate' ignored — Parakeet V3 doesn't support translation."
+                );
+            }
+            if let Some(prompt) = initial_prompt {
+                if !prompt.is_empty() {
+                    crate::dev_log!(
+                        "[STT/Parakeet] initial_prompt ignored — Parakeet has no prompting."
+                    );
+                }
+            }
+            if !language.is_empty() && !language.eq_ignore_ascii_case("auto") {
+                crate::dev_log!(
+                    "[STT/Parakeet] language hint '{}' ignored — model auto-detects.",
+                    language
+                );
+            }
+            let params = ParakeetInferenceParams::default();
+            let result = parakeet
+                .transcribe_samples(audio, Some(params))
+                .map_err(|e| SttError::TranscribeError(format!("parakeet: {e}")))?;
+            Ok(result.text)
+        }
     }
 }
 
@@ -99,6 +146,7 @@ pub fn transcribe(
 pub fn unload(engine: &mut LoadedEngine) {
     match engine {
         LoadedEngine::Whisper(e) => e.unload_model(),
+        LoadedEngine::Parakeet(e) => e.unload_model(),
     }
 }
 

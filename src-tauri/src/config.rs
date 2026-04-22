@@ -113,7 +113,9 @@ fn default_custom_words_threshold() -> f32 {
 fn auto_detect_gpu() -> bool {
     let gpu_compiled = cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal");
     if gpu_compiled {
-        crate::dev_log!("[GPU] Auto-enabling GPU (compiled with GPU support, first launch or new field)");
+        crate::dev_log!(
+            "[GPU] Auto-enabling GPU (compiled with GPU support, first launch or new field)"
+        );
     }
     gpu_compiled
 }

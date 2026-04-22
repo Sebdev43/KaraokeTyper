@@ -1,6 +1,6 @@
 [package]
 name = "karaoketyper"
-version = "1.4.0"
+version = "1.5.0"
 description = "Offline cross-platform voice dictation with push-to-talk"
 authors = ["KaraokeTyper Team"]
 edition = "2021"
@@ -52,6 +52,15 @@ hound = "3.5"
 # Zip archive for GNOME extension packaging
 zip = "2.2"
 
+# SHA-256 for verifying model bundle integrity during download.
+sha2 = "0.10"
+
+# Tar + gzip for extracting ONNX model bundles (kept for future engines that
+# actually ship as .tar.gz; Parakeet V3 is fetched as individual files with
+# per-file SHA-256 verification instead).
+tar = "0.4"
+flate2 = "1"
+
 # Lock-free ring buffer for zero-latency audio capture
 ringbuf = "0.4"
 
@@ -66,7 +75,7 @@ rdev = "0.5"
 
 # Speech-to-text — unified multi-backend engine (Whisper + ONNX engines)
 # Whisper feature kept active; ONNX engines added in lot 4.
-transcribe-rs = { version = "=0.2.8", features = ["whisper"] }
+transcribe-rs = { version = "=0.2.8", features = ["whisper", "parakeet"] }
 
 # Voice Activity Detection (Silero VAD v4) — direct ort usage
 # vad-rs crates.io pins ort rc.9 which doesn't compile on Rust 1.92+

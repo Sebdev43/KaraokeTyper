@@ -5,6 +5,28 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-04-22
+
+### Added
+
+- **Moteur STT Parakeet V3** (NVIDIA, int8 ONNX via `transcribe-rs`): 25 langues UE dont le français, auto-détection de la langue, très bonne précision sur voix lente et rapide. Sélectionnable dans **Paramètres → Reconnaissance vocale**
+- **Téléchargement sécurisé multi-fichiers** (`model_downloader.rs`): 6 fichiers ONNX récupérés depuis HuggingFace (`istupakov/parakeet-tdt-0.6b-v3-onnx`, commit pinné), **chaque fichier vérifié contre un SHA-256 hardcodé** avant installation. Si un fichier est modifié en amont, l'install est refusée
+- **Protection anti-concurrence** : `Mutex<HashSet>` global empêche deux téléchargements simultanés du même modèle de se corrompre mutuellement
+- **Replace atomique avec backup** : le modèle existant est renommé `.old` avant installation du nouveau, restauré en cas d'échec — plus de perte de modèle sur crash
+- **Cap taille téléchargement** : abort automatique au-delà de 1.5× la taille déclarée (défense anti-zip-bomb / serveur malveillant)
+
+### Changed
+
+- `EngineType::Parakeet` ajouté à l'enum STT, suivi de `supported_languages()` qui expose la liste des codes ISO par moteur
+- `ModelInfo` gagne un champ `files: Vec<ModelFile>` (filename + url + sha256) pour les modèles multi-fichiers
+- Déps: `sha2 = "0.10"` pour l'intégrité, `tar = "0.4"` + `flate2 = "1"` pour les futurs engines archive-based
+
+### Security
+
+- Validation stricte des manifests modèles : rejet des filenames contenant `..`, chemins absolus, NUL bytes
+- Validation stricte des SHA-256 : exactement 64 caractères hexadécimaux
+- Architecture sans dépendance tar.gz pour Parakeet (évite les attaques tar-slip / symlink escape)
+
 ## [1.4.0] - 2026-04-22
 
 ### Added

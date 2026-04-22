@@ -232,10 +232,10 @@ fn parakeet_v3_files() -> Vec<ModelFile> {
             "encoder-model.int8.onnx",
             "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09",
         ),
-        f(
-            "encoder-model.onnx.data",
-            "9a22d372c51455c34f13405da2520baefb7125bd16981397561423ed32d24f36",
-        ),
+        // encoder-model.onnx.data (2.3 GB fp32 weights) is deliberately NOT
+        // downloaded — it's the external weights blob referenced by
+        // encoder-model.onnx (fp32). transcribe-rs loads encoder-model.int8.onnx
+        // (weights inline in the int8 file), so the fp32 data is dead weight.
         f(
             "decoder_joint-model.int8.onnx",
             "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70",
@@ -264,10 +264,12 @@ fn get_onnx_models() -> Vec<ModelInfo> {
         ModelInfo {
             name: "parakeet-tdt-0.6b-v3-int8".to_string(),
             display_name: "Parakeet V3 (FR + 24 langues UE) ⭐ Recommandé FR".to_string(),
-            size_mb: 620,
+            // 640 MB = 622 (encoder int8) + 17 (decoder int8) + <1 (tiny files).
+            // The 2.3 GB encoder-model.onnx.data (fp32) is intentionally excluded.
+            size_mb: 640,
             url: String::new(),
             installed: false,
-            description: "620 MB • 25 langues UE dont français • Très bonne précision, rapide CPU"
+            description: "640 MB • 25 langues UE dont français • CPU, ~3-5× temps réel"
                 .to_string(),
             engine_type: EngineType::Parakeet,
             is_directory: true,
@@ -1071,7 +1073,13 @@ mod tests {
         assert!(parakeet.supported_languages.iter().any(|l| l == "fr"));
         // Multi-file bundle: url is empty, files list is populated.
         assert!(parakeet.url.is_empty());
-        assert_eq!(parakeet.files.len(), 6);
+        // 5 files: config.json, vocab.txt, encoder int8, decoder int8, nemo128.
+        // We intentionally skip encoder-model.onnx.data (2.3 GB fp32 weights,
+        // unused in int8 path).
+        assert_eq!(parakeet.files.len(), 5);
+        let names: Vec<&str> = parakeet.files.iter().map(|f| f.filename.as_str()).collect();
+        assert!(names.contains(&"encoder-model.int8.onnx"));
+        assert!(!names.contains(&"encoder-model.onnx.data"));
         for f in &parakeet.files {
             assert!(f.url.starts_with("https://huggingface.co/"));
             assert_eq!(

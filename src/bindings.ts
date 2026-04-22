@@ -261,6 +261,40 @@ async checkOllamaStatus() : Promise<Result<OllamaStatus, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+/**
+ * Check GitHub Releases for a newer version. Returns `None` if up to date.
+ */
+async checkForUpdateCmd() : Promise<Result<UpdateInfo | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("check_for_update_cmd") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Install an update, choosing the path according to how the app was installed.
+ * 
+ * - AppImage/MSI/EXE/DMG: delegate to `tauri-plugin-updater` (full auto).
+ * - .deb: download + `pkexec apt install` + exit the app.
+ * - Everything else: error (frontend should fall back to opening the
+ * release page in the browser).
+ */
+async installUpdateCmd() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("install_update_cmd") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Returns how the running binary was installed (for the UI to decide whether
+ * to offer "Install now" or "Open release page").
+ */
+async getInstallKindCmd() : Promise<InstallKind> {
+    return await TAURI_INVOKE("get_install_kind_cmd");
 }
 }
 
@@ -345,6 +379,34 @@ fallback_reason: string | null;
  * Current failure count
  */
 failure_count: number }
+/**
+ * How the running binary was installed. Used to pick the right update path.
+ */
+export type InstallKind = 
+/**
+ * Linux `.deb` installed via dpkg/apt — needs `pkexec apt install` to upgrade.
+ */
+"Deb" | 
+/**
+ * Linux AppImage — handled natively by `tauri-plugin-updater`.
+ */
+"AppImage" | 
+/**
+ * Windows installer (.exe / .msi) — handled by `tauri-plugin-updater`.
+ */
+"WindowsInstaller" | 
+/**
+ * macOS .app bundle — handled by `tauri-plugin-updater`.
+ */
+"MacApp" | 
+/**
+ * Running from `cargo run` / `target/debug` — skip auto-update.
+ */
+"Development" | 
+/**
+ * Unknown — fall back to manual "open release page".
+ */
+"Unknown"
 export type ModelInfo = { 
 /**
  * Stable identifier used as config.model and filename stem.
@@ -411,6 +473,11 @@ export type PasteMethod =
  * System information
  */
 export type SystemInfo = { os: string; arch: string; display_server: string; desktop_environment: string }
+export type UpdateInfo = { current_version: string; latest_version: string; release_notes: string; release_url: string; install_kind: InstallKind; 
+/**
+ * Whether we can trigger a fully-automatic install (plugin or pkexec).
+ */
+can_auto_install: boolean }
 
 /** tauri-specta globals **/
 

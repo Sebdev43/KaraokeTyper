@@ -36,54 +36,90 @@ jobs:
             echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Extract release notes from CHANGELOG
+        env:
+          VERSION: ${{ steps.get-version.outputs.version }}
+        run: |
+          # Extract the section between `## [VERSION]` and the next `## [` heading.
+          # Falls back to a neutral placeholder if the section is missing so the
+          # release body stays readable.
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { flag=1; next }
+            flag && /^## \[/ { exit }
+            flag { print }
+          ' CHANGELOG.md > /tmp/release-notes-section.md
+
+          if [ ! -s /tmp/release-notes-section.md ]; then
+            printf "_Pas de notes spécifiques — voir le [CHANGELOG](https://github.com/%s/blob/dev/CHANGELOG.md)._\n" \
+              "$GITHUB_REPOSITORY" > /tmp/release-notes-section.md
+          fi
+
       - name: Create Release
         id: create-release
         uses: actions/github-script@v8
+        env:
+          VERSION: ${{ steps.get-version.outputs.version }}
         with:
           script: |
-            const version = '${{ steps.get-version.outputs.version }}';
+            const fs = require('fs');
+            const version = process.env.VERSION;
+            const changelogSection = fs
+              .readFileSync('/tmp/release-notes-section.md', 'utf8')
+              .trim();
+
+            const body = [
+              `## KaraokeTyper v${version}`,
+              '',
+              '### ✨ Nouveautés',
+              '',
+              changelogSection,
+              '',
+              `Voir le [CHANGELOG complet](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/dev/CHANGELOG.md) pour l'historique entier.`,
+              '',
+              '---',
+              '',
+              '### Téléchargements',
+              '',
+              '| Plateforme | Fichier | Description |',
+              '|------------|---------|-------------|',
+              `| **Linux** | \`karaoketyper_${version}_amd64.deb\` | Paquet Debian/Ubuntu |`,
+              `| **Linux** | \`karaoketyper_${version}_amd64.AppImage\` | AppImage portable |`,
+              `| **Windows** | \`karaoketyper_${version}_x64-setup.exe\` | Installateur Windows |`,
+              `| **Windows** | \`karaoketyper_${version}_x64_en-US.msi\` | Paquet MSI Windows |`,
+              `| **macOS** | \`karaoketyper_${version}_aarch64.dmg\` | DMG macOS Apple Silicon |`,
+              '',
+              '### Installation',
+              '',
+              '**Linux (Debian/Ubuntu) :**',
+              '```bash',
+              `sudo dpkg -i karaoketyper_${version}_amd64.deb`,
+              'sudo apt-get install -f',
+              '```',
+              '',
+              '**Linux (AppImage) :**',
+              '```bash',
+              `chmod +x karaoketyper_${version}_amd64.AppImage`,
+              `./karaoketyper_${version}_amd64.AppImage`,
+              '```',
+              '',
+              '**Windows :** Lancez l\'installateur (.exe ou .msi)',
+              '',
+              '**macOS :** Montez le DMG et glissez dans Applications',
+              '',
+              '> **À partir de v1.4.0**, les mises à jour ultérieures se font directement depuis l\'application : Paramètres → À propos → Rechercher.',
+              '',
+              '---',
+              '*Dictée vocale 100% hors-ligne — pas de cloud, pas de télémétrie*',
+            ].join('\n');
+
             const { data } = await github.rest.repos.createRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: `v${version}`,
               name: `KaraokeTyper v${version}`,
-              body: `## KaraokeTyper v${version}
-
-            Voir le [CHANGELOG](https://github.com/${context.repo.owner}/${context.repo.repo}/blob/dev/CHANGELOG.md) pour les détails.
-
-            ### Téléchargements
-
-            | Plateforme | Fichier | Description |
-            |------------|---------|-------------|
-            | **Linux** | \`karaoketyper_${version}_amd64.deb\` | Paquet Debian/Ubuntu |
-            | **Linux** | \`karaoketyper_${version}_amd64.AppImage\` | AppImage portable |
-            | **Windows** | \`karaoketyper_${version}_x64-setup.exe\` | Installateur Windows |
-            | **Windows** | \`karaoketyper_${version}_x64_en-US.msi\` | Paquet MSI Windows |
-            | **macOS** | \`karaoketyper_${version}_aarch64.dmg\` | DMG macOS Apple Silicon |
-
-            ### Installation
-
-            **Linux (Debian/Ubuntu) :**
-            \`\`\`bash
-            sudo dpkg -i karaoketyper_${version}_amd64.deb
-            sudo apt-get install -f
-            \`\`\`
-
-            **Linux (AppImage) :**
-            \`\`\`bash
-            chmod +x karaoketyper_${version}_amd64.AppImage
-            ./karaoketyper_${version}_amd64.AppImage
-            \`\`\`
-
-            **Windows :** Lancez l'installateur (.exe ou .msi)
-
-            **macOS :** Montez le DMG et glissez dans Applications
-
-            ---
-            *Dictée vocale 100% hors-ligne — pas de cloud, pas de télémétrie*
-            `,
+              body,
               draft: true,
-              prerelease: false
+              prerelease: false,
             });
             return data.id;
 

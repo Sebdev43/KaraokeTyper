@@ -15,6 +15,7 @@ mod ollama_client;
 mod output;
 mod stt;
 mod text_processing;
+mod updater;
 mod vad;
 
 // Linux-specific modules
@@ -1654,7 +1655,10 @@ pub fn run() {
             get_gpu_info,
             get_gpu_status,
             reset_gpu_failure_count,
-            check_ollama_status
+            check_ollama_status,
+            updater::check_for_update_cmd,
+            updater::install_update_cmd,
+            updater::get_install_kind_cmd
         ]);
 
     // Generate TypeScript bindings in development mode
@@ -1681,6 +1685,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .setup(|app| {
             // Create overlay window programmatically (like Handy)

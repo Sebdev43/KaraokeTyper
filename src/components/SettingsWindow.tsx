@@ -40,6 +40,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { UpdateChecker } from "@/components/UpdateChecker";
 import { cn } from "@/lib/utils";
 import { useSettingsStore, useSystemStore } from "@/stores";
 
@@ -1642,18 +1643,21 @@ function SettingsWindow() {
                   <Info className="h-5 w-5 text-zinc-400" />À propos
                 </CardTitle>
               </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground">
-                  KaraokeTyper v1.1.0
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Dictée vocale hors-ligne pour{" "}
-                  {currentPlatform === "macos"
-                    ? "macOS"
-                    : currentPlatform === "windows"
-                      ? "Windows"
-                      : "Linux"}
-                </p>
+              <CardContent className="flex flex-col gap-4">
+                <div>
+                  <p className="text-sm text-muted-foreground">
+                    KaraokeTyper v1.4.0
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    Dictée vocale hors-ligne pour{" "}
+                    {currentPlatform === "macos"
+                      ? "macOS"
+                      : currentPlatform === "windows"
+                        ? "Windows"
+                        : "Linux"}
+                  </p>
+                </div>
+                <UpdateChecker />
               </CardContent>
             </Card>
           </div>

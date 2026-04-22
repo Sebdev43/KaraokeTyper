@@ -2660,12 +2660,13 @@ dependencies = [
 
 [[package]]
 name = "karaoketyper"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "cpal",
  "dirs 5.0.1",
  "enigo",
  "evdev",
+ "flate2",
  "futures",
  "hound",
  "libc",
@@ -2677,9 +2678,11 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "sha2",
  "specta",
  "specta-typescript",
  "strsim",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",
@@ -6221,6 +6224,10 @@ dependencies = [
  "env_logger",
  "hound",
  "log",
+ "ndarray",
+ "once_cell",
+ "ort",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.17",

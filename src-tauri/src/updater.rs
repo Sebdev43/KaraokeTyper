@@ -39,10 +39,7 @@ pub enum InstallKind {
 impl InstallKind {
     /// Whether `tauri-plugin-updater` natively handles upgrading this build.
     pub fn supports_plugin_updater(self) -> bool {
-        matches!(
-            self,
-            Self::AppImage | Self::WindowsInstaller | Self::MacApp
-        )
+        matches!(self, Self::AppImage | Self::WindowsInstaller | Self::MacApp)
     }
 
     /// Whether our custom `pkexec apt` path handles upgrading this build.
@@ -156,8 +153,8 @@ pub async fn check_for_update() -> Result<Option<UpdateInfo>, String> {
         .text()
         .await
         .map_err(|e| format!("GitHub API body read failed: {}", e))?;
-    let release: GithubRelease = serde_json::from_str(&body)
-        .map_err(|e| format!("GitHub API JSON decode failed: {}", e))?;
+    let release: GithubRelease =
+        serde_json::from_str(&body).map_err(|e| format!("GitHub API JSON decode failed: {}", e))?;
 
     let latest = release.tag_name.trim_start_matches('v').to_string();
 
@@ -217,10 +214,7 @@ fn is_newer(current: &str, candidate: &str) -> bool {
 /// We match the asset by **exact name** only — a suffix-based fallback would
 /// allow an attacker who can influence release asset names to slip in any
 /// `_amd64.deb`.
-async fn download_deb_asset(
-    assets: &[GithubAsset],
-    version: &str,
-) -> Result<PathBuf, String> {
+async fn download_deb_asset(assets: &[GithubAsset], version: &str) -> Result<PathBuf, String> {
     let expected = format!("karaoketyper_{}_amd64.deb", version);
     let asset = assets
         .iter()
@@ -381,8 +375,8 @@ async fn install_deb_update(app: &tauri::AppHandle) -> Result<(), String> {
         .text()
         .await
         .map_err(|e| format!("GitHub API body read failed: {}", e))?;
-    let release: GithubRelease = serde_json::from_str(&body)
-        .map_err(|e| format!("GitHub API JSON decode failed: {}", e))?;
+    let release: GithubRelease =
+        serde_json::from_str(&body).map_err(|e| format!("GitHub API JSON decode failed: {}", e))?;
 
     let version = release.tag_name.trim_start_matches('v').to_string();
 
@@ -476,8 +470,9 @@ mod tests {
             interpret_pkexec_failure(Some(127), ""),
             "Autorisation refusée (PolicyKit indisponible ?)."
         );
-        assert!(interpret_pkexec_failure(Some(1), "E: broken package")
-            .contains("E: broken package"));
+        assert!(
+            interpret_pkexec_failure(Some(1), "E: broken package").contains("E: broken package")
+        );
         assert!(interpret_pkexec_failure(None, "").contains("signal"));
     }
 

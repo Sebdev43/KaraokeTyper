@@ -337,7 +337,13 @@ export type AudioDevice = { name: string; raw_name: string; index: number }
 /**
  * Self-hosted STT backends. No cloud APIs.
  */
-export type EngineType = "whisper" | "sense-voice" | "moonshine"
+export type EngineType = "whisper" | 
+/**
+ * NVIDIA Parakeet-TDT-0.6B v3, int8 ONNX quantization.
+ * Supports 25 EU languages + RU/UK natively (language is auto-detected
+ * by the model — we don't pass a hint at inference time, unlike Whisper).
+ */
+"parakeet" | "sense-voice" | "moonshine"
 export type GnomeExtensionStatus = { installed: boolean; enabled: boolean; is_gnome: boolean; is_wayland: boolean; path: string; needs_restart: boolean }
 /**
  * GPU acceleration status
@@ -407,13 +413,31 @@ export type InstallKind =
  * Unknown — fall back to manual "open release page".
  */
 "Unknown"
+/**
+ * One file that ships as part of a multi-file model bundle (e.g. Parakeet V3).
+ * Hash is mandatory — the download is rejected if the content doesn't match.
+ */
+export type ModelFile = { 
+/**
+ * Filename inside the model directory (e.g. `encoder-model.int8.onnx`).
+ */
+filename: string; 
+/**
+ * Absolute URL to fetch.
+ */
+url: string; 
+/**
+ * Expected SHA-256 of the file contents, lowercase hex.
+ */
+sha256: string }
 export type ModelInfo = { 
 /**
  * Stable identifier used as config.model and filename stem.
  */
 name: string; display_name: string; size_mb: number; 
 /**
- * Remote URL. Empty for engines without a downloadable artifact (e.g. cloud APIs).
+ * Remote URL for a single-file model (Whisper .bin). Empty for multi-file
+ * bundles — those use `files` instead.
  */
 url: string; installed: boolean; description: string; 
 /**
@@ -440,7 +464,13 @@ accuracy_score?: number; speed_score?: number;
  * True when the backend is not yet executable (transcribe-rs feature disabled).
  * UI can grey out the entry and show a "Bientôt" badge.
  */
-coming_soon?: boolean }
+coming_soon?: boolean; 
+/**
+ * Individual files for multi-file bundles (Parakeet V3). Each entry is
+ * fetched separately and verified against its SHA-256. If non-empty,
+ * `url` is ignored. The directory `{models_dir}/{name}/` is populated.
+ */
+files?: ModelFile[] }
 export type ModelUnloadTimeout = "Never" | "Min5" | "Min15" | "Hour1"
 export type OllamaStatus = { available: boolean; model: string; url: string }
 /**

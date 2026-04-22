@@ -5,6 +5,32 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-04-22
+
+### Added
+
+- **Auto-update multi-OS** (`updater.rs`, `UpdateChecker.tsx`): vérification + installation automatique de nouvelles versions depuis GitHub Releases. Intégré dans **Paramètres → À propos → Rechercher**
+  - **AppImage / MSI / EXE / DMG** : via `tauri-plugin-updater` 2.10 (download, replace binary, restart — tout silencieux)
+  - **.deb** : chemin custom (`pkexec apt-get install` sur une copie privée 0700 dans `$XDG_CACHE_HOME`, compatible avec le pattern PolicyKit déjà utilisé pour `install-permissions.sh`)
+  - Détection runtime du type d'install : `$APPIMAGE`, `/var/lib/dpkg/info/karaoketyper.list`, `/Applications`, etc.
+  - Fallback "Voir la page GitHub" si le type d'install n'est pas auto-compatible
+- **Script `scripts/generate-latest-json.sh`** : agrège les signatures minisign de chaque plateforme en un seul manifest `latest.json` uploadé sur la Release
+- **Job CI `generate-updater-manifest`** : appelle le script après les builds, publie `latest.json` pour l'endpoint de l'updater
+- **Crate `tauri-plugin-updater = "2.10"`** + `@tauri-apps/plugin-updater@^2.10`
+
+### Security
+
+- **Téléchargement `.deb` dans un dir privé 0700** (au lieu de `/tmp`) pour éliminer un TOCTOU swap entre download et `pkexec apt install`
+- **Match exact du nom `.deb`** (pas de fallback suffixe) : empêche l'install d'un asset tiers au nom compatible
+- **`is_newer`** traite les composants semver manquants comme `0` et refuse les inputs non parseables → plus de boucle de MAJ
+- **`generate-latest-json.sh`** : VERSION validée par regex stricte, JSON construit 100 % via `jq --arg/--argjson` (pas de concat de strings)
+- **Messages d'erreur `pkexec`** : codes 126/127 mappés en messages FR explicites (annulation utilisateur vs PolicyKit indisponible)
+
+### Known limitations
+
+- **`.deb` non signé minisign** : le `.deb` est téléchargé sur HTTPS mais sans vérification de signature côté client (contrairement aux autres bundles). Mitigation : HTTPS + GitHub Releases. À traiter en 1.4.x (ajout d'un `.deb.sig` publié par le CI)
+- **Pas de capability gating dédiée sur `install_update_cmd`** : mitigé par la CSP restrictive et l'absence de webview user-content. Fix recommandé : capability window-restricted + `dialog::confirm` natif avant `pkexec`
+
 ## [1.3.2] - 2026-04-19
 
 ### Changed

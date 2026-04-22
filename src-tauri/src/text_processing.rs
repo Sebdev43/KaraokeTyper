@@ -40,6 +40,7 @@ const HALLUCINATED_PHRASES: &[&str] = &[
     "sous-titrage fr 2021",
     "sous-titrage mfp",
     "sous-titres par soustitreur.com",
+    "sous-titres par jér",
     "merci d'avoir regardé cette vidéo",
     "merci d'avoir regardé la vidéo",
     "merci d'avoir regardé",

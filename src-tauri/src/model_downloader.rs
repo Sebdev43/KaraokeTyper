@@ -64,6 +64,36 @@ fn release_download_slot(name: &str) {
     }
 }
 
+/// RAII guard releasing the in-progress download slot on drop (including on
+/// early `?`/return). Used by all download paths.
+struct DownloadSlotGuard<'a>(&'a str);
+impl Drop for DownloadSlotGuard<'_> {
+    fn drop(&mut self) {
+        release_download_slot(self.0);
+    }
+}
+
+/// Read the next chunk from a download byte-stream, bounding the wait by
+/// [`DOWNLOAD_STALL_TIMEOUT`]. Returns `Ok(None)` at end of stream, `Ok(Some)`
+/// for a chunk, and `Err` on a read error or stall. Partial-file cleanup is left
+/// to the caller because it differs per path (temp file vs staging dir).
+async fn next_chunk_or_stall<S, B, E>(stream: &mut S, label: &str) -> Result<Option<B>, String>
+where
+    S: futures::Stream<Item = Result<B, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    match tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, stream.next()).await {
+        Ok(Some(Ok(chunk))) => Ok(Some(chunk)),
+        Ok(Some(Err(e))) => Err(format!("Download error on {}: {}", label, e)),
+        Ok(None) => Ok(None),
+        Err(_) => Err(format!(
+            "Download stalled on {}: no data for {}s",
+            label,
+            DOWNLOAD_STALL_TIMEOUT.as_secs()
+        )),
+    }
+}
+
 /// Base URL for Whisper GGML models on HuggingFace.
 const GGML_BASE_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
@@ -419,6 +449,11 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
         return Err(format!("Model '{}' has no downloadable URL", model_name));
     }
 
+    // Reject a concurrent download of the same model (they'd share the same
+    // .bin.tmp path and corrupt each other). Released on drop.
+    claim_download_slot(&model_name)?;
+    let _slot = DownloadSlotGuard(&model_name);
+
     crate::dev_log!(
         "[MODEL] 📥 Starting download of {} ({} MB)...",
         model_name,
@@ -462,6 +497,13 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
     let total_size = response
         .content_length()
         .unwrap_or(model_info.size_mb as u64 * 1024 * 1024);
+    // Hard cap: never accept more than 1.5x the declared size, mirroring the
+    // multi-file/archive paths — guards against a server streaming gigabytes to
+    // fill the disk.
+    let max_bytes: u64 = (model_info.size_mb as u64)
+        .saturating_mul(1024 * 1024)
+        .saturating_mul(3)
+        / 2;
 
     let mut file = tokio::fs::File::create(&temp_path)
         .await
@@ -472,24 +514,27 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
     let mut last_progress_percent: i32 = -1;
 
     loop {
-        let chunk_result = match tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, stream.next()).await {
+        let chunk = match next_chunk_or_stall(&mut stream, &model_name).await {
             Ok(Some(c)) => c,
             Ok(None) => break,
-            Err(_) => {
+            Err(e) => {
                 let _ = tokio::fs::remove_file(&temp_path).await;
-                return Err(format!(
-                    "Download stalled: no data for {}s",
-                    DOWNLOAD_STALL_TIMEOUT.as_secs()
-                ));
+                return Err(e);
             }
         };
-        let chunk = chunk_result.map_err(|e| format!("Download error: {}", e))?;
+
+        downloaded += chunk.len() as u64;
+        if downloaded > max_bytes {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(format!(
+                "Download exceeded expected size ({} MB cap) — aborting.",
+                max_bytes / (1024 * 1024)
+            ));
+        }
 
         file.write_all(&chunk)
             .await
             .map_err(|e| format!("Write error: {}", e))?;
-
-        downloaded += chunk.len() as u64;
 
         let percent = (downloaded as f64 / total_size as f64 * 100.0).min(100.0);
         let current_percent = percent as i32;
@@ -566,13 +611,7 @@ async fn download_and_verify_files(
     let model_name = model_info.name.clone();
 
     claim_download_slot(&model_name)?;
-    struct SlotGuard<'a>(&'a str);
-    impl Drop for SlotGuard<'_> {
-        fn drop(&mut self) {
-            release_download_slot(self.0);
-        }
-    }
-    let _slot = SlotGuard(&model_name);
+    let _slot = DownloadSlotGuard(&model_name);
 
     let models_dir = get_models_dir();
     tokio::fs::create_dir_all(&models_dir)
@@ -657,22 +696,17 @@ async fn download_and_verify_files(
         let mut hasher = Sha256::new();
         let mut stream = response.bytes_stream();
         loop {
-            let chunk_result =
-                match tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, stream.next()).await {
-                    Ok(Some(c)) => c,
-                    Ok(None) => break,
-                    Err(_) => {
-                        return Err(format!(
-                            "Download stalled on {}: no data for {}s",
-                            mf.filename,
-                            DOWNLOAD_STALL_TIMEOUT.as_secs()
-                        ))
-                    }
-                };
-            let chunk =
-                chunk_result.map_err(|e| format!("Read error on {}: {}", mf.filename, e))?;
+            let chunk = match next_chunk_or_stall(&mut stream, &mf.filename).await {
+                Ok(Some(c)) => c,
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = tokio::fs::remove_dir_all(&staging_dir).await;
+                    return Err(e);
+                }
+            };
             total_downloaded += chunk.len() as u64;
             if total_downloaded > max_total_bytes {
+                let _ = tokio::fs::remove_dir_all(&staging_dir).await;
                 return Err(format!(
                     "Download exceeded expected size ({} MB cap) — aborting.",
                     max_total_bytes / (1024 * 1024)
@@ -771,13 +805,7 @@ async fn download_and_extract_archive(
     // Serialize concurrent downloads of the same model. Released on all exit
     // paths via the Drop guard below.
     claim_download_slot(&model_name)?;
-    struct SlotGuard<'a>(&'a str);
-    impl Drop for SlotGuard<'_> {
-        fn drop(&mut self) {
-            release_download_slot(self.0);
-        }
-    }
-    let _slot = SlotGuard(&model_name);
+    let _slot = DownloadSlotGuard(&model_name);
 
     let models_dir = get_models_dir();
     tokio::fs::create_dir_all(&models_dir)
@@ -832,7 +860,10 @@ async fn download_and_extract_archive(
         .unwrap_or(model_info.size_mb as u64 * 1024 * 1024);
     // Hard cap: never accept more than 1.5x the declared size. Guards against
     // a malicious or misconfigured server streaming gigabytes to fill the disk.
-    let max_bytes: u64 = (model_info.size_mb as u64).saturating_mul(1024 * 1024) * 3 / 2;
+    let max_bytes: u64 = (model_info.size_mb as u64)
+        .saturating_mul(1024 * 1024)
+        .saturating_mul(3)
+        / 2;
 
     let mut file = tokio::fs::File::create(&archive_path)
         .await
@@ -842,18 +873,14 @@ async fn download_and_extract_archive(
     let mut stream = response.bytes_stream();
     let mut last_pct: i32 = -1;
     loop {
-        let chunk_result = match tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, stream.next()).await {
+        let chunk = match next_chunk_or_stall(&mut stream, &model_name).await {
             Ok(Some(c)) => c,
             Ok(None) => break,
-            Err(_) => {
+            Err(e) => {
                 let _ = tokio::fs::remove_file(&archive_path).await;
-                return Err(format!(
-                    "Download stalled: no data for {}s",
-                    DOWNLOAD_STALL_TIMEOUT.as_secs()
-                ));
+                return Err(e);
             }
         };
-        let chunk = chunk_result.map_err(|e| format!("Download error: {}", e))?;
         downloaded += chunk.len() as u64;
         if downloaded > max_bytes {
             let _ = tokio::fs::remove_file(&archive_path).await;
@@ -1077,6 +1104,33 @@ pub async fn delete_model(model_name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn next_chunk_or_stall_yields_then_ends() {
+        let chunks: Vec<Result<Vec<u8>, std::io::Error>> =
+            vec![Ok(vec![1u8, 2, 3]), Ok(vec![4u8, 5])];
+        let mut s = futures::stream::iter(chunks);
+        assert_eq!(
+            next_chunk_or_stall(&mut s, "t").await.unwrap(),
+            Some(vec![1u8, 2, 3])
+        );
+        assert_eq!(
+            next_chunk_or_stall(&mut s, "t").await.unwrap(),
+            Some(vec![4u8, 5])
+        );
+        assert_eq!(next_chunk_or_stall(&mut s, "t").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn next_chunk_or_stall_propagates_read_error_with_label() {
+        let chunks: Vec<Result<Vec<u8>, std::io::Error>> = vec![Err(std::io::Error::other("boom"))];
+        let mut s = futures::stream::iter(chunks);
+        let err = next_chunk_or_stall(&mut s, "myfile.onnx")
+            .await
+            .unwrap_err();
+        assert!(err.contains("myfile.onnx"), "label missing: {err}");
+        assert!(err.contains("boom"), "cause missing: {err}");
+    }
 
     #[test]
     fn test_get_models_dir() {

@@ -61,9 +61,6 @@ sha2 = "0.10"
 tar = "0.4"
 flate2 = "1"
 
-# Lock-free ring buffer for zero-latency audio capture
-ringbuf = "0.4"
-
 # Clipboard (cross-platform: Windows/macOS/Linux+Wayland)
 tauri-plugin-clipboard-manager = "2.3"
 

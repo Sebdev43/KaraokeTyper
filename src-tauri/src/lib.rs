@@ -111,8 +111,27 @@ impl SttEngine {
         let model_path = resolved_path
             .ok_or("No model downloaded. Download a model from Settings → STT Models.")?;
 
-        let engine = stt::load(EngineType::Whisper, std::path::Path::new(&model_path))
-            .map_err(|e| e.to_string())?;
+        let engine = match stt::load(EngineType::Whisper, std::path::Path::new(&model_path)) {
+            Ok(engine) => {
+                // GPU health: a successful load with GPU enabled clears the
+                // failure streak. Gated to GPU builds so the default CPU build is
+                // unaffected (the GPU backend is wired into transcribe-rs in a
+                // later lot; this keeps the auto-disable mechanism live).
+                #[cfg(any(feature = "gpu-vulkan", feature = "gpu-metal"))]
+                if config.use_gpu {
+                    crate::stt::gpu_health::reset_gpu_failures();
+                }
+                engine
+            }
+            Err(e) => {
+                #[cfg(any(feature = "gpu-vulkan", feature = "gpu-metal"))]
+                if config.use_gpu {
+                    let count = crate::stt::gpu_health::record_gpu_failure();
+                    dev_log!("[GPU] Engine load failed with GPU enabled (failure #{count})");
+                }
+                return Err(e.to_string());
+            }
+        };
 
         Ok(SttEngine {
             engine,
@@ -122,12 +141,12 @@ impl SttEngine {
 
     pub fn transcribe(
         &mut self,
-        audio_data: &[f32],
+        audio_data: Vec<f32>,
         initial_prompt: Option<&str>,
     ) -> Result<String, String> {
         stt::transcribe(
             &mut self.engine,
-            audio_data.to_vec(),
+            audio_data,
             &self.language,
             false,
             initial_prompt,
@@ -184,7 +203,7 @@ fn start_idle_watcher(state: &AppState) {
             }
 
             let timeout_secs = {
-                let cfg = config.lock().unwrap();
+                let cfg = config.lock().unwrap_or_else(|e| e.into_inner());
                 cfg.model_unload_timeout.to_seconds()
             };
 
@@ -204,7 +223,7 @@ fn start_idle_watcher(state: &AppState) {
                 .as_secs();
 
             if now - last >= timeout_secs {
-                let mut guard = engine.lock().unwrap();
+                let mut guard = engine.lock().unwrap_or_else(|e| e.into_inner());
                 if guard.is_some() {
                     *guard = None;
                     dev_log!("[IDLE_WATCHER] Model unloaded after {}s idle", timeout_secs);
@@ -221,6 +240,66 @@ fn update_stt_activity(state: &AppState) {
         .unwrap_or_default()
         .as_secs();
     state.last_stt_activity.store(now, Ordering::Relaxed);
+}
+
+/// Run a blocking transcription with panic isolation and without holding the
+/// engine lock for the (multi-second) inference.
+///
+/// 1. Under a short lock, lazily reload the engine if the idle watcher unloaded
+///    it, then *take* it out of the shared `Option` so the inference below runs
+///    lock-free (the idle watcher sees `None` and skips unloading; a concurrent
+///    settings reload can install a fresh engine).
+/// 2. Transcribe inside `catch_unwind` so a panic in the C/ONNX backend cannot
+///    poison the mutex or leave a corrupt engine in place.
+/// 3. On success, return the engine to the slot **only if it is still empty** —
+///    if a newer engine was installed meanwhile (e.g. model change), keep that
+///    one and drop ours. On panic, drop the engine so the next call reloads.
+///
+/// Must be called from a blocking context (e.g. `spawn_blocking`).
+fn run_transcription_blocking(
+    stt_engine_arc: &Arc<Mutex<Option<SttEngine>>>,
+    config_arc: &Arc<Mutex<AppConfig>>,
+    padded_audio: Vec<f32>,
+    prompt_for_whisper: Option<String>,
+) -> Result<String, String> {
+    // Serialize inferences: overlapping transcriptions would otherwise each see
+    // the slot empty (the running one took the engine out) and reload a fresh
+    // model, briefly holding two engines in memory. This guard is separate from
+    // the engine-storage lock, so it does NOT block the idle watcher or a
+    // settings reload (those use `stt_engine_arc`).
+    static INFERENCE_GUARD: Mutex<()> = Mutex::new(());
+    let _inference = INFERENCE_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+
+    let mut engine = {
+        let mut guard = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            dev_log!("[STT] Model was unloaded by idle watcher, reloading...");
+            let config = config_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            *guard = Some(
+                SttEngine::new(&config).map_err(|e| format!("Failed to reload model: {}", e))?,
+            );
+            dev_log!("[STT] ✅ Model reloaded successfully");
+        }
+        guard.take().ok_or("STT engine not initialized")?
+    };
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.transcribe(padded_audio, prompt_for_whisper.as_deref())
+    }));
+
+    match outcome {
+        Ok(result) => {
+            let mut guard = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.is_none() {
+                *guard = Some(engine);
+            }
+            result
+        }
+        Err(_) => {
+            dev_log!("[STT] ❌ Transcription panicked — engine reset, will reload next time");
+            Err("Transcription failed (engine crashed). It has been reset and will reload on the next attempt.".to_string())
+        }
+    }
 }
 
 /// Get D-Bus environment variables needed for PulseAudio/PipeWire/GNOME commands
@@ -649,27 +728,12 @@ pub(crate) async fn do_stop_recording(
         Some(initial_prompt.clone())
     };
     let transcription = tokio::task::spawn_blocking(move || {
-        let mut stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Lazy reload: if model was unloaded by idle watcher, re-initialize while holding lock
-        let needs_reload = stt_engine.is_none();
-        if needs_reload {
-            dev_log!("[STT] Model was unloaded by idle watcher, reloading...");
-            let config = config_arc.lock().unwrap().clone();
-            match SttEngine::new(&config) {
-                Ok(engine) => {
-                    *stt_engine = Some(engine);
-                    dev_log!("[STT] ✅ Model reloaded successfully");
-                }
-                Err(e) => {
-                    dev_log!("[STT] ❌ Failed to reload model: {}", e);
-                    return Err(format!("Failed to reload model: {}", e));
-                }
-            }
-        }
-
-        let engine = stt_engine.as_mut().ok_or("STT engine not initialized")?;
-        engine.transcribe(&padded_audio, prompt_for_whisper.as_deref())
+        run_transcription_blocking(
+            &stt_engine_arc,
+            &config_arc,
+            padded_audio,
+            prompt_for_whisper,
+        )
     })
     .await
     .map_err(|e| format!("Transcription task panicked: {}", e))??;
@@ -753,9 +817,16 @@ pub(crate) async fn do_stop_recording(
 
 #[tauri::command]
 #[specta::specta]
-async fn type_text(text: String, app: AppHandle) -> Result<(), String> {
-    let config = AppConfig::load().unwrap_or_default();
-    do_type_text(text, &app, config.paste_method).await
+async fn type_text(text: String, app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    // Read from the in-memory config cache instead of re-reading settings.json
+    // (which could also trigger a disk write via the GPU migration in load()).
+    let paste_method = state
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .paste_method
+        .clone();
+    do_type_text(text, &app, paste_method).await
 }
 
 /// Helper function for type_text - can be called from other modules
@@ -764,9 +835,15 @@ pub(crate) async fn do_type_text(
     app_handle: &AppHandle,
     paste_method: crate::config::PasteMethod,
 ) -> Result<(), String> {
-    let mut output = TextOutput::new(60, paste_method, app_handle)?;
-    output.type_text(&text)?;
-    Ok(())
+    // type_text() runs a chain of blocking thread::sleep + subprocess calls;
+    // offload it to a blocking thread so it never stalls a tokio worker.
+    let app = app_handle.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut output = TextOutput::new(60, paste_method, &app)?;
+        output.type_text(&text)
+    })
+    .await
+    .map_err(|e| format!("Typing task panicked: {}", e))?
 }
 
 #[tauri::command]
@@ -1175,12 +1252,14 @@ async fn transcribe_audio(
 
     // Add 1 second of silence at the END to prevent Whisper from cutting off last words
     let padding_samples = 16000; // 1s at 16kHz (increased for better end capture)
-    let mut padded_audio = audio_data.clone();
+    let orig_len = audio_data.len();
+    let mut padded_audio = audio_data; // move (no clone); reserve the tail once
+    padded_audio.reserve(padding_samples);
     padded_audio.extend(std::iter::repeat_n(0.0f32, padding_samples));
     dev_log!(
         "[TRANSCRIBE] Added {}ms padding at end ({} -> {} samples)",
         padding_samples * 1000 / 16000,
-        audio_data.len(),
+        orig_len,
         padded_audio.len()
     );
 
@@ -1195,15 +1274,19 @@ async fn transcribe_audio(
         Some(initial_prompt)
     };
 
-    // Clone Arc to move into spawn_blocking
+    // Clone Arcs to move into spawn_blocking
     let stt_engine_arc = Arc::clone(&state.stt_engine);
+    let config_arc = Arc::clone(&state.config);
 
     // Use spawn_blocking to offload CPU-intensive Whisper transcription
     // This prevents blocking the async executor
     let transcription = tokio::task::spawn_blocking(move || {
-        let mut stt_engine = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
-        let engine = stt_engine.as_mut().ok_or("STT engine not initialized")?;
-        engine.transcribe(&padded_audio, prompt_for_whisper.as_deref())
+        run_transcription_blocking(
+            &stt_engine_arc,
+            &config_arc,
+            padded_audio,
+            prompt_for_whisper,
+        )
     })
     .await
     .map_err(|e| format!("Transcription task panicked: {}", e))??;

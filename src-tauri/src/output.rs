@@ -550,95 +550,110 @@ impl TextOutput {
             self.paste_method
         );
 
-        match self.paste_method {
-            PasteMethod::Direct => {
-                let t1 = std::time::Instant::now();
+        // Track whether the transcription actually landed on the clipboard, so
+        // the security clear below fires for the Direct→clipboard fallback too
+        // (self.paste_method is restored to Direct there and can't be trusted).
+        let mut clipboard_used = false;
 
-                // Remote desktop (RustDesk, AnyDesk): use DIRECT TYPING.
-                // Clipboard paste doesn't work because the local clipboard
-                // doesn't sync to the remote machine in time. xdotool type
-                // sends each character as a key event that RustDesk forwards
-                // instantly to the remote — no clipboard needed.
-                #[cfg(target_os = "linux")]
-                let is_remote = Self::is_remote_desktop_focused();
-                #[cfg(not(target_os = "linux"))]
-                let is_remote = false;
+        // Run the paste in a closure so the security clipboard-clear below always
+        // executes — even if a paste step fails *after* the clipboard was set.
+        let paste_outcome: Result<(), String> = (|| {
+            match self.paste_method {
+                PasteMethod::Direct => {
+                    let t1 = std::time::Instant::now();
 
-                if is_remote {
-                    crate::dev_log!("[OUTPUT] Remote desktop — direct typing (xdotool type)");
-                    Self::try_direct_typing(text)?;
-                } else {
-                    // Local apps: terminal → clipboard paste, other → xdotool type
+                    // Remote desktop (RustDesk, AnyDesk): use DIRECT TYPING.
+                    // Clipboard paste doesn't work because the local clipboard
+                    // doesn't sync to the remote machine in time. xdotool type
+                    // sends each character as a key event that RustDesk forwards
+                    // instantly to the remote — no clipboard needed.
                     #[cfg(target_os = "linux")]
-                    let use_clipboard =
-                        Self::is_terminal_focused() || !Self::has_native_direct_tool();
+                    let is_remote = Self::is_remote_desktop_focused();
                     #[cfg(not(target_os = "linux"))]
-                    let use_clipboard = false;
+                    let is_remote = false;
 
-                    if use_clipboard {
-                        #[cfg(target_os = "linux")]
-                        let effective_method = Self::resolve_paste_method(&PasteMethod::Direct);
-                        #[cfg(not(target_os = "linux"))]
-                        let effective_method = PasteMethod::CtrlV;
-
-                        crate::dev_log!("[OUTPUT] Clipboard paste ({:?})", effective_method);
-
-                        self.set_clipboard_text(text)?;
-                        thread::sleep(Duration::from_millis(self.key_delay_ms.max(50)));
-
-                        let saved_method = self.paste_method.clone();
-                        self.paste_method = effective_method;
-                        let shortcut_result = self.send_paste_shortcut();
-                        self.paste_method = saved_method;
-                        shortcut_result?;
-
-                        thread::sleep(Duration::from_millis(50));
-                    } else {
+                    if is_remote {
+                        crate::dev_log!("[OUTPUT] Remote desktop — direct typing (xdotool type)");
                         Self::try_direct_typing(text)?;
+                    } else {
+                        // Local apps: terminal → clipboard paste, other → xdotool type
+                        #[cfg(target_os = "linux")]
+                        let use_clipboard =
+                            Self::is_terminal_focused() || !Self::has_native_direct_tool();
+                        #[cfg(not(target_os = "linux"))]
+                        let use_clipboard = false;
+
+                        if use_clipboard {
+                            #[cfg(target_os = "linux")]
+                            let effective_method = Self::resolve_paste_method(&PasteMethod::Direct);
+                            #[cfg(not(target_os = "linux"))]
+                            let effective_method = PasteMethod::CtrlV;
+
+                            crate::dev_log!("[OUTPUT] Clipboard paste ({:?})", effective_method);
+
+                            self.set_clipboard_text(text)?;
+                            clipboard_used = true;
+                            thread::sleep(Duration::from_millis(self.key_delay_ms.max(50)));
+
+                            let saved_method = self.paste_method.clone();
+                            self.paste_method = effective_method;
+                            let shortcut_result = self.send_paste_shortcut();
+                            self.paste_method = saved_method;
+                            shortcut_result?;
+
+                            thread::sleep(Duration::from_millis(50));
+                        } else {
+                            Self::try_direct_typing(text)?;
+                        }
                     }
+                    crate::dev_log!(
+                        "[OUTPUT_TIMING] Direct type: {}ms",
+                        t1.elapsed().as_millis()
+                    );
                 }
-                crate::dev_log!(
-                    "[OUTPUT_TIMING] Direct type: {}ms",
-                    t1.elapsed().as_millis()
-                );
-            }
-            PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
-                // Clipboard + paste shortcut
-                let t1 = std::time::Instant::now();
-                self.set_clipboard_text(text)?;
-                crate::dev_log!(
-                    "[OUTPUT_TIMING] Clipboard set_text: {}ms",
-                    t1.elapsed().as_millis()
-                );
+                PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
+                    // Clipboard + paste shortcut
+                    let t1 = std::time::Instant::now();
+                    self.set_clipboard_text(text)?;
+                    clipboard_used = true;
+                    crate::dev_log!(
+                        "[OUTPUT_TIMING] Clipboard set_text: {}ms",
+                        t1.elapsed().as_millis()
+                    );
 
-                if self.key_delay_ms > 0 {
-                    crate::dev_log!("[OUTPUT] Waiting {}ms before pasting...", self.key_delay_ms);
-                    thread::sleep(Duration::from_millis(self.key_delay_ms));
+                    if self.key_delay_ms > 0 {
+                        crate::dev_log!(
+                            "[OUTPUT] Waiting {}ms before pasting...",
+                            self.key_delay_ms
+                        );
+                        thread::sleep(Duration::from_millis(self.key_delay_ms));
+                    }
+
+                    let t2 = std::time::Instant::now();
+                    self.send_paste_shortcut()?;
+                    crate::dev_log!(
+                        "[OUTPUT_TIMING] paste shortcut: {}ms",
+                        t2.elapsed().as_millis()
+                    );
                 }
+                PasteMethod::None => {
+                    crate::dev_log!("[OUTPUT] PasteMethod::None — skipping");
+                    return Ok(());
+                }
+            }
+            Ok(())
+        })();
 
-                let t2 = std::time::Instant::now();
-                self.send_paste_shortcut()?;
-                crate::dev_log!(
-                    "[OUTPUT_TIMING] paste shortcut: {}ms",
-                    t2.elapsed().as_millis()
-                );
-            }
-            PasteMethod::None => {
-                crate::dev_log!("[OUTPUT] PasteMethod::None — skipping");
-                return Ok(());
-            }
+        // Security: clear the clipboard if it was used, regardless of whether the
+        // paste step succeeded — otherwise a paste-shortcut error would leave the
+        // transcription sitting on the system clipboard.
+        if clipboard_used {
+            thread::sleep(Duration::from_millis(100));
+            let _ = self.app_handle.clipboard().write_text(String::new());
+            crate::dev_log!("[OUTPUT] Clipboard cleared after paste");
         }
 
-        // Security: clear clipboard after paste to prevent content leaking
-        // Only for methods that used clipboard (not Direct with native tools)
-        match self.paste_method {
-            PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
-                thread::sleep(Duration::from_millis(100));
-                let _ = self.app_handle.clipboard().write_text("".to_string());
-                crate::dev_log!("[OUTPUT] Clipboard cleared after paste");
-            }
-            _ => {}
-        }
+        paste_outcome?;
 
         crate::dev_log!(
             "[OUTPUT_TIMING] Total type_text: {}ms",

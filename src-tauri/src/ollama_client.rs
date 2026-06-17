@@ -1,6 +1,13 @@
 use serde::Serialize;
 use specta::Type;
 
+/// Upper bound on a single Ollama text-correction request. Without it, a
+/// reachable-but-stuck server (model loading, wedged inference, half-open
+/// socket) would make `generate().await` hang forever and block the whole
+/// dictation pipeline — the worst half of the Handy-audit LLM finding.
+#[cfg(feature = "ollama")]
+const OLLAMA_GENERATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[derive(Clone, Serialize, Type)]
 pub struct OllamaStatus {
     pub available: bool,
@@ -54,9 +61,14 @@ pub async fn correct_text(
 
     let request = GenerationRequest::new(model.to_string(), prompt);
 
-    let response = ollama
-        .generate(request)
+    let response = tokio::time::timeout(OLLAMA_GENERATE_TIMEOUT, ollama.generate(request))
         .await
+        .map_err(|_| {
+            format!(
+                "Ollama timed out after {}s — using original text",
+                OLLAMA_GENERATE_TIMEOUT.as_secs()
+            )
+        })?
         .map_err(|e| format!("Ollama error: {}", e))?;
 
     let corrected = response.response.trim().to_string();

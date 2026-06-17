@@ -616,11 +616,18 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                                                 "[TIMING] T+{}ms: pasting text",
                                                 t0.elapsed().as_millis()
                                             );
-                                            let config = AppConfig::load().unwrap_or_default();
+                                            // paste_method from the in-memory config
+                                            // cache (no per-paste disk read/write).
+                                            let paste_method = state
+                                                .config
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner())
+                                                .paste_method
+                                                .clone();
                                             let paste_result = do_type_text(
                                                 transcription,
                                                 &app_clone,
-                                                config.paste_method,
+                                                paste_method,
                                             )
                                             .await;
 

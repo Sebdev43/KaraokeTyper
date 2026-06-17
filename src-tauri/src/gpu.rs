@@ -5,12 +5,29 @@
 //! or `--features gpu-metal` (macOS).
 
 use std::process::Command;
+use std::sync::OnceLock;
 
+#[derive(Clone)]
 pub struct GpuDetectionResult {
     pub available: bool,
     pub backend: String,
     pub device_name: Option<String>,
     pub vram_mb: Option<u32>,
+}
+
+/// Cached result of the (expensive) hardware probe below.
+static GPU_DETECTION_CACHE: OnceLock<GpuDetectionResult> = OnceLock::new();
+
+/// GPU detection, memoized for the process lifetime.
+///
+/// The platform probes shell out to 2-4 external binaries (`vulkaninfo`,
+/// `lspci`, `nvidia-smi`, `system_profiler`, `wmic`…). The result depends only
+/// on the hardware and compile-time GPU features, neither of which change at
+/// runtime, so running it once and caching is both safe and a clear win for the
+/// Settings UI which may call this repeatedly.
+#[must_use]
+pub fn detect_gpu() -> GpuDetectionResult {
+    GPU_DETECTION_CACHE.get_or_init(detect_gpu_uncached).clone()
 }
 
 /// VRAM requirements per whisper model (approximate, in MB)
@@ -88,7 +105,7 @@ fn detect_vram_linux() -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn detect_gpu() -> GpuDetectionResult {
+fn detect_gpu_uncached() -> GpuDetectionResult {
     let mut device_name = None;
     let mut has_vulkan = false;
 
@@ -146,7 +163,7 @@ pub fn detect_gpu() -> GpuDetectionResult {
 }
 
 #[cfg(target_os = "macos")]
-pub fn detect_gpu() -> GpuDetectionResult {
+fn detect_gpu_uncached() -> GpuDetectionResult {
     let mut device_name = None;
     let mut vram_mb: Option<u32> = None;
 
@@ -197,7 +214,7 @@ pub fn detect_gpu() -> GpuDetectionResult {
 }
 
 #[cfg(target_os = "windows")]
-pub fn detect_gpu() -> GpuDetectionResult {
+fn detect_gpu_uncached() -> GpuDetectionResult {
     let mut device_name = None;
     let mut has_gpu = false;
     let mut vram_mb: Option<u32> = None;

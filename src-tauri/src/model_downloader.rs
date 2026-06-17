@@ -11,8 +11,29 @@ use specta::Type;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
+
+/// Max time to establish the TCP/TLS connection to a model mirror.
+const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Max time to wait for the *next* chunk of a download before treating the
+/// connection as stalled. We deliberately do NOT set a global request timeout
+/// (`reqwest::ClientBuilder::timeout`) because that would abort legitimate
+/// multi-GB downloads on slow links; a per-chunk stall watchdog catches a wedged
+/// connection without penalizing large-but-progressing transfers.
+const DOWNLOAD_STALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Build the shared HTTP client for model downloads: a connect timeout plus a
+/// versioned user-agent. Per-chunk stall protection is applied at the call site.
+fn build_download_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent(format!("KaraokeTyper/{}", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))
+}
 
 use crate::stt::EngineType;
 
@@ -269,8 +290,7 @@ fn get_onnx_models() -> Vec<ModelInfo> {
             size_mb: 640,
             url: String::new(),
             installed: false,
-            description: "640 MB • 25 langues UE dont français • CPU, ~3-5× temps réel"
-                .to_string(),
+            description: "640 MB • 25 langues UE dont français • CPU, ~3-5× temps réel".to_string(),
             engine_type: EngineType::Parakeet,
             is_directory: true,
             supported_languages: parakeet_v3_languages(),
@@ -424,10 +444,7 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
     let model_path = get_model_file_path(&model_name);
     let temp_path = model_path.with_extension("bin.tmp");
 
-    let client = reqwest::Client::builder()
-        .user_agent("KaraokeTyper/1.0")
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let client = build_download_client()?;
 
     let response = client
         .get(&model_info.url)
@@ -454,7 +471,18 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
     let mut stream = response.bytes_stream();
     let mut last_progress_percent: i32 = -1;
 
-    while let Some(chunk_result) = stream.next().await {
+    loop {
+        let chunk_result = match tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, stream.next()).await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(_) => {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return Err(format!(
+                    "Download stalled: no data for {}s",
+                    DOWNLOAD_STALL_TIMEOUT.as_secs()
+                ));
+            }
+        };
         let chunk = chunk_result.map_err(|e| format!("Download error: {}", e))?;
 
         file.write_all(&chunk)
@@ -563,10 +591,7 @@ async fn download_and_verify_files(
         .await
         .map_err(|e| format!("Failed to create staging dir: {}", e))?;
 
-    let client = reqwest::Client::builder()
-        .user_agent(format!("KaraokeTyper/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let client = build_download_client()?;
 
     // Pre-compute an over-estimate total byte count for progress reporting.
     // Real sizes come from Content-Length per file.
@@ -631,7 +656,19 @@ async fn download_and_verify_files(
             .map_err(|e| format!("Failed to create {}: {}", target.display(), e))?;
         let mut hasher = Sha256::new();
         let mut stream = response.bytes_stream();
-        while let Some(chunk_result) = stream.next().await {
+        loop {
+            let chunk_result =
+                match tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, stream.next()).await {
+                    Ok(Some(c)) => c,
+                    Ok(None) => break,
+                    Err(_) => {
+                        return Err(format!(
+                            "Download stalled on {}: no data for {}s",
+                            mf.filename,
+                            DOWNLOAD_STALL_TIMEOUT.as_secs()
+                        ))
+                    }
+                };
             let chunk =
                 chunk_result.map_err(|e| format!("Read error on {}: {}", mf.filename, e))?;
             total_downloaded += chunk.len() as u64;
@@ -775,10 +812,7 @@ async fn download_and_extract_archive(
         },
     );
 
-    let client = reqwest::Client::builder()
-        .user_agent(format!("KaraokeTyper/{}", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+    let client = build_download_client()?;
 
     let response = client
         .get(&model_info.url)
@@ -807,7 +841,18 @@ async fn download_and_extract_archive(
     let mut downloaded: u64 = 0;
     let mut stream = response.bytes_stream();
     let mut last_pct: i32 = -1;
-    while let Some(chunk_result) = stream.next().await {
+    loop {
+        let chunk_result = match tokio::time::timeout(DOWNLOAD_STALL_TIMEOUT, stream.next()).await {
+            Ok(Some(c)) => c,
+            Ok(None) => break,
+            Err(_) => {
+                let _ = tokio::fs::remove_file(&archive_path).await;
+                return Err(format!(
+                    "Download stalled: no data for {}s",
+                    DOWNLOAD_STALL_TIMEOUT.as_secs()
+                ));
+            }
+        };
         let chunk = chunk_result.map_err(|e| format!("Download error: {}", e))?;
         downloaded += chunk.len() as u64;
         if downloaded > max_bytes {

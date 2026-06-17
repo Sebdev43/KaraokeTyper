@@ -497,9 +497,12 @@ fn process_audio(
         // VAD enabled: accumulate into frames of SILERO_FRAME_SAMPLES
         frame_acc.extend_from_slice(samples);
 
-        while frame_acc.len() >= SILERO_FRAME_SAMPLES {
-            let frame: Vec<f32> = frame_acc.drain(..SILERO_FRAME_SAMPLES).collect();
-            match vad_engine.push_frame(&frame) {
+        // Process complete frames in place over a cursor, then drain once. Avoids
+        // a fresh Vec allocation + memmove per 480-sample frame (~33/s).
+        let mut consumed = 0;
+        while frame_acc.len() - consumed >= SILERO_FRAME_SAMPLES {
+            let frame = &frame_acc[consumed..consumed + SILERO_FRAME_SAMPLES];
+            match vad_engine.push_frame(frame) {
                 Ok(VadFrame::Speech(speech_data)) => {
                     audio_buffer.extend_from_slice(speech_data);
                 }
@@ -507,9 +510,13 @@ fn process_audio(
                 Err(e) => {
                     // On VAD error, pass through raw audio
                     crate::dev_log!("[AUDIO] VAD error: {}, falling back to passthrough", e);
-                    audio_buffer.extend_from_slice(&frame);
+                    audio_buffer.extend_from_slice(frame);
                 }
             }
+            consumed += SILERO_FRAME_SAMPLES;
+        }
+        if consumed > 0 {
+            frame_acc.drain(..consumed);
         }
     } else {
         // No VAD: passthrough

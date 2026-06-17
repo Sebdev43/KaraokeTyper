@@ -157,8 +157,20 @@ impl SmoothedVad {
 
 impl VoiceActivityDetector for SmoothedVad {
     fn push_frame<'a>(&'a mut self, frame: &'a [f32]) -> Result<VadFrame<'a>, String> {
-        self.frame_buffer.push_back(frame.to_vec());
-        while self.frame_buffer.len() > self.prefill_frames + 1 {
+        // Ring of the last (prefill_frames + 1) frames. Recycle the evicted Vec
+        // instead of allocating a fresh one (and freeing the old) every frame.
+        let capacity = self.prefill_frames + 1;
+        let mut buf = if self.frame_buffer.len() >= capacity {
+            let mut recycled = self.frame_buffer.pop_front().unwrap_or_default();
+            recycled.clear();
+            recycled
+        } else {
+            Vec::with_capacity(frame.len())
+        };
+        buf.extend_from_slice(frame);
+        self.frame_buffer.push_back(buf);
+        // Defensive: keep the invariant even if `capacity` shrank between calls.
+        while self.frame_buffer.len() > capacity {
             self.frame_buffer.pop_front();
         }
 
@@ -286,5 +298,24 @@ mod tests {
         vad.reset();
         assert!(!vad.in_speech);
         assert!(vad.frame_buffer.is_empty());
+    }
+
+    #[test]
+    fn smoothed_vad_buffer_stays_bounded() {
+        // With buffer recycling, pushing far more frames than the prefill window
+        // must keep the ring bounded at prefill_frames + 1 (no unbounded growth).
+        let prefill = 3;
+        let mock = MockVad::new(vec![false; 50]);
+        let mut vad = SmoothedVad::new(Box::new(mock), prefill, 2, 2);
+        let frame = vec![0.0f32; SILERO_FRAME_SAMPLES];
+        for _ in 0..50 {
+            vad.push_frame(&frame).unwrap();
+        }
+        assert_eq!(vad.frame_buffer.len(), prefill + 1);
+        // Recycled buffers must still hold a full frame's worth of samples.
+        assert!(vad
+            .frame_buffer
+            .iter()
+            .all(|b| b.len() == SILERO_FRAME_SAMPLES));
     }
 }

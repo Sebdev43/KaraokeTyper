@@ -15,7 +15,9 @@ interface StatusEvent {
 
 function App() {
   const [status, setStatus] = useState<string>("idle");
-  const [message, setMessage] = useState<string>("Appuyez sur Ctrl+Espace pour commencer");
+  const [message, setMessage] = useState<string>(
+    "Appuyez sur Ctrl+Espace pour commencer",
+  );
   const [transcription, setTranscription] = useState<string>("");
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
   const [isRecording, setIsRecording] = useState<boolean>(false);
@@ -40,14 +42,21 @@ function App() {
 
     initApp();
 
+    let unlisten: (() => void) | undefined;
     const setupListeners = async () => {
-      await listen<StatusEvent>("status-changed", (event) => {
+      unlisten = await listen<StatusEvent>("status-changed", (event) => {
         setStatus(event.payload.status);
         setMessage(event.payload.message);
       });
     };
 
     setupListeners();
+
+    // Clean up the Tauri listener on unmount / StrictMode re-run to avoid
+    // duplicate "status-changed" handlers stacking up.
+    return () => {
+      unlisten?.();
+    };
   }, []);
 
   const startRecording = async () => {
@@ -137,10 +146,17 @@ function App() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Mic className="h-5 w-5 text-primary" />
-              <span className="font-semibold text-foreground">KaraokeTyper</span>
+              <span className="font-semibold text-foreground">
+                KaraokeTyper
+              </span>
             </div>
-            <Badge variant={getStatusVariant()} className={cn(isRecording && "animate-pulse")}>
-              {status === "processing" && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+            <Badge
+              variant={getStatusVariant()}
+              className={cn(isRecording && "animate-pulse")}
+            >
+              {status === "processing" && (
+                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+              )}
               {getStatusLabel()}
             </Badge>
           </div>
@@ -171,7 +187,9 @@ function App() {
           {/* Transcription */}
           {transcription && (
             <div className="p-3 bg-muted rounded-md">
-              <p className="text-xs text-muted-foreground mb-1">Dernière transcription :</p>
+              <p className="text-xs text-muted-foreground mb-1">
+                Dernière transcription :
+              </p>
               <p className="text-sm text-foreground">{transcription}</p>
             </div>
           )}

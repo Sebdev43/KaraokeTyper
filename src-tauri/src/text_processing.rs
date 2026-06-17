@@ -186,8 +186,9 @@ fn collapse_stutters(text: &str) -> String {
         let word = words[i];
         let word_lower = word.to_lowercase();
 
-        // Only collapse very short words (1-2 chars) — longer repeats may be intentional
-        if word_lower.len() <= 2 {
+        // Only collapse very short words (1-2 chars) — longer repeats may be intentional.
+        // Character count (not byte len) so accented words like "ça"/"où" count as 2.
+        if word_lower.chars().count() <= 2 {
             let mut repeat_count = 1;
             while i + repeat_count < words.len()
                 && words[i + repeat_count].to_lowercase() == word_lower
@@ -217,46 +218,80 @@ fn apply_custom_words(text: &str, custom_words: &[String], threshold: f32) -> St
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut result: Vec<String> = Vec::with_capacity(words.len());
 
+    // Precompute per-custom-word data ONCE instead of recomputing lowercase +
+    // soundex inside the inner loop for every transcript word (was O(n*m) with
+    // redundant allocations on the post-transcription hot path).
+    struct PreparedWord<'a> {
+        original: &'a str,
+        lower: String,
+        char_len: usize,
+        soundex: String,
+    }
+    let prepared: Vec<PreparedWord> = custom_words
+        .iter()
+        .map(|cw| {
+            let lower = cw.to_lowercase();
+            let char_len = lower.chars().count();
+            let soundex = soundex(&lower);
+            PreparedWord {
+                original: cw.as_str(),
+                lower,
+                char_len,
+                soundex,
+            }
+        })
+        .collect();
+
     for word in &words {
         // Extract the core word (without surrounding punctuation)
         let (prefix_punct, core, suffix_punct) = split_punctuation(word);
         let core_lower = core.to_lowercase();
+        // Character count (not byte len) so accented French words aren't
+        // mis-measured by the length filter below.
+        let core_char_len = core_lower.chars().count();
 
         // Skip very short words (articles, prepositions) — they shouldn't be corrected
-        if core_lower.len() <= 2 {
+        if core_char_len <= 2 {
             result.push(word.to_string());
             continue;
         }
 
+        // Soundex of the transcript word, computed once per word (not per pair).
+        let core_soundex = soundex(&core_lower);
+
         let mut best_match: Option<(&str, f32)> = None;
 
-        for cw in custom_words {
-            let cw_lower = cw.to_lowercase();
+        for cw in &prepared {
+            // Exact (case-insensitive) match can't be beaten — take it and stop.
+            // Gated by `threshold > 0.0` to preserve the prior semantics where a
+            // 0.0 threshold disables all replacement.
+            if cw.lower == core_lower {
+                if threshold > 0.0 {
+                    best_match = Some((cw.original, 0.0));
+                }
+                break;
+            }
 
-            // Length check: skip if lengths differ by more than 30%
-            let len_ratio = core_lower.len() as f32 / cw_lower.len() as f32;
+            // Length check on CHARACTER count: skip if lengths differ by >30%
+            let len_ratio = core_char_len as f32 / cw.char_len as f32;
             if !(0.7..=1.3).contains(&len_ratio) {
                 continue;
             }
 
             // Normalized Levenshtein distance (0.0 = identical, 1.0 = completely different)
-            let lev_dist = strsim::normalized_levenshtein(&core_lower, &cw_lower);
+            let lev_dist = strsim::normalized_levenshtein(&core_lower, &cw.lower);
             // Convert similarity (0-1) to distance (0-1)
             let distance = 1.0 - lev_dist as f32;
 
             // Soundex phonetic bonus: if same soundex, reduce distance by 30%
-            let soundex_bonus = if soundex(&core_lower) == soundex(&cw_lower) {
-                0.7
-            } else {
-                1.0
-            };
+            let soundex_bonus = if core_soundex == cw.soundex { 0.7 } else { 1.0 };
 
             let adjusted_distance = distance * soundex_bonus;
 
             if adjusted_distance < threshold
-                && (best_match.is_none() || adjusted_distance < best_match.unwrap().1)
+                && best_match.is_none_or(|(_, best)| adjusted_distance < best)
             {
-                best_match = Some((cw.as_str(), adjusted_distance));
+                best_match = Some((cw.original, adjusted_distance));
             }
         }
 
@@ -342,7 +377,22 @@ fn split_punctuation(word: &str) -> (&str, &str, &str) {
 
 /// Match the case pattern of the original word onto the replacement.
 fn match_case_pattern(original: &str, replacement: &str) -> String {
-    if original.chars().all(|c| c.is_uppercase()) {
+    // ALL CAPS only when there is at least one cased letter and every cased
+    // letter is uppercase. Testing `chars().all(is_uppercase)` was wrong: it is
+    // vacuously true for "" and false as soon as a digit/apostrophe appears.
+    let has_upper_cased = {
+        let mut saw_cased = false;
+        let mut all_upper = true;
+        for c in original.chars().filter(|c| c.is_alphabetic()) {
+            saw_cased = true;
+            if !c.is_uppercase() {
+                all_upper = false;
+                break;
+            }
+        }
+        saw_cased && all_upper
+    };
+    if has_upper_cased {
         // ALL CAPS
         replacement.to_uppercase()
     } else if original.starts_with(|c: char| c.is_uppercase()) {
@@ -579,5 +629,40 @@ mod tests {
             false, // no stutter collapse
         );
         assert_eq!(result, "bonjour le monde");
+    }
+
+    // --- Regression tests for the audit fixes (Unicode + case) ---
+
+    #[test]
+    fn test_apply_custom_words_accented_exact_match() {
+        // Accented custom word, exact (case-insensitive) match → canonical casing.
+        let custom = vec!["Élodie".to_string()];
+        let result = apply_custom_words("élodie arrive demain", &custom, 0.3);
+        assert_eq!(result, "Élodie arrive demain");
+    }
+
+    #[test]
+    fn test_apply_custom_words_accented_fuzzy_match() {
+        // Char-count length filter must let an accented custom word fuzzy-match a
+        // non-accented typo (byte-length filtering would mis-measure it).
+        let custom = vec!["Café".to_string()];
+        let result = apply_custom_words("un cafe noir", &custom, 0.3);
+        assert_eq!(result, "un Café noir");
+    }
+
+    #[test]
+    fn test_collapse_stutters_accented_short_word() {
+        // "ça" is 2 chars (3 bytes) — char-count threshold must collapse it.
+        let result = collapse_stutters("ça ça ça va bien");
+        assert_eq!(result, "ça va bien");
+    }
+
+    #[test]
+    fn test_match_case_pattern_all_caps_with_non_cased_chars() {
+        // All-caps detection must ignore non-cased chars (digits) instead of
+        // falsely demoting "ABC123" to Title case.
+        assert_eq!(match_case_pattern("ABC123", "hello"), "HELLO");
+        // No cased letters at all → treated as lowercase (replacement unchanged).
+        assert_eq!(match_case_pattern("123", "hello"), "hello");
     }
 }

@@ -5,6 +5,23 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-06-17
+
+### Fixed
+
+- **Fuite presse-papier** : le presse-papier est désormais nettoyé sur **tous** les chemins de collage, y compris en cas d'échec du raccourci de collage (la transcription ne reste plus dans le presse-papier)
+- **Ollama sans timeout** : `correct_text()` borne l'appel `generate()` à 30s — un serveur Ollama figé ne bloque plus la dictée indéfiniment
+- **Robustesse transcription** : isolation des panics du moteur STT (`catch_unwind`, plus d'empoisonnement de mutex ni de réutilisation d'un moteur corrompu), libération du verrou pendant l'inférence et sérialisation des transcriptions concurrentes
+- **Téléchargements modèles** : `connect_timeout` + watchdog anti-stall par chunk (sans timeout global qui casserait les gros modèles), nettoyage des fichiers partiels en cas de blocage
+- **Casse / accents** : matching des mots personnalisés en comptage de caractères (et non d'octets) pour le français accentué, détection ALL-CAPS corrigée sur les caractères non-cassés
+
+### Changed
+
+- Lecture de `paste_method` depuis le cache mémoire sur le chemin de collage (plus de lecture/écriture de `settings.json` à chaque dictée)
+- `detect_gpu()` mis en cache (`OnceLock`) — plus de sous-processus relancés à chaque ouverture des réglages ; mécanisme d'auto-désactivation GPU recâblé (builds GPU)
+- Optimisations allocations : matching des mots personnalisés hoisté, traitement VAD sans allocation par frame, copies audio évitées
+- Frappe clavier déportée hors du thread async ; dépendance `ringbuf` inutilisée retirée
+
 ## [1.5.0] - 2026-04-22
 
 ### Added

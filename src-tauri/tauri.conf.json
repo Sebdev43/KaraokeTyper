@@ -31,7 +31,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQ3RUQ4OEY2MURBRTRFRkQKUldUOVRxNGQ5b2p0MTZZaStPc1diQm1PRXFXQU14aEFYYUUwbXgyZWwra2p2Z3VCcW10ZjdzZ2QK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDEzODNBRkI2MEY3QUM1MTUKUldRVnhYb1B0cStERTM3ZTh0aEZKMmVWLzJBait5TVBsNmFNRnB2RmY5ZnpuUXpza3AxZVl2VmUK",
       "endpoints": [
         "https://github.com/Sebdev43/KaraokeTyper/releases/latest/download/latest.json"
       ]

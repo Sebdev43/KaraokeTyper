@@ -5,6 +5,14 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.2] - 2026-06-17
+
+### Changed
+
+- **Téléchargeur de modèles durci** : un seul watchdog anti-blocage partagé par tous les chemins de téléchargement (mono-fichier, multi-fichiers, archive), et nettoyage systématique des fichiers/dossiers partiels en cas d'interruption
+- **Protection disque** : le téléchargement d'un modèle mono-fichier (Whisper) est désormais plafonné à 1,5× la taille annoncée (défense contre un miroir qui streamerait des gigaoctets pour saturer le disque)
+- **Anti-concurrence** : impossible de lancer deux téléchargements simultanés du même modèle (ils se corrompaient mutuellement)
+
 ## [1.5.1] - 2026-06-17
 
 ### Fixed

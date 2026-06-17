@@ -2630,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "karaoketyper"
-version = "1.5.1"
+version = "1.5.2"
 dependencies = [
  "cpal",
  "dirs 5.0.1",

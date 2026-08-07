@@ -51,6 +51,17 @@ jobs:
             libgtk-3-dev \
             libunwind-dev
 
+      # whisper-rs-sys builds whisper.cpp through CMake, which looks for Vulkan and
+      # fails the whole build when it is absent — `Could NOT find Vulkan (missing:
+      # Vulkan_LIBRARY Vulkan_INCLUDE_DIR glslc)`. Ubuntu's own packages do not ship
+      # glslc, so this uses the same LunarG repository as release.yml's build-linux job.
+      - name: Install Vulkan SDK
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

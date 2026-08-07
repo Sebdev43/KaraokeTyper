@@ -35,6 +35,9 @@ specta-typescript = "0.0.9"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+# CancellationToken, so a multi-GB model download can be stopped without waiting
+# for it to finish. Already in the tree via tokio's ecosystem.
+tokio-util = "0.7"
 
 # HTTP client for model downloads (using rustls to avoid OpenSSL system dependency)
 reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
@@ -84,6 +87,10 @@ rodio = "0.20"
 # Audio capture (cross-platform: ALSA on Linux via pipewire-alsa, CoreAudio on macOS, WASAPI on Windows)
 cpal = "0.15"
 
+# Anti-aliased sample-rate conversion for devices that can't give us 16kHz directly.
+# Pinned to 0.16 for its FftFixedIn API; 0.17 renamed it to Fft + FixedSync.
+rubato = "0.16"
+
 # Optional: Ollama LLM client for text correction
 ollama-rs = { version = "0.2", features = ["stream"], optional = true }
 
@@ -100,6 +107,9 @@ evdev = "0.12"
 # jemalloc - reduces virtual memory fragmentation with many threads (Linux/macOS)
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"
+# Raw mallctl access, so memory.rs can purge jemalloc's arenas after a dictation.
+# tikv-jemallocator installs the allocator but exposes no control interface.
+tikv-jemalloc-sys = "0.6"
 
 [features]
 default = []

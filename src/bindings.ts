@@ -160,6 +160,15 @@ async downloadModel(modelName: string) : Promise<Result<null, string>> {
 }
 },
 /**
+ * Ask an in-flight model download to stop. Returns false if none was running.
+ * 
+ * The partial file is kept, so pressing download again resumes rather than starting
+ * the gigabytes over.
+ */
+async cancelModelDownload(modelName: string) : Promise<boolean> {
+    return await TAURI_INVOKE("cancel_model_download", { modelName });
+},
+/**
  * Get system information for Settings UI
  */
 async getSystemInfo() : Promise<Result<SystemInfo, string>> {
@@ -308,6 +317,12 @@ async getInstallKindCmd() : Promise<InstallKind> {
 
 /** user-defined types **/
 
+/**
+ * The container-level `serde(default)` is what keeps a partial or slightly-wrong
+ * settings file loadable: any missing field — including every field added in the
+ * future — falls back to its `Default` value instead of failing the whole parse.
+ * Field-level defaults below still take precedence where present.
+ */
 export type AppConfig = { shortcut: string; audio_device_index: number; audio_device_name?: string | null; model: string; key_delay_ms: number; language: string; model_path?: string | null; use_gpu?: boolean; gpu_device_index?: number | null; audio_feedback_enabled?: boolean; audio_feedback_volume?: number; model_unload_timeout?: ModelUnloadTimeout; ollama_url?: string | null; ollama_model?: string | null; ollama_enabled?: boolean; paste_method?: PasteMethod; 
 /**
  * Custom words for fuzzy correction after transcription.
@@ -470,7 +485,15 @@ coming_soon?: boolean;
  * fetched separately and verified against its SHA-256. If non-empty,
  * `url` is ignored. The directory `{models_dir}/{name}/` is populated.
  */
-files?: ModelFile[] }
+files?: ModelFile[]; 
+/**
+ * Expected SHA-256 of a single-file model, lowercase hex.
+ * 
+ * The trust anchor for the `url` download: without it a truncated, corrupted or
+ * substituted file is installed and only discovered when transcription misbehaves.
+ * Empty for multi-file bundles, which carry a hash per `ModelFile` instead.
+ */
+sha256?: string }
 export type ModelUnloadTimeout = "Never" | "Min5" | "Min15" | "Hour1"
 export type OllamaStatus = { available: boolean; model: string; url: string }
 /**

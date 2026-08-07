@@ -1,0 +1,140 @@
+name: CI
+
+# Runs the checks this repository already had but never executed automatically:
+# 165 Rust tests, clippy at -D warnings, rustfmt, the frontend build and Biome.
+# `pr-check.yml` only looks for development-only files; `release.yml` builds the app
+# but only on a tag, which is far too late to learn that a test broke.
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main]
+  # Weekly, so upstream drift in the model catalogue is noticed even during a quiet
+  # period — nobody opens a pull request to discover that HuggingFace re-uploaded a
+  # model. Also catches dependency rot in the Rust job for free.
+  schedule:
+    - cron: '17 4 * * 1'
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust — fmt, clippy, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Same list as release.yml's build-linux job, which is known to work — Tauri links
+      # webkit2gtk, so even `cargo test` needs it — plus Vulkan.
+      #
+      # whisper-rs-sys builds whisper.cpp through CMake, which looks for Vulkan and
+      # aborts when it is absent: `Could NOT find Vulkan (missing: Vulkan_LIBRARY
+      # Vulkan_INCLUDE_DIR glslc)`. release.yml pulls the full LunarG SDK, but that
+      # repository targets jammy and now breaks on the noble runner
+      # ("held broken packages"). Ubuntu's own libvulkan-dev + glslc provide exactly
+      # the three things CMake asks for, with no third-party repository.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libgtk-3-dev \
+            libunwind-dev \
+            libvulkan-dev \
+            glslc
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Formatting first: it is the cheapest failure and needs no compilation.
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --check
+
+      # --all-targets so test code is linted too — several findings in this project's
+      # history were in tests.
+      - name: cargo clippy
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+
+  frontend:
+    name: Frontend — build and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - run: npm ci
+
+      # `npm run build` is the real gate: it type-checks and produces the bundle.
+      # It relaxes noUnusedLocals, which is why `typecheck` below is separate.
+      - name: npm run build
+        run: npm run build
+
+      - name: npm run lint
+        run: npm run lint
+
+  # Not blocking, and the reason is specific rather than a shrug: the only remaining
+  # `tsc --noEmit` errors are two unused symbols (`TAURI_CHANNEL`, `__makeEvents__`) in
+  # src/bindings.ts, which tauri-specta regenerates on every build. Editing them out is
+  # pointless — the next build puts them back — and relaxing the flag globally is
+  # exactly what `npm run build` already does. Kept visible so a *new* type error in
+  # hand-written code is noticed, without a permanently red required check.
+  typecheck:
+    name: Frontend — strict typecheck (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run typecheck
+
+  # Separate and non-blocking on purpose: this one talks to huggingface.co, so a red
+  # result may mean the network, not the pull request. Its value is the schedule — it
+  # notices that an upstream model was re-uploaded, which silently invalidates every
+  # SHA-256 the catalogue pins, before a user discovers it as a failed install.
+  catalog:
+    name: Model catalogue vs upstream (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: scripts/catalog.py check
+        run: python3 scripts/catalog.py check

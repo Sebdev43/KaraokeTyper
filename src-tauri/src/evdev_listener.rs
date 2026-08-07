@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::config::AppConfig;
 use crate::{do_start_recording, do_stop_recording, do_type_text, AppState};
@@ -595,10 +595,17 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                                         );
                                         if !transcription.is_empty() {
                                             // Hide overlay first (required for RustDesk/remote
-                                            // desktop apps that need unambiguous focus)
+                                            // desktop apps that need unambiguous focus).
+                                            // The window is hidden immediately rather than via
+                                            // hide_overlay_animated, but the event still has to
+                                            // be emitted: it is what tells the webview to tear
+                                            // down its content. Without it the overlay keeps
+                                            // running its infinite animations forever behind a
+                                            // hidden window.
                                             if let Some(window) =
                                                 app_clone.get_webview_window("overlay")
                                             {
+                                                let _ = window.emit("hide-overlay", ());
                                                 let _ = window.hide();
                                             }
 
@@ -616,18 +623,10 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
                                                 "[TIMING] T+{}ms: pasting text",
                                                 t0.elapsed().as_millis()
                                             );
-                                            // paste_method from the in-memory config
-                                            // cache (no per-paste disk read/write).
-                                            let paste_method = state
-                                                .config
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner())
-                                                .paste_method
-                                                .clone();
                                             let paste_result = do_type_text(
                                                 transcription,
                                                 &app_clone,
-                                                paste_method,
+                                                state.paste_settings(),
                                             )
                                             .await;
 

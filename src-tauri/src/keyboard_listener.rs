@@ -115,16 +115,12 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
 
                             // Paste BEFORE hiding overlay (like Handy) — target app
                             // keeps focus while overlay is visible, no chars lost.
-                            // Read paste_method from the in-memory config cache
-                            // (no per-paste disk read / GPU-migration write).
-                            let paste_method = state
-                                .config
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .paste_method
-                                .clone();
-                            let paste_result =
-                                crate::do_type_text(transcription, &app_clone, paste_method).await;
+                            let paste_result = crate::do_type_text(
+                                transcription,
+                                &app_clone,
+                                state.paste_settings(),
+                            )
+                            .await;
 
                             // Hide overlay AFTER paste completes
                             crate::hide_overlay_animated(&app_clone);

@@ -269,6 +269,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # bundle_dmg.sh drives Finder through AppleScript to lay out the DMG window.
+          # GitHub's macOS provisioner update (June 2025) made that call time out on the
+          # runners — including macos-14, which this job already pins, so pinning is not
+          # the answer. Skipping the cosmetic layout step lets the DMG build; it loses
+          # the custom icon positions, not the installer.
+          # tauri-apps/tauri-action#1003, #1091
+          TAURI_BUNDLER_DMG_IGNORE_CI: false
           MACOSX_DEPLOYMENT_TARGET: '10.15'
           CMAKE_OSX_DEPLOYMENT_TARGET: '10.15'
           CFLAGS: '-mmacosx-version-min=10.15'

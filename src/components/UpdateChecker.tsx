@@ -105,22 +105,20 @@ export function UpdateChecker() {
         <p className="text-sm text-emerald-500">✓ Vous êtes à jour.</p>
       )}
 
-      {status.kind === "error" && (
-        <p className="text-sm text-red-500">Erreur : {status.message}</p>
-      )}
+      {status.kind === "error" && <p className="text-sm text-red-500">Erreur : {status.message}</p>}
 
       {status.kind === "installing" && (
         <p className="text-sm text-muted-foreground">
-          Installation en cours… (un prompt de mot de passe peut apparaître pour
-          les installations .deb)
+          Installation en cours… (un prompt de mot de passe peut apparaître pour les installations
+          .deb)
         </p>
       )}
 
       {status.kind === "available" && (
         <div className="flex flex-col gap-2 border-t pt-3">
           <p className="text-sm">
-            <span className="font-semibold">v{status.latestVersion}</span>{" "}
-            disponible (actuel : v{status.currentVersion})
+            <span className="font-semibold">v{status.latestVersion}</span> disponible (actuel : v
+            {status.currentVersion})
           </p>
           {status.releaseNotes && (
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs">
@@ -133,11 +131,7 @@ export function UpdateChecker() {
                 Installer et redémarrer
               </Button>
             )}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => openReleasePage(status.releaseUrl)}
-            >
+            <Button size="sm" variant="outline" onClick={() => openReleasePage(status.releaseUrl)}>
               Voir la page GitHub
             </Button>
           </div>

@@ -51,7 +51,12 @@ impl ModelUnloadTimeout {
     }
 }
 
+/// The container-level `serde(default)` is what keeps a partial or slightly-wrong
+/// settings file loadable: any missing field — including every field added in the
+/// future — falls back to its `Default` value instead of failing the whole parse.
+/// Field-level defaults below still take precedence where present.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(default)]
 pub struct AppConfig {
     pub shortcut: String,
     pub audio_device_index: u32,
@@ -99,6 +104,16 @@ pub struct AppConfig {
     pub stt_backend: EngineType,
 }
 
+/// Wait between writing the clipboard and sending the paste shortcut.
+/// 60 ms is the value the paste pipeline actually used for as long as this
+/// setting was bypassed, so it is the timing every existing install is tuned to.
+const DEFAULT_KEY_DELAY_MS: u32 = 60;
+
+/// The `key_delay_ms` default shipped while the setting was never read — the paste
+/// pipeline passed a literal 60 instead. A stored 8 is therefore dead data, not a
+/// preference (there is no UI control for this field), and `load()` rewrites it.
+const LEGACY_UNUSED_KEY_DELAY_MS: u32 = 8;
+
 fn default_true() -> bool {
     true
 }
@@ -127,7 +142,7 @@ impl Default for AppConfig {
             audio_device_index: 0,
             audio_device_name: None,
             model: "base".to_string(),
-            key_delay_ms: 8,
+            key_delay_ms: DEFAULT_KEY_DELAY_MS,
             language: "fr".to_string(),
             model_path: None,
             use_gpu: auto_detect_gpu(),
@@ -146,6 +161,89 @@ impl Default for AppConfig {
             stt_backend: EngineType::default(),
         }
     }
+}
+
+/// Rebuild a config from a settings file that failed to deserialize as a whole.
+///
+/// Every stored field that is individually valid is kept; only the broken ones fall
+/// back to their default. Without this, a single unreadable value — an enum variant
+/// written by a newer build, a hand-edited typo — discards every other setting the
+/// user ever chose, because `load()` fails and the caller falls back to `default()`.
+///
+/// Works by overwriting the defaults one field at a time and re-deserializing after
+/// each: whichever assignment breaks the parse is the bad one, and only that field is
+/// reverted. That is one parse per known field — a bounded ~20 — regardless of what
+/// the file contains, so a corrupt or hostile settings.json cannot turn startup into
+/// a quadratic grind. Keys the struct does not know are skipped outright; the final
+/// deserialization would discard them anyway.
+fn salvage_config(stored: &serde_json::Value) -> AppConfig {
+    use serde::Deserialize;
+
+    let Some(stored_map) = stored.as_object() else {
+        crate::dev_log!("[CONFIG] Stored config is not a JSON object; using defaults");
+        return AppConfig::default();
+    };
+
+    let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(AppConfig::default())
+    else {
+        return AppConfig::default();
+    };
+
+    for key in merged.keys().cloned().collect::<Vec<_>>() {
+        let Some(value) = stored_map.get(&key) else {
+            continue;
+        };
+
+        let Some(previous) = merged.insert(key.clone(), value.clone()) else {
+            continue;
+        };
+
+        if AppConfig::deserialize(&serde_json::Value::Object(merged.clone())).is_err() {
+            // Log the key only — values carry the Ollama URL and the custom word list.
+            crate::dev_log!(
+                "[CONFIG] Dropping invalid field '{}', keeping its default",
+                key
+            );
+            merged.insert(key, previous);
+        }
+    }
+
+    AppConfig::deserialize(&serde_json::Value::Object(merged)).unwrap_or_else(|_| {
+        crate::dev_log!("[CONFIG] Could not reassemble salvaged config; using defaults");
+        AppConfig::default()
+    })
+}
+
+/// One-time fix-ups applied on load. Returns true when the config changed and should
+/// be written back.
+#[must_use = "true means the config must be written back to disk"]
+fn apply_migrations(config: &mut AppConfig) -> bool {
+    let mut changed = false;
+
+    // Auto-enable GPU if this build has GPU support but the stored config predates it.
+    // NOTE: this is pre-existing behaviour and it is NOT idempotent — `use_gpu` has a
+    // toggle in the settings window, so a user who deliberately turns the GPU off gets
+    // it turned back on at every launch. `#[serde(default = "auto_detect_gpu")]` on the
+    // field already covers the pre-GPU-config case this was written for, which makes
+    // the migration redundant as well as destructive. Left alone here because changing
+    // GPU behaviour is outside this change; see the findings log.
+    let gpu_compiled = cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal");
+    if gpu_compiled && !config.use_gpu {
+        crate::dev_log!("[CONFIG] Migration: enabling GPU (compiled with GPU support)");
+        config.use_gpu = true;
+        changed = true;
+    }
+
+    // `key_delay_ms` used to be ignored, so a stored 8 is the old dead default rather
+    // than a choice. Now that the paste pipeline reads it, leaving it would cut the
+    // pre-paste wait from the 60 ms every install actually runs on down to 8 ms.
+    if config.key_delay_ms == LEGACY_UNUSED_KEY_DELAY_MS {
+        crate::dev_log!("[CONFIG] Migration: key_delay_ms 8 -> 60 (was never in effect)");
+        config.key_delay_ms = DEFAULT_KEY_DELAY_MS;
+        changed = true;
+    }
+
+    changed
 }
 
 impl AppConfig {
@@ -174,19 +272,43 @@ impl AppConfig {
         let content = fs::read_to_string(&config_path)
             .map_err(|e| format!("Failed to read config file: {}", e))?;
 
-        let mut config: AppConfig = serde_json::from_str(&content)
-            .map_err(|e| format!("Failed to parse config file: {}", e))?;
+        let (config, needs_save) = Self::from_content(&content)?;
 
-        // Migration: auto-enable GPU if compiled with support but config has it disabled
-        // This handles upgrading from builds without GPU to builds with GPU
-        let gpu_compiled = cfg!(feature = "gpu-vulkan") || cfg!(feature = "gpu-metal");
-        if gpu_compiled && !config.use_gpu {
-            crate::dev_log!("[CONFIG] Migration: enabling GPU (compiled with GPU support)");
-            config.use_gpu = true;
-            let _ = config.save();
+        if needs_save {
+            if let Err(e) = config.save() {
+                // Not fatal — the config is usable in memory. But it means the salvage
+                // or migration will run again on every launch, so say so.
+                crate::dev_log!("[CONFIG] Could not persist repaired config: {}", e);
+            }
         }
 
         Ok(config)
+    }
+
+    /// Parse settings-file contents into a config, repairing what can be repaired.
+    ///
+    /// Split out from `load()` so the interesting half — salvage, then migrations,
+    /// then "does this need writing back" — is testable without touching the real
+    /// settings.json. Returns the config and whether it differs from what was read.
+    fn from_content(content: &str) -> Result<(Self, bool), String> {
+        let mut needs_save = false;
+
+        let mut config: AppConfig = match serde_json::from_str(content) {
+            Ok(config) => config,
+            Err(e) => {
+                crate::dev_log!("[CONFIG] Parse failed ({}); salvaging valid fields", e);
+                let stored: serde_json::Value = serde_json::from_str(content)
+                    .map_err(|e| format!("Failed to parse config file: {}", e))?;
+                needs_save = true;
+                salvage_config(&stored)
+            }
+        };
+
+        if apply_migrations(&mut config) {
+            needs_save = true;
+        }
+
+        Ok((config, needs_save))
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -211,7 +333,7 @@ mod tests {
         assert_eq!(config.shortcut, "CommandOrControl+Space");
         assert_eq!(config.audio_device_index, 0);
         assert_eq!(config.model, "base");
-        assert_eq!(config.key_delay_ms, 8);
+        assert_eq!(config.key_delay_ms, DEFAULT_KEY_DELAY_MS);
         assert_eq!(config.language, "fr");
         // use_gpu depends on compile-time features (auto-detect)
         assert_eq!(
@@ -293,5 +415,177 @@ mod tests {
         assert!(config.gpu_device_index.is_none());
         assert!(config.model_path.is_none());
         assert!(config.audio_device_name.is_none());
+    }
+
+    fn default_config_json() -> serde_json::Value {
+        serde_json::to_value(AppConfig::default()).unwrap()
+    }
+
+    /// Every field must survive a partial file: a missing key must never fail the
+    /// whole parse. `{}` is the extreme case, and it is what guards future fields.
+    #[test]
+    fn empty_object_parses_with_every_default() {
+        let config: AppConfig = serde_json::from_value(serde_json::json!({}))
+            .expect("every AppConfig field needs a serde default");
+        assert_eq!(config.shortcut, "CommandOrControl+Space");
+        assert_eq!(config.model, "base");
+        assert_eq!(config.language, "fr");
+        assert_eq!(config.key_delay_ms, DEFAULT_KEY_DELAY_MS);
+    }
+
+    #[test]
+    fn salvage_keeps_valid_fields_when_one_value_is_invalid() {
+        let mut stored = default_config_json();
+        let map = stored.as_object_mut().unwrap();
+        map.insert("shortcut".into(), serde_json::json!("Alt+X"));
+        map.insert("language".into(), serde_json::json!("en"));
+        map.insert("custom_words".into(), serde_json::json!(["ChargeBee"]));
+        // An enum variant this build does not know — e.g. written by a newer version.
+        map.insert("paste_method".into(), serde_json::json!("MiddleClick"));
+
+        // Precondition: this is the whole-file parse failure that used to wipe everything.
+        assert!(serde_json::from_value::<AppConfig>(stored.clone()).is_err());
+
+        let salvaged = salvage_config(&stored);
+        assert_eq!(salvaged.shortcut, "Alt+X");
+        assert_eq!(salvaged.language, "en");
+        assert_eq!(salvaged.custom_words, vec!["ChargeBee".to_string()]);
+        assert_eq!(salvaged.paste_method, PasteMethod::default());
+    }
+
+    #[test]
+    fn salvage_drops_only_the_wrong_typed_fields() {
+        let mut stored = default_config_json();
+        let map = stored.as_object_mut().unwrap();
+        map.insert("key_delay_ms".into(), serde_json::json!("soixante"));
+        map.insert("audio_feedback_volume".into(), serde_json::json!("loud"));
+        map.insert("model".into(), serde_json::json!("large-v3"));
+
+        assert!(serde_json::from_value::<AppConfig>(stored.clone()).is_err());
+
+        let salvaged = salvage_config(&stored);
+        assert_eq!(salvaged.key_delay_ms, DEFAULT_KEY_DELAY_MS);
+        assert_eq!(salvaged.audio_feedback_volume, 0.7);
+        assert_eq!(salvaged.model, "large-v3");
+    }
+
+    #[test]
+    fn salvage_tolerates_unknown_keys() {
+        let mut stored = default_config_json();
+        let map = stored.as_object_mut().unwrap();
+        map.insert("field_from_a_later_version".into(), serde_json::json!(true));
+        map.insert("model".into(), serde_json::json!("kept"));
+
+        let salvaged = salvage_config(&stored);
+        assert_eq!(salvaged.model, "kept");
+    }
+
+    #[test]
+    fn salvage_of_non_object_falls_back_to_defaults() {
+        for stored in [
+            serde_json::json!("corrupt"),
+            serde_json::json!(null),
+            serde_json::json!([1, 2, 3]),
+        ] {
+            let salvaged = salvage_config(&stored);
+            assert_eq!(
+                serde_json::to_value(&salvaged).unwrap(),
+                default_config_json()
+            );
+        }
+    }
+
+    /// The stored 8 was never in effect, so rewriting it is not overriding a choice.
+    #[test]
+    fn migration_rewrites_the_dead_key_delay_default() {
+        let mut config = AppConfig {
+            key_delay_ms: LEGACY_UNUSED_KEY_DELAY_MS,
+            ..AppConfig::default()
+        };
+        assert!(apply_migrations(&mut config));
+        assert_eq!(config.key_delay_ms, DEFAULT_KEY_DELAY_MS);
+    }
+
+    #[test]
+    fn migration_preserves_a_deliberate_key_delay() {
+        let mut config = AppConfig {
+            key_delay_ms: 120,
+            ..AppConfig::default()
+        };
+        let _ = apply_migrations(&mut config);
+        assert_eq!(config.key_delay_ms, 120);
+    }
+
+    /// A current-format config must not be rewritten on every read.
+    ///
+    /// Scoped to `key_delay_ms` on purpose: the GPU migration in the same function is
+    /// genuinely non-idempotent when the build has GPU support and the user turned the
+    /// GPU off, so this cannot claim idempotency for `apply_migrations` as a whole.
+    #[test]
+    fn key_delay_migration_is_idempotent() {
+        let mut config = AppConfig {
+            key_delay_ms: LEGACY_UNUSED_KEY_DELAY_MS,
+            ..AppConfig::default()
+        };
+        assert!(apply_migrations(&mut config));
+        assert!(!apply_migrations(&mut config));
+    }
+
+    /// Documents the pre-existing GPU-migration defect rather than pretending it away:
+    /// on a GPU build, an explicit `use_gpu: false` is overwritten on every load.
+    #[cfg(any(feature = "gpu-vulkan", feature = "gpu-metal"))]
+    #[test]
+    fn gpu_migration_overrides_an_explicit_opt_out() {
+        let mut config = AppConfig {
+            use_gpu: false,
+            ..AppConfig::default()
+        };
+        assert!(
+            apply_migrations(&mut config),
+            "known defect: the GPU migration is not idempotent"
+        );
+        assert!(config.use_gpu);
+    }
+
+    #[test]
+    fn from_content_reports_no_rewrite_for_a_current_config() {
+        let content = serde_json::to_string(&AppConfig::default()).unwrap();
+        let (config, needs_save) = AppConfig::from_content(&content).unwrap();
+        assert!(!needs_save);
+        assert_eq!(config.key_delay_ms, DEFAULT_KEY_DELAY_MS);
+    }
+
+    #[test]
+    fn from_content_salvages_and_asks_to_be_rewritten() {
+        let mut stored = default_config_json();
+        let map = stored.as_object_mut().unwrap();
+        map.insert("model".into(), serde_json::json!("large-v3"));
+        map.insert("paste_method".into(), serde_json::json!("MiddleClick"));
+
+        let (config, needs_save) =
+            AppConfig::from_content(&serde_json::to_string(&stored).unwrap()).unwrap();
+
+        assert!(needs_save, "a repaired config must be written back");
+        assert_eq!(config.model, "large-v3");
+        assert_eq!(config.paste_method, PasteMethod::default());
+    }
+
+    #[test]
+    fn from_content_rejects_content_that_is_not_json() {
+        assert!(AppConfig::from_content("this is not json at all").is_err());
+    }
+
+    /// A settings file stuffed with unknown keys must not make startup quadratic.
+    #[test]
+    fn salvage_ignores_unknown_keys_without_reparsing_for_each() {
+        let mut stored = default_config_json();
+        let map = stored.as_object_mut().unwrap();
+        for i in 0..5_000 {
+            map.insert(format!("junk_{}", i), serde_json::json!("x".repeat(64)));
+        }
+        map.insert("model".into(), serde_json::json!("kept"));
+
+        let salvaged = salvage_config(&stored);
+        assert_eq!(salvaged.model, "kept");
     }
 }

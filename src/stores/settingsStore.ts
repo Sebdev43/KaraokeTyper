@@ -166,18 +166,14 @@ export const useSettingsStore = create<SettingsState>()(
 
       setUseGpuAcceleration: (enabled) => set({ useGpuAcceleration: enabled }),
 
-      setAudioFeedbackEnabled: (enabled) =>
-        set({ audioFeedbackEnabled: enabled }),
+      setAudioFeedbackEnabled: (enabled) => set({ audioFeedbackEnabled: enabled }),
       setAudioFeedbackVolume: (volume) => set({ audioFeedbackVolume: volume }),
       setModelUnloadTimeout: (timeout) => set({ modelUnloadTimeout: timeout }),
       setPasteMethod: (method) => set({ pasteMethod: method }),
       setCustomWords: (words) => set({ customWords: words }),
-      setCustomWordsThreshold: (threshold) =>
-        set({ customWordsThreshold: threshold }),
-      setFillerRemovalEnabled: (enabled) =>
-        set({ fillerRemovalEnabled: enabled }),
-      setStutterCollapseEnabled: (enabled) =>
-        set({ stutterCollapseEnabled: enabled }),
+      setCustomWordsThreshold: (threshold) => set({ customWordsThreshold: threshold }),
+      setFillerRemovalEnabled: (enabled) => set({ fillerRemovalEnabled: enabled }),
+      setStutterCollapseEnabled: (enabled) => set({ stutterCollapseEnabled: enabled }),
       setOllamaEnabled: (enabled) => set({ ollamaEnabled: enabled }),
       setOllamaUrl: (url) => set({ ollamaUrl: url }),
       setOllamaModel: (model) => set({ ollamaModel: model }),

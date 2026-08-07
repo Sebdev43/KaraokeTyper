@@ -476,6 +476,43 @@ pub struct TextOutput {
     paste_method: PasteMethod,
 }
 
+/// How long to leave the transcription on the clipboard before restoring what was
+/// there before.
+///
+/// Both X11 and Wayland transfer selections lazily: Ctrl+V only asks the current
+/// owner for the data, and the target reads it whenever it gets round to it. Restore
+/// too early and a slow target (Electron, JVM apps, remote-desktop clients) pastes
+/// the *restored* content instead of the transcription. 300 ms matches the other
+/// human-scale waits in this pipeline and covers that with margin; the race is
+/// narrowed, not closed, since no compositor exposes "the paste has been served".
+const CLIPBOARD_READBACK_MS: u64 = 300;
+
+/// Floor on the wait between writing the clipboard and sending the paste shortcut.
+///
+/// Below this the paste can fire before the compositor has finished handing the
+/// selection over, so the target reads whatever the clipboard held a moment earlier.
+/// Since that is now the user's restored content rather than an empty string, a
+/// too-short wait means pasting the user's own copied data into the focused window.
+const MIN_CLIPBOARD_SETTLE_MS: u64 = 50;
+
+/// Ceiling on the user-configured pre-paste wait.
+///
+/// `key_delay_ms` is a `u32` that reaches us from settings.json and from the settings
+/// window without validation. Unclamped, a bad value turns a dictation into a
+/// multi-day `thread::sleep` that looks exactly like a freeze.
+const MAX_KEY_DELAY_MS: u64 = 2_000;
+
+/// What the clipboard held before a dictation borrowed it.
+///
+/// Pasting via the clipboard destroys whatever the user had copied. Capturing it
+/// first is the difference between "the transcription was pasted" and "the
+/// transcription was pasted and your copied paragraph is gone".
+enum ClipboardSnapshot {
+    Text(String),
+    Image(tauri::image::Image<'static>),
+    Empty,
+}
+
 impl TextOutput {
     const KNOWN_TERMINALS: &'static [&'static str] = &[
         "gnome-terminal",
@@ -531,7 +568,7 @@ impl TextOutput {
 
         Ok(Self {
             app_handle: app_handle.clone(),
-            key_delay_ms,
+            key_delay_ms: key_delay_ms.min(MAX_KEY_DELAY_MS),
             paste_method,
         })
     }
@@ -551,9 +588,11 @@ impl TextOutput {
         );
 
         // Track whether the transcription actually landed on the clipboard, so
-        // the security clear below fires for the Direct→clipboard fallback too
+        // the restore below fires for the Direct→clipboard fallback too
         // (self.paste_method is restored to Direct there and can't be trusted).
         let mut clipboard_used = false;
+        // What the user had copied, captured just before we overwrite it.
+        let mut saved_clipboard = ClipboardSnapshot::Empty;
 
         // Run the paste in a closure so the security clipboard-clear below always
         // executes — even if a paste step fails *after* the clipboard was set.
@@ -591,9 +630,12 @@ impl TextOutput {
 
                             crate::dev_log!("[OUTPUT] Clipboard paste ({:?})", effective_method);
 
+                            saved_clipboard = self.snapshot_clipboard();
                             self.set_clipboard_text(text)?;
                             clipboard_used = true;
-                            thread::sleep(Duration::from_millis(self.key_delay_ms.max(50)));
+                            thread::sleep(Duration::from_millis(
+                                self.key_delay_ms.max(MIN_CLIPBOARD_SETTLE_MS),
+                            ));
 
                             let saved_method = self.paste_method.clone();
                             self.paste_method = effective_method;
@@ -614,6 +656,7 @@ impl TextOutput {
                 PasteMethod::CtrlV | PasteMethod::CtrlShiftV | PasteMethod::ShiftInsert => {
                     // Clipboard + paste shortcut
                     let t1 = std::time::Instant::now();
+                    saved_clipboard = self.snapshot_clipboard();
                     self.set_clipboard_text(text)?;
                     clipboard_used = true;
                     crate::dev_log!(
@@ -621,13 +664,9 @@ impl TextOutput {
                         t1.elapsed().as_millis()
                     );
 
-                    if self.key_delay_ms > 0 {
-                        crate::dev_log!(
-                            "[OUTPUT] Waiting {}ms before pasting...",
-                            self.key_delay_ms
-                        );
-                        thread::sleep(Duration::from_millis(self.key_delay_ms));
-                    }
+                    let wait = self.key_delay_ms.max(MIN_CLIPBOARD_SETTLE_MS);
+                    crate::dev_log!("[OUTPUT] Waiting {}ms before pasting...", wait);
+                    thread::sleep(Duration::from_millis(wait));
 
                     let t2 = std::time::Instant::now();
                     self.send_paste_shortcut()?;
@@ -644,13 +683,14 @@ impl TextOutput {
             Ok(())
         })();
 
-        // Security: clear the clipboard if it was used, regardless of whether the
-        // paste step succeeded — otherwise a paste-shortcut error would leave the
-        // transcription sitting on the system clipboard.
+        // Give the target app time to read the clipboard, then hand it back to the
+        // user. This runs regardless of whether the paste step succeeded — otherwise
+        // a paste-shortcut error would leave the transcription sitting on the system
+        // clipboard, which is also why the transcription is never what we restore.
         if clipboard_used {
-            thread::sleep(Duration::from_millis(100));
-            let _ = self.app_handle.clipboard().write_text(String::new());
-            crate::dev_log!("[OUTPUT] Clipboard cleared after paste");
+            thread::sleep(Duration::from_millis(CLIPBOARD_READBACK_MS));
+            self.restore_clipboard(saved_clipboard);
+            crate::dev_log!("[OUTPUT] Clipboard restored after paste");
         }
 
         paste_outcome?;
@@ -673,6 +713,83 @@ impl TextOutput {
         let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
         let display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
         session == "wayland" || !display.is_empty()
+    }
+
+    /// Read the clipboard through the same native tools `set_clipboard_text` writes
+    /// with, so a snapshot sees the selection the app itself would set.
+    ///
+    /// Reading through the Tauri plugin alone is not enough on Wayland: the plugin
+    /// talks to the X11/XWayland selection, while writes go through `wl-copy`. A
+    /// failed read there would look like "the clipboard was empty" — and an empty
+    /// snapshot means `restore_clipboard` *clears* instead of restoring, destroying
+    /// exactly the content this whole mechanism exists to preserve.
+    #[cfg(target_os = "linux")]
+    fn read_clipboard_text_native() -> Option<String> {
+        let (tool, args): (&str, &[&str]) = if Self::is_wayland() {
+            ("wl-paste", &["--no-newline"])
+        } else {
+            ("xclip", &["-selection", "clipboard", "-o"])
+        };
+
+        if !Self::is_tool_available(tool) {
+            return None;
+        }
+
+        let output = std::process::Command::new(tool).args(args).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+
+        String::from_utf8(output.stdout)
+            .ok()
+            .filter(|t| !t.is_empty())
+    }
+
+    /// Capture the clipboard so it can be handed back after the paste.
+    ///
+    /// Text is probed first and an image only when there is no text: reading an
+    /// image decodes the whole bitmap, and text is by far the common case, so this
+    /// keeps the usual path as cheap as it was before.
+    fn snapshot_clipboard(&self) -> ClipboardSnapshot {
+        #[cfg(target_os = "linux")]
+        if let Some(text) = Self::read_clipboard_text_native() {
+            return ClipboardSnapshot::Text(text);
+        }
+
+        let clipboard = self.app_handle.clipboard();
+
+        if let Some(text) = clipboard.read_text().ok().filter(|t| !t.is_empty()) {
+            return ClipboardSnapshot::Text(text);
+        }
+
+        match clipboard.read_image() {
+            Ok(image) => ClipboardSnapshot::Image(image.to_owned()),
+            Err(_) => ClipboardSnapshot::Empty,
+        }
+    }
+
+    /// Put back what `snapshot_clipboard` captured.
+    ///
+    /// Text goes back through `set_clipboard_text` rather than the plugin directly,
+    /// so it takes the same wl-copy/xclip path the rest of this file relies on —
+    /// which is what makes accented text survive the round-trip on Wayland.
+    fn restore_clipboard(&mut self, snapshot: ClipboardSnapshot) {
+        match snapshot {
+            ClipboardSnapshot::Text(text) => {
+                let _ = self.set_clipboard_text(&text);
+            }
+            ClipboardSnapshot::Image(image) => {
+                let _ = self.app_handle.clipboard().write_image(&image);
+            }
+            // Nothing was there to begin with — don't leave the transcription behind.
+            // Overwrite through the native path first: the plugin's `clear()` targets
+            // the X11 selection, which is not the one `wl-copy` is holding on Wayland,
+            // so on its own it can leave the transcription sitting on the clipboard.
+            ClipboardSnapshot::Empty => {
+                let _ = self.set_clipboard_text("");
+                let _ = self.app_handle.clipboard().clear();
+            }
+        }
     }
 
     /// Set clipboard text using the best tool for the platform.
@@ -1283,6 +1400,23 @@ impl TextOutput {
         }
     }
 
+    /// Build the single line handed to dotool's stdin.
+    ///
+    /// dotool does not take its text as an argument — it reads a line-oriented command
+    /// protocol (`type`, `key`, `keydown`, `click`, `mouseto`, …). So a line break in the
+    /// payload ends the `type` command, and whatever follows it on the next line is
+    /// parsed as a *command*: a transcript containing "…\nkey ctrl+alt+t" opens a
+    /// terminal. That text is not trusted — it comes from the speech model, from the
+    /// Ollama post-processing, or straight from the `type_text` Tauri command.
+    ///
+    /// Line breaks become spaces rather than being dropped: multi-segment transcripts
+    /// really do contain them, and removing them would run words together. dotool's
+    /// `type` cannot emit a newline anyway.
+    #[cfg(target_os = "linux")]
+    fn dotool_type_command(text: &str) -> String {
+        format!("type {}", text.replace(['\n', '\r'], " "))
+    }
+
     /// dotool uses stdin for commands — special handling.
     #[cfg(target_os = "linux")]
     fn run_dotool_type(text: &str) -> Result<(), String> {
@@ -1294,10 +1428,23 @@ impl TextOutput {
             .spawn()
             .map_err(|e| format!("Failed to spawn dotool: {}", e))?;
 
-        if let Some(mut stdin) = child.stdin.take() {
-            writeln!(stdin, "type {}", text)
-                .map_err(|e| format!("Failed to write to dotool stdin: {}", e))?;
+        // Failing to reach stdin means nothing was typed, so it must be an error rather
+        // than a silent Ok — otherwise the caller never falls through to ydotool/enigo.
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "dotool stdin unavailable".to_string())?;
+        let line = Self::dotool_type_command(text);
+        debug_assert!(
+            !line.contains('\n') && !line.contains('\r'),
+            "dotool_type_command must produce exactly one line"
+        );
+        if let Err(e) = writeln!(stdin, "{}", line) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Failed to write to dotool stdin: {}", e));
         }
+        drop(stdin);
 
         let output = child
             .wait_with_output()
@@ -1386,29 +1533,34 @@ impl TextOutput {
         })
     }
 
+    /// Build wtype's argument list for a paste shortcut.
+    ///
+    /// `-M` presses a modifier and `-m` releases it. wtype does not release them on
+    /// exit, so every `-M` needs a matching `-m` after the keystroke — without it the
+    /// compositor is left with Ctrl (and Shift) still held down, and the user's next
+    /// keypress becomes a shortcut. Releases are emitted in reverse press order.
+    #[cfg(target_os = "linux")]
+    fn wtype_shortcut_args(paste_method: &PasteMethod) -> &'static [&'static str] {
+        match paste_method {
+            PasteMethod::CtrlShiftV => &[
+                "-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl",
+            ],
+            PasteMethod::ShiftInsert => &["-M", "shift", "-k", "Insert", "-m", "shift"],
+            _ => &["-M", "ctrl", "-k", "v", "-m", "ctrl"],
+        }
+    }
+
     #[cfg(target_os = "linux")]
     fn try_wtype_shortcut(paste_method: &PasteMethod) -> Result<bool, String> {
         if !Self::is_tool_available("wtype") {
             return Ok(false);
         }
 
-        let shortcut = match paste_method {
-            PasteMethod::CtrlShiftV => {
-                crate::dev_log!("[OUTPUT] Using wtype for Ctrl+Shift+V...");
-                vec!["-M", "ctrl", "-M", "shift", "-k", "v"]
-            }
-            PasteMethod::ShiftInsert => {
-                crate::dev_log!("[OUTPUT] Using wtype for Shift+Insert...");
-                vec!["-M", "shift", "-k", "Insert"]
-            }
-            _ => {
-                crate::dev_log!("[OUTPUT] Using wtype for Ctrl+V...");
-                vec!["-M", "ctrl", "-k", "v"]
-            }
-        };
+        crate::dev_log!("[OUTPUT] Using wtype for {:?}...", paste_method);
+        let shortcut = Self::wtype_shortcut_args(paste_method);
 
         let output = std::process::Command::new("wtype")
-            .args(&shortcut)
+            .args(shortcut)
             .output()
             .map_err(|e| format!("Failed to run wtype: {}", e))?;
 
@@ -1710,6 +1862,104 @@ mod tests {
         fn test_resolve_paste_method_none() {
             let result = TextOutput::resolve_paste_method(&PasteMethod::None);
             assert_eq!(result, PasteMethod::None);
+        }
+
+        fn count_flag(args: &[&str], flag: &str) -> usize {
+            args.iter().filter(|a| **a == flag).count()
+        }
+
+        /// wtype leaves modifiers held down unless each `-M` is matched by a `-m`.
+        /// An unmatched press turns the user's next keystroke into a shortcut.
+        #[test]
+        fn test_wtype_releases_every_modifier_it_presses() {
+            for method in [
+                PasteMethod::CtrlV,
+                PasteMethod::CtrlShiftV,
+                PasteMethod::ShiftInsert,
+                PasteMethod::Direct,
+            ] {
+                let args = TextOutput::wtype_shortcut_args(&method);
+                assert_eq!(
+                    count_flag(args, "-M"),
+                    count_flag(args, "-m"),
+                    "unbalanced modifiers for {:?}: {:?}",
+                    method,
+                    args
+                );
+            }
+        }
+
+        /// A release emitted before the keystroke would defeat the shortcut.
+        #[test]
+        fn test_wtype_releases_come_after_the_key() {
+            for method in [
+                PasteMethod::CtrlV,
+                PasteMethod::CtrlShiftV,
+                PasteMethod::ShiftInsert,
+            ] {
+                let args = TextOutput::wtype_shortcut_args(&method);
+                let key = args.iter().position(|a| *a == "-k").expect("no -k");
+                let first_release = args.iter().position(|a| *a == "-m").expect("no -m");
+                assert!(
+                    first_release > key,
+                    "release before keystroke for {:?}: {:?}",
+                    method,
+                    args
+                );
+            }
+        }
+
+        /// dotool parses its stdin line by line, so a transcript that contains a line
+        /// break would otherwise have its remainder executed as a dotool command.
+        #[test]
+        fn test_dotool_command_cannot_span_two_lines() {
+            let injection = "bonjour\nkey ctrl+alt+t";
+            let command = TextOutput::dotool_type_command(injection);
+
+            assert_eq!(
+                command.lines().count(),
+                1,
+                "payload escaped into a second dotool command: {:?}",
+                command
+            );
+            assert!(!command.contains('\n') && !command.contains('\r'));
+            assert!(command.starts_with("type "));
+            // The words survive, they are just no longer on their own line.
+            assert!(command.contains("bonjour") && command.contains("key ctrl+alt+t"));
+        }
+
+        #[test]
+        fn test_dotool_command_neutralises_every_line_terminator() {
+            for payload in [
+                "a\rb", "a\r\nb", "a\n\n\nb", "\nkey f1", "a\nb\nc", "a\n", "", "\n",
+            ] {
+                let command = TextOutput::dotool_type_command(payload);
+                // `lines().count()` alone would accept a trailing newline, which is
+                // still a command separator once `writeln!` appends its own.
+                assert!(
+                    !command.contains('\n') && !command.contains('\r'),
+                    "payload {:?} kept a line terminator: {:?}",
+                    payload,
+                    command
+                );
+            }
+        }
+
+        #[test]
+        fn test_dotool_command_leaves_ordinary_text_alone() {
+            assert_eq!(
+                TextOutput::dotool_type_command("Bonjour, ça va ? C'est l'été."),
+                "type Bonjour, ça va ? C'est l'été."
+            );
+        }
+
+        #[test]
+        fn test_wtype_ctrl_shift_v_releases_both_modifiers() {
+            let args = TextOutput::wtype_shortcut_args(&PasteMethod::CtrlShiftV);
+            assert_eq!(
+                args,
+                ["-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"]
+            );
         }
     }
 }

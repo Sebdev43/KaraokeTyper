@@ -18,6 +18,7 @@
 //! only after the stream is fully open, because `run_worker()` only starts its loop
 //! after `stream.play()` succeeds.
 
+use crate::resampler::AudioResampler;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -71,6 +72,17 @@ fn is_valid_device_name(name: &str) -> bool {
 
 /// Delay before auto-closing the stream after recording stops (releases mic device)
 const STREAM_AUTO_CLOSE_SECS: u64 = 10;
+
+/// Capture buffers the worker may fall behind by before samples start being dropped.
+///
+/// The queue used to be unbounded, which was survivable while the callback decimated to
+/// 16 kHz first. It no longer does — the worker resamples now — so the same stall costs
+/// roughly three times the memory per second, and nothing capped it. At a typical
+/// 1024-frame period this is about four seconds of audio and under a megabyte.
+///
+/// Dropping is the right failure: the alternative in a real-time callback is blocking,
+/// which does not make the audio arrive, it makes the *device* glitch as well.
+const SAMPLE_QUEUE_BUFFERS: usize = 200;
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -137,7 +149,7 @@ impl AudioCapture {
         self.is_bluetooth.store(is_bt, Ordering::Relaxed);
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
-        let (sample_tx, sample_rx) = mpsc::channel::<Vec<f32>>();
+        let (sample_tx, sample_rx) = mpsc::sync_channel::<Vec<f32>>(SAMPLE_QUEUE_BUFFERS);
 
         let target_rate = self.target_sample_rate;
         let vad = Arc::clone(&self.vad);
@@ -180,16 +192,45 @@ impl AudioCapture {
             );
 
             let sample_tx_clone = sample_tx;
+            // Dropped-buffer counter, reported once per burst rather than per buffer:
+            // a stalled worker would otherwise turn one problem into a log flood.
+            let mut dropped: u64 = 0;
             let stream = match device.build_input_stream(
                 &config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    // Resample if needed, then send to worker
-                    let samples = if actual_rate != target_rate {
-                        downsample(data, actual_rate, target_rate)
-                    } else {
-                        data.to_vec()
-                    };
-                    let _ = sample_tx_clone.send(samples);
+                    // Rate conversion used to happen here, on the audio thread. It now
+                    // happens on the worker, where it can take as long as it needs
+                    // without risking a dropout, and where it can keep state across
+                    // callbacks — which is what makes it correct rather than merely
+                    // cheap. What remains is still not RT-safe (`to_vec` and the channel
+                    // send both allocate), but it is a great deal less work than an FFT.
+                    //
+                    // `try_send`, never `send`: the queue is bounded now, and blocking
+                    // the audio thread to wait for a slow worker would add a device-level
+                    // glitch on top of the backlog it was waiting on.
+                    match sample_tx_clone.try_send(data.to_vec()) {
+                        Ok(()) => {
+                            if dropped > 0 {
+                                crate::dev_log!(
+                                    "[AUDIO/CPAL] Worker caught up after dropping {} buffers",
+                                    dropped
+                                );
+                                dropped = 0;
+                            }
+                        }
+                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                            // Say it the first time, then stay quiet until it recovers.
+                            if dropped == 0 {
+                                crate::dev_log!(
+                                    "[AUDIO/CPAL] Sample queue full ({} buffers) — worker is \
+                                     behind, dropping audio",
+                                    SAMPLE_QUEUE_BUFFERS
+                                );
+                            }
+                            dropped += 1;
+                        }
+                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
+                    }
                 },
                 |err| {
                     crate::dev_log!("[AUDIO/WORKER] Stream error: {}", err);
@@ -217,7 +258,7 @@ impl AudioCapture {
             );
 
             // ── Step 4: Worker loop — process samples + commands ──
-            run_worker(vad, sample_rx, cmd_rx, target_rate);
+            run_worker(vad, sample_rx, cmd_rx, actual_rate, target_rate);
 
             // _guard drop sets is_open=false and logs on exit (including panic unwind)
         });
@@ -339,12 +380,21 @@ fn run_worker(
     vad: Arc<Mutex<Option<SmoothedVad>>>,
     sample_rx: mpsc::Receiver<Vec<f32>>,
     cmd_rx: mpsc::Receiver<Cmd>,
+    actual_rate: u32,
     target_rate: u32,
 ) {
     let mut audio_buffer: Vec<f32> = Vec::new();
     let mut frame_accumulator: Vec<f32> = Vec::new();
     let mut recording = false;
     let mut first_callback_logged = false;
+
+    // Everything below this point works in target-rate samples. The device may deliver
+    // any rate, so conversion happens here, once, on the way in — and the resampler is
+    // stateful, which is what keeps the output continuous across callback boundaries.
+    let mut resampler = AudioResampler::new(actual_rate, target_rate);
+    // Reused across chunks; the resampler holds its own output buffer, so together they
+    // keep the steady-state path free of per-chunk allocation.
+    let mut converted: Vec<f32> = Vec::new();
 
     // Ring buffer holding the last PRE_ROLL_MS of audio captured while NOT recording.
     // Prepended to audio_buffer on Cmd::Start to recover the phrase onset.
@@ -361,12 +411,16 @@ fn run_worker(
         };
 
         // Process audio only if recording and we have data
-        if let Some(ref samples) = raw {
+        if let Some(ref captured) = raw {
+            converted.clear();
+            resampler.push(captured, &mut converted);
+            let samples = &converted[..];
             if recording {
                 if !first_callback_logged {
                     crate::dev_log!(
-                        "[AUDIO/WORKER] First audio chunk while recording: {} samples",
-                        samples.len()
+                        "[AUDIO/WORKER] First audio chunk while recording: {} samples ({} captured)",
+                        samples.len(),
+                        captured.len()
                     );
                     first_callback_logged = true;
                 }
@@ -390,6 +444,14 @@ fn run_worker(
                     frame_accumulator.clear();
                     recording = true;
                     first_callback_logged = false;
+
+                    // Deliberately NOT resetting the resampler here, unlike Handy, whose
+                    // resampler is per-session. Ours runs continuously: the stream stays
+                    // open between dictations to keep push-to-talk instant, so at this
+                    // moment the resampler's state *is* the tail of the pre-roll we are
+                    // about to prepend. Resetting would punch a ~21 ms hole exactly at the
+                    // seam between the pre-roll and the new audio. The state is cleared on
+                    // Stop instead, which is where a real session boundary exists.
 
                     // Reset VAD state for new session
                     if let Ok(mut guard) = vad.lock() {
@@ -432,16 +494,24 @@ fn run_worker(
                         let mut data_received = false;
                         while std::time::Instant::now() < deadline {
                             match sample_rx.recv_timeout(std::time::Duration::from_millis(10)) {
-                                Ok(samples) => {
+                                Ok(captured) => {
+                                    converted.clear();
+                                    resampler.push(&captured, &mut converted);
                                     process_audio(
-                                        &samples,
+                                        &converted,
                                         &vad,
                                         &mut frame_accumulator,
                                         &mut audio_buffer,
                                     );
-                                    data_received = true;
-                                    // Break once data processed (even if VAD discarded it as noise)
-                                    break;
+                                    // A buffer arriving no longer implies usable output:
+                                    // the resampler needs a full FFT block before it emits
+                                    // anything, and the first pass after a reset always
+                                    // emits zero. Breaking on "a buffer arrived" would end
+                                    // this wait having captured nothing at all.
+                                    if !converted.is_empty() {
+                                        data_received = true;
+                                        break;
+                                    }
                                 }
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
                                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -457,8 +527,25 @@ fn run_worker(
 
                     // Drain any audio chunks captured but not yet consumed
                     while let Ok(remaining) = sample_rx.try_recv() {
-                        process_audio(&remaining, &vad, &mut frame_accumulator, &mut audio_buffer);
+                        converted.clear();
+                        resampler.push(&remaining, &mut converted);
+                        process_audio(&converted, &vad, &mut frame_accumulator, &mut audio_buffer);
                     }
+
+                    // Drain the resampler itself: tens of milliseconds of real audio are
+                    // still inside it, and that is the end of the last word. Goes through
+                    // process_audio like everything else so the sample order relative to
+                    // the VAD accumulator stays right.
+                    converted.clear();
+                    resampler.finish(&mut converted);
+                    if !converted.is_empty() {
+                        process_audio(&converted, &vad, &mut frame_accumulator, &mut audio_buffer);
+                    }
+                    // The flush fed silence through to displace that audio; drop that
+                    // state so it does not colour the pre-roll captured from here on.
+                    // Costs a short window where the pre-roll ring stays empty while the
+                    // resampler refills — tens of milliseconds, against a 500 ms ring.
+                    resampler.reset();
 
                     // Flush VAD accumulator — process any remaining partial frame
                     flush_vad_accumulator(&vad, &mut frame_accumulator, &mut audio_buffer);
@@ -680,21 +767,4 @@ fn negotiate_config(
     );
 
     Ok((config, native_rate))
-}
-
-// ── Downsampling ─────────────────────────────────────────────────────────────
-
-/// Simple downsampling (nearest-neighbor) from source rate to target rate
-fn downsample(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate || samples.is_empty() {
-        return samples.to_vec();
-    }
-    let ratio = from_rate as f64 / to_rate as f64;
-    let output_len = (samples.len() as f64 / ratio) as usize;
-    (0..output_len)
-        .map(|i| {
-            let src_idx = (i as f64 * ratio) as usize;
-            samples[src_idx.min(samples.len() - 1)]
-        })
-        .collect()
 }

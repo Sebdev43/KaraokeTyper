@@ -1,0 +1,208 @@
+{
+  "catalog_version": 1,
+  "generated_at": "2026-08-07T00:00:00Z",
+  "mirrors": [],
+  "language_sets": {
+    "whisper-multilingue": [
+      "en",
+      "fr",
+      "es",
+      "de",
+      "it",
+      "pt",
+      "nl",
+      "pl",
+      "ru",
+      "ar",
+      "zh",
+      "ja",
+      "ko"
+    ],
+    "parakeet-v3": [
+      "bg",
+      "cs",
+      "da",
+      "de",
+      "el",
+      "en",
+      "es",
+      "et",
+      "fi",
+      "fr",
+      "hr",
+      "hu",
+      "it",
+      "lt",
+      "lv",
+      "mt",
+      "nl",
+      "pl",
+      "pt",
+      "ro",
+      "ru",
+      "sk",
+      "sl",
+      "sv",
+      "uk"
+    ],
+    "sense-voice": [
+      "fr",
+      "en",
+      "es",
+      "de"
+    ],
+    "anglais": [
+      "en"
+    ]
+  },
+  "models": [
+    {
+      "name": "ggml-tiny",
+      "display_name": "Whisper Tiny",
+      "description": "75 MB • 99 langues • Rapide mais basique",
+      "engine_type": "whisper",
+      "is_directory": false,
+      "size_mb": 75,
+      "languages": "whisper-multilingue",
+      "is_recommended": false,
+      "accuracy_score": 0.3,
+      "speed_score": 0.95,
+      "coming_soon": false,
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.bin",
+      "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+      "size_bytes": 77691713
+    },
+    {
+      "name": "ggml-base",
+      "display_name": "Whisper Base",
+      "description": "142 MB • 99 langues • Bon compromis vitesse/qualité",
+      "engine_type": "whisper",
+      "is_directory": false,
+      "size_mb": 142,
+      "languages": "whisper-multilingue",
+      "is_recommended": false,
+      "accuracy_score": 0.45,
+      "speed_score": 0.9,
+      "coming_soon": false,
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-base.bin",
+      "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+      "size_bytes": 147951465
+    },
+    {
+      "name": "ggml-small",
+      "display_name": "Whisper Small ⭐ Recommandé",
+      "description": "466 MB • 99 langues • Meilleure précision pour le français",
+      "engine_type": "whisper",
+      "is_directory": false,
+      "size_mb": 466,
+      "languages": "whisper-multilingue",
+      "is_recommended": true,
+      "accuracy_score": 0.65,
+      "speed_score": 0.8,
+      "coming_soon": false,
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small.bin",
+      "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+      "size_bytes": 487601967
+    },
+    {
+      "name": "ggml-medium",
+      "display_name": "Whisper Medium",
+      "description": "1.5 GB • 99 langues • Excellente qualité, plus lent",
+      "engine_type": "whisper",
+      "is_directory": false,
+      "size_mb": 1500,
+      "languages": "whisper-multilingue",
+      "is_recommended": false,
+      "accuracy_score": 0.8,
+      "speed_score": 0.55,
+      "coming_soon": false,
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-medium.bin",
+      "sha256": "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+      "size_bytes": 1533763059
+    },
+    {
+      "name": "ggml-large-v3",
+      "display_name": "Whisper Large-v3",
+      "description": "3.1 GB • 99 langues • Précision maximale, très lent",
+      "engine_type": "whisper",
+      "is_directory": false,
+      "size_mb": 3100,
+      "languages": "whisper-multilingue",
+      "is_recommended": false,
+      "accuracy_score": 0.92,
+      "speed_score": 0.3,
+      "coming_soon": false,
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3.bin",
+      "sha256": "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
+      "size_bytes": 3095033483
+    },
+    {
+      "name": "parakeet-tdt-0.6b-v3-int8",
+      "display_name": "Parakeet V3 (FR + 24 langues UE) ⭐ Recommandé FR",
+      "description": "640 MB • 25 langues UE dont français • CPU, ~3-5× temps réel",
+      "engine_type": "parakeet",
+      "is_directory": true,
+      "size_mb": 640,
+      "languages": "parakeet-v3",
+      "is_recommended": true,
+      "accuracy_score": 0.82,
+      "speed_score": 0.75,
+      "coming_soon": false,
+      "files": [
+        {
+          "filename": "config.json",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/config.json",
+          "sha256": "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466"
+        },
+        {
+          "filename": "vocab.txt",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/vocab.txt",
+          "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+        },
+        {
+          "filename": "encoder-model.int8.onnx",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/encoder-model.int8.onnx",
+          "sha256": "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09"
+        },
+        {
+          "filename": "decoder_joint-model.int8.onnx",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/decoder_joint-model.int8.onnx",
+          "sha256": "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70"
+        },
+        {
+          "filename": "nemo128.onnx",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce/nemo128.onnx",
+          "sha256": "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f"
+        }
+      ]
+    },
+    {
+      "name": "sense-voice-int8",
+      "display_name": "SenseVoice (multilingue int8)",
+      "description": "234 MB • FR/EN/ES/… • Rapide, bonne qualité français",
+      "engine_type": "sense-voice",
+      "is_directory": true,
+      "size_mb": 234,
+      "languages": "sense-voice",
+      "is_recommended": false,
+      "accuracy_score": 0.72,
+      "speed_score": 0.88,
+      "coming_soon": true,
+      "files": []
+    },
+    {
+      "name": "moonshine-base",
+      "display_name": "Moonshine Base (EN)",
+      "description": "80 MB • Anglais • Ultra léger, streaming",
+      "engine_type": "moonshine",
+      "is_directory": true,
+      "size_mb": 80,
+      "languages": "anglais",
+      "is_recommended": false,
+      "accuracy_score": 0.6,
+      "speed_score": 0.95,
+      "coming_soon": true,
+      "files": []
+    }
+  ]
+}

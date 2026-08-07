@@ -6,13 +6,16 @@ mod audio;
 mod audio_devices;
 mod audio_feedback;
 mod autostart;
+mod catalog;
 mod config;
 mod gnome_extension;
 mod gpu;
 mod keyboard_listener;
+mod memory;
 mod model_downloader;
 mod ollama_client;
 mod output;
+mod resampler;
 mod stt;
 mod text_processing;
 mod updater;
@@ -169,6 +172,29 @@ pub(crate) struct AppState {
     pub recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
     last_stt_activity: Arc<std::sync::atomic::AtomicU64>,
     idle_watcher_shutdown: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Everything `TextOutput` needs, read from the config in one go.
+///
+/// Named rather than a tuple because both fields would otherwise be positional at
+/// three call sites, where swapping them would still compile.
+pub(crate) struct PasteSettings {
+    pub method: crate::config::PasteMethod,
+    pub key_delay_ms: u32,
+}
+
+impl AppState {
+    /// Paste settings, read together under a single lock.
+    ///
+    /// Reads the in-memory cache rather than settings.json: a per-paste disk read
+    /// would also risk triggering a migration write from `AppConfig::load()`.
+    pub(crate) fn paste_settings(&self) -> PasteSettings {
+        let config = self.config.lock().unwrap_or_else(|e| e.into_inner());
+        PasteSettings {
+            method: config.paste_method.clone(),
+            key_delay_ms: config.key_delay_ms,
+        }
+    }
 }
 
 impl Default for AppState {
@@ -697,6 +723,12 @@ pub(crate) async fn do_stop_recording(
         padded_audio.len()
     );
 
+    // The raw capture has been copied into padded_audio and is not read again. Dropping
+    // it here rather than at the end of the function halves the Rust-side peak across
+    // the seconds of inference, and is what lets the trim at the end actually hand
+    // those pages back instead of finding the buffer still alive.
+    drop(audio_data);
+
     // Update STT activity timestamp (for idle watcher)
     update_stt_activity(state);
 
@@ -812,34 +844,32 @@ pub(crate) async fn do_stop_recording(
         )
         .ok();
 
+    // The pipeline has just dropped its large transient buffers (captured PCM, padded
+    // copy, engine scratch); hand the cached pages back to the OS rather than letting
+    // them sit in the allocators until they get swapped out. Off-thread: it is a
+    // syscall-heavy millisecond, not something to run on a tokio worker.
+    tokio::task::spawn_blocking(memory::trim_freed_memory);
+
     Ok(final_text)
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn type_text(text: String, app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    // Read from the in-memory config cache instead of re-reading settings.json
-    // (which could also trigger a disk write via the GPU migration in load()).
-    let paste_method = state
-        .config
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .paste_method
-        .clone();
-    do_type_text(text, &app, paste_method).await
+    do_type_text(text, &app, state.paste_settings()).await
 }
 
 /// Helper function for type_text - can be called from other modules
 pub(crate) async fn do_type_text(
     text: String,
     app_handle: &AppHandle,
-    paste_method: crate::config::PasteMethod,
+    settings: PasteSettings,
 ) -> Result<(), String> {
     // type_text() runs a chain of blocking thread::sleep + subprocess calls;
     // offload it to a blocking thread so it never stalls a tokio worker.
     let app = app_handle.clone();
     tokio::task::spawn_blocking(move || {
-        let mut output = TextOutput::new(60, paste_method, &app)?;
+        let mut output = TextOutput::new(settings.key_delay_ms.into(), settings.method, &app)?;
         output.type_text(&text)
     })
     .await
@@ -1292,6 +1322,11 @@ async fn transcribe_audio(
     .map_err(|e| format!("Transcription task panicked: {}", e))??;
 
     dev_log!("[TRANSCRIBE] Result: '{}'", transcription);
+
+    // Same buffer churn as do_stop_recording — this path allocates the padded audio
+    // and the engine scratch too, so it needs the same sweep.
+    tokio::task::spawn_blocking(memory::trim_freed_memory);
+
     Ok(transcription)
 }
 
@@ -1496,6 +1531,16 @@ fn reset_gpu_failure_count() -> Result<String, String> {
 #[specta::specta]
 async fn get_installed_models() -> Result<Vec<model_downloader::ModelInfo>, String> {
     model_downloader::check_installed_models()
+}
+
+/// Ask an in-flight model download to stop. Returns false if none was running.
+///
+/// The partial file is kept, so pressing download again resumes rather than starting
+/// the gigabytes over.
+#[tauri::command]
+#[specta::specta]
+fn cancel_model_download(model_name: String) -> bool {
+    model_downloader::cancel_download(&model_name)
 }
 
 /// Download a model with progress events
@@ -1705,6 +1750,11 @@ async fn set_autostart_enabled(enabled: bool) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Pin glibc's dynamic mmap threshold before the first large allocation, so the
+    // inference libraries' per-dictation buffers go back to the OS on free instead of
+    // accumulating in malloc arenas. No-op off Linux/glibc.
+    memory::init_allocator();
+
     // Build the invoke handler with tauri-specta for type-safe TypeScript bindings
     let builder =
         tauri_specta::Builder::<tauri::Wry>::new().commands(tauri_specta::collect_commands![
@@ -1727,6 +1777,7 @@ pub fn run() {
             log_from_frontend,
             get_installed_models,
             download_model,
+            cancel_model_download,
             get_system_info,
             gnome_extension::check_focused_window_extension,
             gnome_extension::install_focused_window_extension,

@@ -13,6 +13,9 @@
 //! - `stop_recording()` sends `Cmd::Stop` — the worker drains remaining samples,
 //!   runs VAD flush, and returns the buffer via a reply channel.
 //! - `close()` sends `Cmd::Shutdown` and joins the worker thread.
+//! - The worker releases a dead stream on its own: a playing input stream delivers
+//!   continuously, so a long gap without samples while idle means the device is gone
+//!   (cpal may or may not have reported it). The next `open_stream()` rebuilds it.
 //!
 //! This architecture eliminates PTT race conditions: commands are queued and processed
 //! only after the stream is fully open, because `run_worker()` only starts its loop
@@ -70,6 +73,15 @@ fn is_valid_device_name(name: &str) -> bool {
         .all(|c| c.is_alphanumeric() || "_.:-,=".contains(c))
 }
 
+/// Gap without samples after which an idle worker gives its stream up: a playing input
+/// stream delivers continuously (silence included), so this long a gap means the device
+/// is gone — on PipeWire a lost device stalls the ALSA plugin without any error callback.
+const STALLED_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Same, before the first sample ever arrived: some devices (Bluetooth HFP) take a few
+/// seconds to start delivering, and giving up early would waste the warm-up open.
+const STARTUP_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Delay before auto-closing the stream after recording stops (releases mic device)
 const STREAM_AUTO_CLOSE_SECS: u64 = 10;
 
@@ -98,6 +110,11 @@ pub struct AudioCapture {
     vad: Arc<Mutex<Option<SmoothedVad>>>,
     /// Whether the worker is currently open (stream active)
     is_open: Arc<AtomicBool>,
+    /// Set by cpal's error callback, cleared by the next data callback and by
+    /// `close_stream()`: `true` means cpal reported an error and no audio has arrived
+    /// since. Lets `is_stream_open()` report the loss at once, before the worker
+    /// notices the gap itself.
+    stream_error: Arc<AtomicBool>,
     /// Whether current device is Bluetooth (for auto-close logic)
     is_bluetooth: AtomicBool,
     /// Generation counter for Bluetooth auto-close timer
@@ -112,6 +129,7 @@ impl AudioCapture {
             worker_handle: None,
             vad: Arc::new(Mutex::new(None)),
             is_open: Arc::new(AtomicBool::new(false)),
+            stream_error: Arc::new(AtomicBool::new(false)),
             is_bluetooth: AtomicBool::new(false),
             stop_generation: Arc::new(AtomicU64::new(0)),
         }
@@ -122,9 +140,9 @@ impl AudioCapture {
         *self.vad.lock().unwrap() = Some(vad);
     }
 
-    /// Check if a stream is currently open.
+    /// Check if a stream is currently open and has not reported an error.
     pub fn is_stream_open(&self) -> bool {
-        self.is_open.load(Ordering::SeqCst)
+        self.is_open.load(Ordering::SeqCst) && !self.stream_error.load(Ordering::SeqCst)
     }
 
     /// Open the audio stream for a device.
@@ -154,6 +172,7 @@ impl AudioCapture {
         let target_rate = self.target_sample_rate;
         let vad = Arc::clone(&self.vad);
         let is_open = Arc::clone(&self.is_open);
+        let stream_error = Arc::clone(&self.stream_error);
         let device_name_owned = device_name.map(|s| s.to_string());
 
         let worker = std::thread::spawn(move || {
@@ -195,9 +214,13 @@ impl AudioCapture {
             // Dropped-buffer counter, reported once per burst rather than per buffer:
             // a stalled worker would otherwise turn one problem into a log flood.
             let mut dropped: u64 = 0;
+            let stream_error_data = Arc::clone(&stream_error);
             let stream = match device.build_input_stream(
                 &config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    // Audio is flowing, so whatever cpal reported was transient (ALSA
+                    // reports an overrun it hits mid-read, then recovers by itself).
+                    stream_error_data.store(false, Ordering::SeqCst);
                     // Rate conversion used to happen here, on the audio thread. It now
                     // happens on the worker, where it can take as long as it needs
                     // without risking a dropout, and where it can keep state across
@@ -232,8 +255,9 @@ impl AudioCapture {
                         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
                     }
                 },
-                |err| {
+                move |err| {
                     crate::dev_log!("[AUDIO/WORKER] Stream error: {}", err);
+                    stream_error.store(true, Ordering::SeqCst);
                 },
                 None,
             ) {
@@ -260,7 +284,10 @@ impl AudioCapture {
             // ── Step 4: Worker loop — process samples + commands ──
             run_worker(vad, sample_rx, cmd_rx, actual_rate, target_rate);
 
-            // _guard drop sets is_open=false and logs on exit (including panic unwind)
+            // The worker no longer accepts commands: say so before the stream teardown
+            // below, so a PTT cannot land in between. (_guard repeats it on any exit,
+            // including a panic unwind.)
+            is_open.store(false, Ordering::SeqCst);
         });
 
         self.cmd_tx = Some(cmd_tx);
@@ -288,6 +315,8 @@ impl AudioCapture {
             }
         }
         self.is_open.store(false, Ordering::SeqCst);
+        // Joined above: no callback of that stream can set this again.
+        self.stream_error.store(false, Ordering::SeqCst);
     }
 
     /// Start recording — sends `Cmd::Start` to the worker (instant).
@@ -387,6 +416,8 @@ fn run_worker(
     let mut frame_accumulator: Vec<f32> = Vec::new();
     let mut recording = false;
     let mut first_callback_logged = false;
+    let mut last_audio = std::time::Instant::now();
+    let mut ever_received = false;
 
     // Everything below this point works in target-rate samples. The device may deliver
     // any rate, so conversion happens here, once, on the way in — and the resampler is
@@ -405,7 +436,11 @@ fn run_worker(
         // Wait for audio samples with timeout — allows Shutdown to be processed
         // even if the device stops producing audio (e.g. Bluetooth disconnect).
         let raw = match sample_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-            Ok(s) => Some(s),
+            Ok(s) => {
+                last_audio = std::time::Instant::now();
+                ever_received = true;
+                Some(s)
+            }
             Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(mpsc::RecvTimeoutError::Disconnected) => break, // stream closed
         };
@@ -563,6 +598,22 @@ fn run_worker(
                     return;
                 }
             }
+        }
+
+        // Decided after the command drain, so a `Cmd::Start` queued during the last
+        // wait is honoured rather than dropped with the channel. While recording, stay
+        // up so `Cmd::Stop` can return what was captured; the exit follows right after.
+        let timeout = if ever_received {
+            STALLED_STREAM_TIMEOUT
+        } else {
+            STARTUP_STREAM_TIMEOUT
+        };
+        if !recording && last_audio.elapsed() >= timeout {
+            crate::dev_log!(
+                "[AUDIO/WORKER] No audio for {:?} while idle — releasing device",
+                timeout
+            );
+            return;
         }
     }
 }
@@ -767,4 +818,134 @@ fn negotiate_config(
     );
 
     Ok((config, native_rate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A bare `run_worker` on its own thread, fed by hand.
+    struct WorkerUnderTest {
+        /// Stand-in for cpal's data callback. Must stay alive even when unused:
+        /// dropping it disconnects the channel and the worker exits at once.
+        sample_tx: mpsc::SyncSender<Vec<f32>>,
+        cmd_tx: mpsc::Sender<Cmd>,
+        handle: std::thread::JoinHandle<()>,
+    }
+
+    impl WorkerUnderTest {
+        fn spawn() -> Self {
+            let (sample_tx, sample_rx) = mpsc::sync_channel::<Vec<f32>>(SAMPLE_QUEUE_BUFFERS);
+            let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
+            let vad = Arc::new(Mutex::new(None));
+            let handle = std::thread::spawn(move || {
+                run_worker(vad, sample_rx, cmd_rx, 16_000, 16_000);
+            });
+            Self {
+                sample_tx,
+                cmd_tx,
+                handle,
+            }
+        }
+
+        fn feed_silence(&self) {
+            self.sample_tx.send(vec![0.0; 160]).expect("worker alive");
+        }
+
+        fn exits_within(&self, timeout: Duration) -> bool {
+            let deadline = Instant::now() + timeout;
+            while Instant::now() < deadline {
+                if self.handle.is_finished() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        }
+
+        fn stop(&self) -> Vec<f32> {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            self.cmd_tx.send(Cmd::Stop(reply_tx)).expect("send Stop");
+            reply_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("Stop must still answer")
+        }
+    }
+
+    const SLACK: Duration = Duration::from_secs(2);
+
+    #[test]
+    fn stream_error_hides_an_open_stream() {
+        let capture = AudioCapture::new(16_000);
+        assert!(!capture.is_stream_open(), "never opened");
+        capture.is_open.store(true, Ordering::SeqCst);
+        assert!(capture.is_stream_open());
+        capture.stream_error.store(true, Ordering::SeqCst);
+        assert!(
+            !capture.is_stream_open(),
+            "a failed stream must not look open, or the next PTT records silence"
+        );
+    }
+
+    #[test]
+    fn close_stream_clears_stream_error() {
+        let mut capture = AudioCapture::new(16_000);
+        capture.stream_error.store(true, Ordering::SeqCst);
+        capture.close_stream(); // no worker: only the state reset runs
+        assert!(!capture.stream_error.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn idle_worker_releases_a_stalled_stream() {
+        let worker = WorkerUnderTest::spawn();
+        worker.feed_silence();
+        assert!(
+            !worker.exits_within(STALLED_STREAM_TIMEOUT / 2),
+            "a short gap must not drop the stream"
+        );
+        assert!(
+            worker.exits_within(STALLED_STREAM_TIMEOUT / 2 + SLACK),
+            "worker must exit once no audio arrived for {:?}",
+            STALLED_STREAM_TIMEOUT
+        );
+        worker.handle.join().expect("worker panicked");
+    }
+
+    #[test]
+    fn recording_worker_stays_up_while_stalled() {
+        let worker = WorkerUnderTest::spawn();
+        worker.feed_silence();
+        worker.cmd_tx.send(Cmd::Start).expect("send Start");
+        assert!(
+            !worker.exits_within(STALLED_STREAM_TIMEOUT + Duration::from_millis(600)),
+            "a recording worker must wait for Cmd::Stop, not drop the captured audio"
+        );
+        let samples = worker.stop();
+        assert_eq!(
+            samples.len(),
+            160,
+            "Stop returns what was fed before the stall"
+        );
+        assert!(
+            worker.exits_within(SLACK),
+            "once idle again the worker must release the dead stream"
+        );
+        worker.handle.join().expect("worker panicked");
+    }
+
+    #[test]
+    fn start_queued_during_the_last_wait_is_honoured() {
+        let worker = WorkerUnderTest::spawn();
+        worker.feed_silence();
+        // Land the Start inside the final 500 ms wait before the timeout expires.
+        std::thread::sleep(STALLED_STREAM_TIMEOUT - Duration::from_millis(300));
+        worker.cmd_tx.send(Cmd::Start).expect("send Start");
+        assert!(
+            !worker.exits_within(Duration::from_millis(800)),
+            "a Start queued during the release tick must start a recording, not be lost"
+        );
+        let _ = worker.stop();
+        worker.handle.join().expect("worker panicked");
+    }
 }

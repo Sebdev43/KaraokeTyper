@@ -470,6 +470,38 @@ mod linux_output {
     }
 }
 
+/// The desktop families the typing tools care about, from `XDG_CURRENT_DESKTOP`.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Desktop {
+    /// Mutter (GNOME, and the desktops that advertise it such as Budgie): it
+    /// deliberately does not implement `zwp_virtual_keyboard_manager_v1`, so `wtype`
+    /// fails on every call — one wasted spawn per paste unless it is skipped.
+    Gnome,
+    /// KWin: `kwtype` is the layout-aware tool.
+    Kde,
+    Other,
+}
+
+#[cfg(target_os = "linux")]
+impl Desktop {
+    fn current() -> Self {
+        Self::parse(&std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default())
+    }
+
+    /// `ubuntu:GNOME`, `GNOME-Classic:GNOME`, `Budgie:GNOME`, `KDE`, `sway`, …
+    fn parse(raw: &str) -> Self {
+        let upper = raw.to_ascii_uppercase();
+        if upper.contains("GNOME") {
+            Self::Gnome
+        } else if upper.contains("KDE") {
+            Self::Kde
+        } else {
+            Self::Other
+        }
+    }
+}
+
 pub struct TextOutput {
     app_handle: AppHandle,
     key_delay_ms: u64,
@@ -723,10 +755,6 @@ impl TextOutput {
         Ok(())
     }
 
-    /// Set clipboard text using the best tool for the platform.
-    /// Wayland: wl-copy via stdin (text/plain MIME).
-    /// X11: xclip -selection clipboard → tauri plugin fallback.
-    /// Other: tauri-plugin-clipboard-manager.
     #[cfg(target_os = "linux")]
     fn is_wayland() -> bool {
         let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
@@ -936,7 +964,7 @@ impl TextOutput {
                 return Ok(());
             }
             // Fallback to uinput
-            crate::dev_log!("[OUTPUT] wtype not available, trying uinput...");
+            crate::dev_log!("[OUTPUT] wtype not usable, trying uinput...");
             match Self::try_uinput_shortcut(&self.paste_method) {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -1281,17 +1309,15 @@ impl TextOutput {
     /// IMPORTANT: wtype and ydotool send QWERTY keycodes that get re-interpreted
     /// by the compositor with the current layout → garbled text on AZERTY.
     /// Only xdotool (X11) and kwtype (KDE Wayland) handle layouts correctly.
-    /// On true Wayland, wtype works because the compositor provides the keymap.
+    /// On true Wayland, wtype works because the compositor provides the keymap
+    /// (except on GNOME — see [`Desktop::Gnome`]).
     /// On XWayland (Tauri reports X11 but session is Wayland), wtype garbles.
     #[cfg(target_os = "linux")]
     fn has_native_direct_tool() -> bool {
         if Self::is_wayland() {
-            let is_kde = std::env::var("XDG_CURRENT_DESKTOP")
-                .unwrap_or_default()
-                .to_lowercase()
-                .contains("kde");
-            (is_kde && Self::is_tool_available("kwtype"))
-                || Self::is_tool_available("wtype")
+            let desktop = Desktop::current();
+            (desktop == Desktop::Kde && Self::is_tool_available("kwtype"))
+                || Self::wtype_usable(desktop)
                 || Self::is_tool_available("dotool")
         } else {
             // X11: ONLY xdotool handles keyboard layouts correctly.
@@ -1308,24 +1334,21 @@ impl TextOutput {
         #[cfg(target_os = "linux")]
         {
             let is_wayland = Self::is_wayland();
-            let is_kde = std::env::var("XDG_CURRENT_DESKTOP")
-                .unwrap_or_default()
-                .to_lowercase()
-                .contains("kde");
+            let desktop = Desktop::current();
 
             crate::dev_log!(
-                "[OUTPUT] Direct typing: is_wayland={}, kde={}",
+                "[OUTPUT] Direct typing: is_wayland={}, desktop={:?}",
                 is_wayland,
-                is_kde
+                desktop
             );
 
             if is_wayland {
                 // Wayland: kwtype → wtype → dotool → ydotool
-                if is_kde && Self::is_tool_available("kwtype") {
+                if desktop == Desktop::Kde && Self::is_tool_available("kwtype") {
                     crate::dev_log!("[OUTPUT] Direct: using kwtype (KDE Wayland)");
                     return Self::run_direct_tool("kwtype", &["--", text]);
                 }
-                if Self::is_tool_available("wtype") {
+                if Self::wtype_usable(desktop) {
                     crate::dev_log!("[OUTPUT] Direct: using wtype");
                     return Self::run_direct_tool("wtype", &["--", text]);
                 }
@@ -1449,6 +1472,12 @@ impl TextOutput {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(format!("{} failed: {}", tool, stderr))
         }
+    }
+
+    /// `wtype` is only worth spawning where the compositor can serve it.
+    #[cfg(target_os = "linux")]
+    fn wtype_usable(desktop: Desktop) -> bool {
+        desktop != Desktop::Gnome && Self::is_tool_available("wtype")
     }
 
     /// Run a direct typing tool with args.
@@ -1613,7 +1642,7 @@ impl TextOutput {
 
     #[cfg(target_os = "linux")]
     fn try_wtype_shortcut(paste_method: &PasteMethod) -> Result<bool, String> {
-        if !Self::is_tool_available("wtype") {
+        if !Self::wtype_usable(Desktop::current()) {
             return Ok(false);
         }
 
@@ -1797,6 +1826,30 @@ mod tests {
             assert!(!TextOutput::is_tool_available(
                 "this_tool_does_not_exist_xyz"
             ));
+        }
+
+        #[test]
+        fn test_desktop_parse_from_xdg_current_desktop() {
+            for (raw, expected) in [
+                ("GNOME", Desktop::Gnome),
+                ("ubuntu:GNOME", Desktop::Gnome),
+                ("GNOME-Classic:GNOME", Desktop::Gnome),
+                ("pop:GNOME", Desktop::Gnome),
+                ("Budgie:GNOME", Desktop::Gnome),
+                ("gnome", Desktop::Gnome),
+                ("KDE", Desktop::Kde),
+                ("kde", Desktop::Kde),
+                // Not Mutter as far as this string says: wtype stays on the table.
+                ("", Desktop::Other),
+                ("X-Cinnamon", Desktop::Other),
+                ("XFCE", Desktop::Other),
+                ("sway", Desktop::Other),
+                ("Hyprland", Desktop::Other),
+                ("COSMIC", Desktop::Other),
+                ("Pantheon", Desktop::Other),
+            ] {
+                assert_eq!(Desktop::parse(raw), expected, "{:?}", raw);
+            }
         }
 
         #[test]

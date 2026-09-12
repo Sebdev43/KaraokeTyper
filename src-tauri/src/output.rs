@@ -555,6 +555,25 @@ impl TextOutput {
     const REMOTE_DESKTOP_APPS: &'static [&'static str] =
         &["rustdesk", "anydesk", "vinagre", "remmina"];
 
+    /// X keycodes `xdotool keyup` releases after every `--clearmodifiers` call — both
+    /// sides of Ctrl, Shift, Alt and Super, as evdev keycodes (evdev code + 8, the same
+    /// on every Xorg/XWayland server) rather than keysyms.
+    ///
+    /// Keysyms would break on the layouts this app targets: on `fr`/`de` the right Alt
+    /// is `ISO_Level3_Shift`, so the keysym `Alt_R` has no keycode and xdotool has to
+    /// remap a scratch keycode to send it — a `MappingNotify` broadcast to every X
+    /// client, on every dictation — while AltGr itself would never be released.
+    /// `--clearmodifiers` works by keycode too, so this releases exactly what it
+    /// re-presses. Lock keys (Caps/Num/Scroll) are deliberately absent: they are
+    /// toggled by a press and never held, so the release race cannot latch them.
+    #[cfg(target_os = "linux")]
+    const XDOTOOL_MODIFIER_KEYCODES: &'static [&'static str] = &[
+        "37", "105", // Control_L, Control_R
+        "50", "62", // Shift_L, Shift_R
+        "64", "108", // Alt_L, Alt_R / ISO_Level3_Shift (AltGr)
+        "133", "134", // Super_L, Super_R
+    ];
+
     pub fn new(
         key_delay_ms: u64,
         paste_method: PasteMethod,
@@ -934,10 +953,7 @@ impl TextOutput {
                     PasteMethod::ShiftInsert => "shift+Insert",
                     _ => "ctrl+v",
                 };
-                let output = std::process::Command::new("xdotool")
-                    .args(["key", "--clearmodifiers", key_combo])
-                    .output()
-                    .map_err(|e| format!("xdotool failed: {}", e))?;
+                let output = Self::run_xdotool_then_release_modifiers("key", &[key_combo])?;
                 if output.status.success() {
                     return Ok(());
                 }
@@ -1327,10 +1343,8 @@ impl TextOutput {
                 // that get garbled on AZERTY/QWERTZ layouts.
                 if Self::is_tool_available("xdotool") {
                     crate::dev_log!("[OUTPUT] Direct: using xdotool");
-                    return Self::run_direct_tool(
-                        "xdotool",
-                        &["type", "--clearmodifiers", "--", text],
-                    );
+                    let output = Self::run_xdotool_then_release_modifiers("type", &["--", text])?;
+                    return Self::direct_tool_result("xdotool", &output);
                 }
             }
             crate::dev_log!("[OUTPUT] No native tool found, falling back to enigo");
@@ -1383,14 +1397,51 @@ impl TextOutput {
         })
     }
 
-    /// Run a direct typing tool with args.
+    /// Run `xdotool <subcommand> --clearmodifiers <rest…>`, then release the push-style
+    /// modifiers before handing the [`Output`](std::process::Output) back for the caller
+    /// to interpret.
+    ///
+    /// `--clearmodifiers` remembers the modifiers held when xdotool starts, releases
+    /// them, does its work, then presses them again. With push-to-talk, Ctrl can still
+    /// be down when xdotool starts and go up while it is typing — the synthetic re-press
+    /// then lands after the physical release and Ctrl stays latched on the XTEST
+    /// keyboard until the next physical Ctrl event (Handy #1817). Releasing every
+    /// modifier afterwards clears that latch. The keyup is unconditional: a modifier
+    /// still physically held looks released until the next physical event, which beats
+    /// a modifier latched system-wide.
+    ///
+    /// The cleanup runs before the caller looks at the status — xdotool may have
+    /// changed modifier state before failing — and stays best-effort: the text may
+    /// already be typed, so its own failure is only logged (dev builds).
     #[cfg(target_os = "linux")]
-    fn run_direct_tool(tool: &str, args: &[&str]) -> Result<(), String> {
-        let output = std::process::Command::new(tool)
-            .args(args)
+    fn run_xdotool_then_release_modifiers(
+        subcommand: &str,
+        rest: &[&str],
+    ) -> Result<std::process::Output, String> {
+        let output = std::process::Command::new("xdotool")
+            .arg(subcommand)
+            .arg("--clearmodifiers")
+            .args(rest)
             .output()
-            .map_err(|e| format!("Failed to run {}: {}", tool, e))?;
+            .map_err(|e| format!("Failed to run xdotool: {}", e))?;
 
+        // `--delay 0`: xdotool otherwise waits 12 ms between keys — ~90 ms per dictation.
+        match std::process::Command::new("xdotool")
+            .args(["keyup", "--delay", "0"])
+            .args(Self::XDOTOOL_MODIFIER_KEYCODES)
+            .status()
+        {
+            Ok(status) if status.success() => {}
+            Ok(status) => crate::dev_log!("[OUTPUT] ⚠️ xdotool keyup failed: {}", status),
+            Err(e) => crate::dev_log!("[OUTPUT] ⚠️ Failed to run xdotool keyup: {}", e),
+        }
+
+        Ok(output)
+    }
+
+    /// Map a direct typing tool's exit status to this module's `Result` convention.
+    #[cfg(target_os = "linux")]
+    fn direct_tool_result(tool: &str, output: &std::process::Output) -> Result<(), String> {
         if output.status.success() {
             crate::dev_log!("[OUTPUT] ✅ {} typed text successfully", tool);
             Ok(())
@@ -1398,6 +1449,16 @@ impl TextOutput {
             let stderr = String::from_utf8_lossy(&output.stderr);
             Err(format!("{} failed: {}", tool, stderr))
         }
+    }
+
+    /// Run a direct typing tool with args.
+    #[cfg(target_os = "linux")]
+    fn run_direct_tool(tool: &str, args: &[&str]) -> Result<(), String> {
+        let output = std::process::Command::new(tool)
+            .args(args)
+            .output()
+            .map_err(|e| format!("Failed to run {}: {}", tool, e))?;
+        Self::direct_tool_result(tool, &output)
     }
 
     /// Build the single line handed to dotool's stdin.
@@ -1960,6 +2021,28 @@ mod tests {
                 args,
                 ["-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"]
             );
+        }
+
+        #[test]
+        fn test_xdotool_modifier_release_covers_both_sides_of_each_modifier() {
+            // Exact contract: (Control_L, Control_R), (Shift_L, Shift_R),
+            // (Alt_L, Alt_R/AltGr), (Super_L, Super_R) as evdev X keycodes.
+            assert_eq!(
+                TextOutput::XDOTOOL_MODIFIER_KEYCODES,
+                ["37", "105", "50", "62", "64", "108", "133", "134"]
+            );
+        }
+
+        #[test]
+        fn test_xdotool_modifier_release_uses_keycodes_not_keysyms() {
+            // A keysym absent from the layout (Alt_R on fr/de) makes xdotool remap a
+            // scratch keycode on every call; numeric keycodes never do.
+            for entry in TextOutput::XDOTOOL_MODIFIER_KEYCODES {
+                let keycode: u8 = entry
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{} is not an X keycode", entry));
+                assert!(keycode >= 8, "{} is below the X keycode range", entry);
+            }
         }
     }
 }

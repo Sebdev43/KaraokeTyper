@@ -22,7 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type AppConfig, commands } from "@/bindings";
+import { type AppConfig, commands, type ShortcutActivation } from "@/bindings";
 import { UpdateChecker } from "@/components/UpdateChecker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -52,6 +52,28 @@ interface DownloadProgress {
   percent: number;
   status: string;
 }
+
+/** Bounds and default of the hold-or-toggle threshold, mirrored by the backend clamp. */
+const HOLD_THRESHOLD = { min: 100, max: 1000, step: 50, default: 300 } as const;
+
+const clampHoldThreshold = (ms: number) =>
+  Math.min(HOLD_THRESHOLD.max, Math.max(HOLD_THRESHOLD.min, Math.round(ms)));
+
+/** One entry per `ShortcutActivation` variant: TypeScript refuses a missing one. */
+const ACTIVATION_MODES: Record<ShortcutActivation, { label: string; help: string }> = {
+  Hold: {
+    label: "Maintenir",
+    help: "Enregistre tant que la touche est maintenue ; relâchez pour transcrire.",
+  },
+  Toggle: {
+    label: "Basculer",
+    help: "Un appui démarre l'enregistrement, le suivant l'arrête.",
+  },
+  HoldOrToggle: {
+    label: "Maintenir ou basculer",
+    help: "Appui long : enregistre tant que la touche est enfoncée. Appui bref : enregistre jusqu'au prochain appui.",
+  },
+};
 
 function SettingsWindow() {
   // Settings store
@@ -96,6 +118,10 @@ function SettingsWindow() {
     setOllamaModel,
     pasteMethod,
     setPasteMethod,
+    shortcutActivation,
+    setShortcutActivation,
+    holdThresholdMs,
+    setHoldThresholdMs,
     customWords,
     customWordsThreshold,
     fillerRemovalEnabled,
@@ -182,6 +208,10 @@ function SettingsWindow() {
         setOllamaUrl(result.data.ollama_url ?? "http://localhost:11434");
         setOllamaModel(result.data.ollama_model ?? "mistral");
         setPasteMethod(result.data.paste_method ?? "Direct");
+        setShortcutActivation(result.data.shortcut_activation ?? "Hold");
+        setHoldThresholdMs(
+          clampHoldThreshold(result.data.hold_threshold_ms ?? HOLD_THRESHOLD.default),
+        );
       } else {
         console.error("Failed to load settings:", result.error);
       }
@@ -202,6 +232,8 @@ function SettingsWindow() {
     setOllamaUrl,
     setOllamaModel,
     setPasteMethod,
+    setShortcutActivation,
+    setHoldThresholdMs,
   ]);
 
   const checkPermissions = useCallback(async () => {
@@ -529,6 +561,8 @@ function SettingsWindow() {
         filler_removal_enabled: fillerRemovalEnabled,
         stutter_collapse_enabled: stutterCollapseEnabled,
         stt_backend: sttBackend,
+        shortcut_activation: shortcutActivation,
+        hold_threshold_ms: holdThresholdMs,
       };
 
       const result = await commands.saveSettings(config);
@@ -884,6 +918,47 @@ function SettingsWindow() {
                     Cliquez, puis appuyez sur une touche ou un bouton souris (Mouse4, Mouse5...)
                   </p>
                 </div>
+
+                {/* Shortcut activation */}
+                <div className="space-y-2">
+                  <Label htmlFor="shortcut-activation">Mode d'activation</Label>
+                  <Select
+                    value={shortcutActivation}
+                    onValueChange={(v) => setShortcutActivation(v as ShortcutActivation)}
+                  >
+                    <SelectTrigger id="shortcut-activation">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(ACTIVATION_MODES) as ShortcutActivation[]).map((mode) => (
+                        <SelectItem key={mode} value={mode}>
+                          {ACTIVATION_MODES[mode].label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {ACTIVATION_MODES[shortcutActivation].help}
+                  </p>
+                </div>
+
+                {shortcutActivation === "HoldOrToggle" && (
+                  <div className="space-y-2">
+                    <Label htmlFor="hold-threshold">Seuil de maintien ({holdThresholdMs} ms)</Label>
+                    <Slider
+                      id="hold-threshold"
+                      min={HOLD_THRESHOLD.min}
+                      max={HOLD_THRESHOLD.max}
+                      step={HOLD_THRESHOLD.step}
+                      value={[holdThresholdMs]}
+                      onValueChange={([v]) => setHoldThresholdMs(v)}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Relâché avant ce délai, l'appui est une bascule ; après, un maintien (
+                      {HOLD_THRESHOLD.default} ms par défaut).
+                    </p>
+                  </div>
+                )}
               </CardContent>
             </Card>
 

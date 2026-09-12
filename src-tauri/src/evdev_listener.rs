@@ -4,10 +4,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::AppHandle;
 
 use crate::config::AppConfig;
-use crate::{do_start_recording, do_stop_recording, do_type_text, AppState};
+use crate::shortcut_activation::{KeyEvent, SharedMachine};
+use crate::shortcut_session::{feed_key, spawn_effect_executor, EffectQueue};
 
 /// Shared listener state so `reconfigure()` can swap the hotkey AND spawn
 /// additional device monitors when the new shortcut targets a different
@@ -187,7 +188,10 @@ struct HotkeyState {
     alt_pressed: Arc<AtomicBool>,
     shift_pressed: Arc<AtomicBool>,
     trigger_pressed: Arc<AtomicBool>,
-    is_recording: Arc<AtomicBool>,
+    /// Decides what a press or release means under the configured activation mode.
+    machine: SharedMachine,
+    /// Queue of the sequential effect executor (see `shortcut_session`).
+    effects: EffectQueue,
 }
 
 struct DeviceMonitorConfig {
@@ -305,12 +309,14 @@ pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
     let input_devices = find_input_devices(&hotkey)?;
     crate::dev_log!("[EVDEV] Monitoring {} input device(s)", input_devices.len());
 
+    let machine = SharedMachine::default();
     let hotkey_state = HotkeyState {
         ctrl_pressed: Arc::new(AtomicBool::new(false)),
         alt_pressed: Arc::new(AtomicBool::new(false)),
         shift_pressed: Arc::new(AtomicBool::new(false)),
         trigger_pressed: Arc::new(AtomicBool::new(false)),
-        is_recording: Arc::new(AtomicBool::new(false)),
+        effects: spawn_effect_executor(app_handle.clone(), machine.clone()),
+        machine,
     };
 
     let handle = ACTIVE_LISTENER.get_or_init(|| {
@@ -354,7 +360,7 @@ pub async fn start_evdev_listener(app_handle: AppHandle) -> Result<(), String> {
         });
     }
 
-    crate::dev_log!("[EVDEV] ✅ Push-to-talk listener started!");
+    crate::dev_log!("[EVDEV] ✅ Shortcut listener started!");
     crate::dev_log!("[EVDEV] Hotkey: {}", config.shortcut);
 
     Ok(())
@@ -510,160 +516,23 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
 
                     if pressed && !config.state.trigger_pressed.load(Ordering::SeqCst) {
                         config.state.trigger_pressed.store(true, Ordering::SeqCst);
-
-                        if modifiers_ok && !config.state.is_recording.load(Ordering::SeqCst) {
-                            let t0 = std::time::Instant::now();
-                            crate::dev_log!(
-                                "[TIMING] ========== RECORDING SESSION START =========="
+                        if modifiers_ok {
+                            feed_key(
+                                &config.app_handle,
+                                &config.state.machine,
+                                &config.state.effects,
+                                KeyEvent::Pressed,
                             );
-                            crate::dev_log!("[TIMING] T+0ms: Hotkey PRESSED");
-                            config.state.is_recording.store(true, Ordering::SeqCst);
-
-                            // Store t0 in AppState
-                            {
-                                let state = config.app_handle.state::<AppState>();
-                                *state.recording_start_time.lock().unwrap() = Some(t0);
-                            }
-
-                            // Show overlay centered on cursor's monitor
-                            crate::show_overlay_with_state(&config.app_handle, "recording");
-                            crate::dev_log!(
-                                "[TIMING] T+{}ms: overlay shown",
-                                t0.elapsed().as_millis()
-                            );
-
-                            // Start recording
-                            let app_clone = config.app_handle.clone();
-                            tauri::async_runtime::spawn(async move {
-                                crate::dev_log!(
-                                    "[TIMING] T+{}ms: async spawn started",
-                                    t0.elapsed().as_millis()
-                                );
-                                let state = app_clone.state::<AppState>();
-                                match do_start_recording(app_clone.clone(), &state).await {
-                                    Ok(_) => crate::dev_log!(
-                                        "[TIMING] T+{}ms: do_start_recording() returned OK",
-                                        t0.elapsed().as_millis()
-                                    ),
-                                    Err(e) => crate::dev_log!(
-                                        "[TIMING] T+{}ms: do_start_recording() FAILED: {}",
-                                        t0.elapsed().as_millis(),
-                                        e
-                                    ),
-                                }
-                            });
                         }
                     } else if released {
                         config.state.trigger_pressed.store(false, Ordering::SeqCst);
-
-                        if config.state.is_recording.load(Ordering::SeqCst) {
-                            let t0 = {
-                                let state = config.app_handle.state::<AppState>();
-                                let guard = state.recording_start_time.lock().unwrap();
-                                guard.unwrap_or_else(std::time::Instant::now)
-                            };
-                            crate::dev_log!(
-                                "[TIMING] T+{}ms: Hotkey RELEASED",
-                                t0.elapsed().as_millis()
-                            );
-                            config.state.is_recording.store(false, Ordering::SeqCst);
-
-                            // Stop recording, transcribe, and type
-                            let app_clone = config.app_handle.clone();
-                            tauri::async_runtime::spawn(async move {
-                                let state = app_clone.state::<AppState>();
-                                let t0 = state
-                                    .recording_start_time
-                                    .lock()
-                                    .unwrap()
-                                    .unwrap_or_else(std::time::Instant::now);
-
-                                crate::dev_log!(
-                                    "[TIMING] T+{}ms: calling do_stop_recording()",
-                                    t0.elapsed().as_millis()
-                                );
-
-                                // Switch overlay to processing state
-                                crate::show_overlay_with_state(&app_clone, "processing");
-
-                                match do_stop_recording(app_clone.clone(), &state).await {
-                                    Ok(transcription) => {
-                                        crate::dev_log!(
-                                            "[TIMING] T+{}ms: transcription complete: '{}'",
-                                            t0.elapsed().as_millis(),
-                                            transcription
-                                        );
-                                        if !transcription.is_empty() {
-                                            // Hide overlay first (required for RustDesk/remote
-                                            // desktop apps that need unambiguous focus).
-                                            // The window is hidden immediately rather than via
-                                            // hide_overlay_animated, but the event still has to
-                                            // be emitted: it is what tells the webview to tear
-                                            // down its content. Without it the overlay keeps
-                                            // running its infinite animations forever behind a
-                                            // hidden window.
-                                            if let Some(window) =
-                                                app_clone.get_webview_window("overlay")
-                                            {
-                                                let _ = window.emit("hide-overlay", ());
-                                                let _ = window.hide();
-                                            }
-
-                                            // Wait 300ms for physical hotkey keys (Ctrl+Space)
-                                            // to fully release before sending paste keystroke.
-                                            // Prevents modifier interference: without this,
-                                            // xdotool --clearmodifiers sees Ctrl as held →
-                                            // first char typed as Ctrl+L (eaten by terminal).
-                                            tokio::time::sleep(tokio::time::Duration::from_millis(
-                                                300,
-                                            ))
-                                            .await;
-
-                                            crate::dev_log!(
-                                                "[TIMING] T+{}ms: pasting text",
-                                                t0.elapsed().as_millis()
-                                            );
-                                            let paste_result = do_type_text(
-                                                transcription,
-                                                &app_clone,
-                                                state.paste_settings(),
-                                            )
-                                            .await;
-
-                                            match paste_result {
-                                                Ok(()) => {
-                                                    crate::dev_log!(
-                                                        "[TIMING] T+{}ms: ========== SESSION COMPLETE ==========",
-                                                        t0.elapsed().as_millis()
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    crate::dev_log!(
-                                                        "[TIMING] T+{}ms: paste FAILED: {}",
-                                                        t0.elapsed().as_millis(),
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        } else {
-                                            crate::dev_log!(
-                                                "[TIMING] T+{}ms: no speech detected",
-                                                t0.elapsed().as_millis()
-                                            );
-                                            crate::hide_overlay_animated(&app_clone);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        crate::dev_log!(
-                                            "[TIMING] T+{}ms: stop_recording FAILED: {}",
-                                            t0.elapsed().as_millis(),
-                                            e
-                                        );
-                                        crate::hide_overlay_animated(&app_clone);
-                                    }
-                                }
-                            });
-                        }
+                        // Fed regardless of modifiers: Ctrl is often let go before Space.
+                        feed_key(
+                            &config.app_handle,
+                            &config.state.machine,
+                            &config.state.effects,
+                            KeyEvent::Released,
+                        );
                     }
                 }
             }

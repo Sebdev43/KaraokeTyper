@@ -86,6 +86,9 @@ rodio = "0.20"
 
 # Audio capture (cross-platform: ALSA on Linux via pipewire-alsa, CoreAudio on macOS, WASAPI on Windows)
 cpal = "0.15"
+# Wait-free SPSC ring between the cpal callback and the audio worker (no allocation
+# on the audio thread)
+rtrb = "0.4"
 
 # Anti-aliased sample-rate conversion for devices that can't give us 16kHz directly.
 # Pinned to 0.16 for its FftFixedIn API; 0.17 renamed it to Fft + FixedSync.

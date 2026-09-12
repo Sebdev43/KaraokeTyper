@@ -7,7 +7,8 @@
 //!
 //! Architecture (worker thread — inspired by Handy):
 //! - `open()` spawns a worker thread that builds the CPAL stream and starts it playing.
-//!   Audio samples flow continuously through an mpsc channel into the worker.
+//!   Audio samples flow continuously through a wait-free SPSC ring (`rtrb`) into the
+//!   worker; commands go through an mpsc channel.
 //! - `start_recording()` sends `Cmd::Start` — the worker clears its buffer and begins
 //!   accumulating samples. This is instant regardless of stream state.
 //! - `stop_recording()` sends `Cmd::Stop` — the worker drains remaining samples,
@@ -23,9 +24,11 @@
 
 use crate::resampler::AudioResampler;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rtrb::{Consumer, RingBuffer};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Pre-roll duration: audio captured *before* the user presses PTT is prepended
 /// to the recording so the first syllable of the phrase isn't lost to the
@@ -76,25 +79,31 @@ fn is_valid_device_name(name: &str) -> bool {
 /// Gap without samples after which an idle worker gives its stream up: a playing input
 /// stream delivers continuously (silence included), so this long a gap means the device
 /// is gone — on PipeWire a lost device stalls the ALSA plugin without any error callback.
-const STALLED_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const STALLED_STREAM_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Same, before the first sample ever arrived: some devices (Bluetooth HFP) take a few
 /// seconds to start delivering, and giving up early would waste the warm-up open.
-const STARTUP_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const STARTUP_STREAM_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Delay before auto-closing the stream after recording stops (releases mic device)
 const STREAM_AUTO_CLOSE_SECS: u64 = 10;
 
-/// Capture buffers the worker may fall behind by before samples start being dropped.
-///
-/// The queue used to be unbounded, which was survivable while the callback decimated to
-/// 16 kHz first. It no longer does — the worker resamples now — so the same stall costs
-/// roughly three times the memory per second, and nothing capped it. At a typical
-/// 1024-frame period this is about four seconds of audio and under a megabyte.
+/// Seconds of device-rate audio the ring between the cpal callback and the worker can
+/// hold before the callback starts dropping samples: allocated once, under a megabyte
+/// at 48 kHz, and more than any worker hiccup should need.
 ///
 /// Dropping is the right failure: the alternative in a real-time callback is blocking,
 /// which does not make the audio arrive, it makes the *device* glitch as well.
-const SAMPLE_QUEUE_BUFFERS: usize = 200;
+const AUDIO_RING_SECONDS: usize = 4;
+
+/// Device-rate samples the ring holds.
+fn ring_capacity(sample_rate: u32) -> usize {
+    sample_rate as usize * AUDIO_RING_SECONDS
+}
+
+/// How long the worker waits for a command before draining the ring again — the upper
+/// bound on how long fresh audio waits before the worker sees it.
+const RING_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -167,7 +176,6 @@ impl AudioCapture {
         self.is_bluetooth.store(is_bt, Ordering::Relaxed);
 
         let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
-        let (sample_tx, sample_rx) = mpsc::sync_channel::<Vec<f32>>(SAMPLE_QUEUE_BUFFERS);
 
         let target_rate = self.target_sample_rate;
         let vad = Arc::clone(&self.vad);
@@ -210,10 +218,13 @@ impl AudioCapture {
                 target_rate
             );
 
-            let sample_tx_clone = sample_tx;
-            // Dropped-buffer counter, reported once per burst rather than per buffer:
-            // a stalled worker would otherwise turn one problem into a log flood.
-            let mut dropped: u64 = 0;
+            // Rate conversion happens on the worker, where it can take as long as it
+            // needs and keep state across callbacks. The callback only copies samples
+            // into a wait-free ring and bumps a counter: no allocation, no lock, no
+            // syscall, no log on the audio thread — the worker reports the overruns.
+            let (mut producer, consumer) = RingBuffer::<f32>::new(ring_capacity(actual_rate));
+            let overrun = Arc::new(AtomicU64::new(0));
+            let overrun_data = Arc::clone(&overrun);
             let stream_error_data = Arc::clone(&stream_error);
             let stream = match device.build_input_stream(
                 &config,
@@ -221,38 +232,12 @@ impl AudioCapture {
                     // Audio is flowing, so whatever cpal reported was transient (ALSA
                     // reports an overrun it hits mid-read, then recovers by itself).
                     stream_error_data.store(false, Ordering::SeqCst);
-                    // Rate conversion used to happen here, on the audio thread. It now
-                    // happens on the worker, where it can take as long as it needs
-                    // without risking a dropout, and where it can keep state across
-                    // callbacks — which is what makes it correct rather than merely
-                    // cheap. What remains is still not RT-safe (`to_vec` and the channel
-                    // send both allocate), but it is a great deal less work than an FFT.
-                    //
-                    // `try_send`, never `send`: the queue is bounded now, and blocking
-                    // the audio thread to wait for a slow worker would add a device-level
-                    // glitch on top of the backlog it was waiting on.
-                    match sample_tx_clone.try_send(data.to_vec()) {
-                        Ok(()) => {
-                            if dropped > 0 {
-                                crate::dev_log!(
-                                    "[AUDIO/CPAL] Worker caught up after dropping {} buffers",
-                                    dropped
-                                );
-                                dropped = 0;
-                            }
-                        }
-                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                            // Say it the first time, then stay quiet until it recovers.
-                            if dropped == 0 {
-                                crate::dev_log!(
-                                    "[AUDIO/CPAL] Sample queue full ({} buffers) — worker is \
-                                     behind, dropping audio",
-                                    SAMPLE_QUEUE_BUFFERS
-                                );
-                            }
-                            dropped += 1;
-                        }
-                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {}
+                    // Never block here: waiting for a slow worker would add a device-level
+                    // glitch on top of the backlog it was waiting on. Whatever does not
+                    // fit is dropped and counted.
+                    let (_, dropped) = producer.push_partial_slice(data);
+                    if !dropped.is_empty() {
+                        overrun_data.fetch_add(dropped.len() as u64, Ordering::Relaxed);
                     }
                 },
                 move |err| {
@@ -282,7 +267,7 @@ impl AudioCapture {
             );
 
             // ── Step 4: Worker loop — process samples + commands ──
-            run_worker(vad, sample_rx, cmd_rx, actual_rate, target_rate);
+            run_worker(vad, consumer, overrun, cmd_rx, actual_rate, target_rate);
 
             // The worker no longer accepts commands: say so before the stream teardown
             // below, so a PTT cannot land in between. (_guard repeats it on any exit,
@@ -350,7 +335,7 @@ impl AudioCapture {
             let is_open = Arc::clone(&self.is_open);
             let cmd_tx = self.cmd_tx.clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(STREAM_AUTO_CLOSE_SECS));
+                std::thread::sleep(Duration::from_secs(STREAM_AUTO_CLOSE_SECS));
                 if gen_ref.load(Ordering::SeqCst) == gen && is_open.load(Ordering::SeqCst) {
                     if let Some(tx) = cmd_tx {
                         let _ = tx.send(Cmd::Shutdown);
@@ -384,7 +369,7 @@ impl StopHandle {
     pub fn wait(self) -> Result<Vec<f32>, String> {
         let audio_data = self
             .reply_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(5))
             .map_err(|_| "Timeout waiting for audio data from worker".to_string())?;
 
         crate::dev_log!(
@@ -405,9 +390,32 @@ impl Drop for AudioCapture {
 
 // ── Worker thread ────────────────────────────────────────────────────────────
 
+/// Pull everything the callback has written through the resampler into `converted`
+/// (cleared first). Returns the device-rate sample count taken from the ring.
+///
+/// The ring's two halves go straight into the resampler: it is streaming, so
+/// `push(a); push(b)` is `push(a ++ b)` without copying 4 s of audio first.
+fn drain_ring(
+    consumer: &mut Consumer<f32>,
+    resampler: &mut AudioResampler,
+    converted: &mut Vec<f32>,
+) -> usize {
+    converted.clear();
+    let available = consumer.slots();
+    let Ok(chunk) = consumer.read_chunk(available) else {
+        return 0;
+    };
+    let (first, second) = chunk.as_slices();
+    resampler.push(first, converted);
+    resampler.push(second, converted);
+    chunk.commit_all();
+    available
+}
+
 fn run_worker(
     vad: Arc<Mutex<Option<SmoothedVad>>>,
-    sample_rx: mpsc::Receiver<Vec<f32>>,
+    mut consumer: Consumer<f32>,
+    overrun: Arc<AtomicU64>,
     cmd_rx: mpsc::Receiver<Cmd>,
     actual_rate: u32,
     target_rate: u32,
@@ -416,7 +424,7 @@ fn run_worker(
     let mut frame_accumulator: Vec<f32> = Vec::new();
     let mut recording = false;
     let mut first_callback_logged = false;
-    let mut last_audio = std::time::Instant::now();
+    let mut last_audio = Instant::now();
     let mut ever_received = false;
 
     // Everything below this point works in target-rate samples. The device may deliver
@@ -433,29 +441,26 @@ fn run_worker(
     let mut pre_roll: VecDeque<f32> = VecDeque::with_capacity(pre_roll_capacity);
 
     loop {
-        // Wait for audio samples with timeout — allows Shutdown to be processed
-        // even if the device stops producing audio (e.g. Bluetooth disconnect).
-        let raw = match sample_rx.recv_timeout(std::time::Duration::from_millis(500)) {
-            Ok(s) => {
-                last_audio = std::time::Instant::now();
-                ever_received = true;
-                Some(s)
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => break, // stream closed
-        };
-
-        // Process audio only if recording and we have data
-        if let Some(ref captured) = raw {
-            converted.clear();
-            resampler.push(captured, &mut converted);
+        // Take whatever the callback has written since the last pass.
+        let taken = drain_ring(&mut consumer, &mut resampler, &mut converted);
+        // The callback only counts; a stalled worker sees the whole burst here, once.
+        let lost = overrun.swap(0, Ordering::Relaxed);
+        if lost > 0 {
+            crate::dev_log!(
+                "[AUDIO/WORKER] Ring overran: {} samples dropped while the worker was behind",
+                lost
+            );
+        }
+        if taken > 0 {
+            last_audio = Instant::now();
+            ever_received = true;
             let samples = &converted[..];
             if recording {
                 if !first_callback_logged {
                     crate::dev_log!(
                         "[AUDIO/WORKER] First audio chunk while recording: {} samples ({} captured)",
                         samples.len(),
-                        captured.len()
+                        taken
                     );
                     first_callback_logged = true;
                 }
@@ -471,8 +476,14 @@ fn run_worker(
             }
         }
 
-        // Non-blocking check for commands (processed even on timeout — no audio needed)
-        while let Ok(cmd) = cmd_rx.try_recv() {
+        // Commands. The wait doubles as the ring poll interval: a quiet device still
+        // lets Shutdown through, and a command never waits for audio to arrive.
+        let first = match cmd_rx.recv_timeout(RING_POLL_INTERVAL) {
+            Ok(cmd) => Some(cmd),
+            Err(mpsc::RecvTimeoutError::Timeout) => None,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return, // capture dropped
+        };
+        for cmd in first.into_iter().chain(cmd_rx.try_iter()) {
             match cmd {
                 Cmd::Start => {
                     audio_buffer.clear();
@@ -524,32 +535,26 @@ fn run_worker(
                         crate::dev_log!(
                             "[AUDIO/WORKER] Buffer empty on Stop — waiting up to 500ms for audio..."
                         );
-                        let deadline =
-                            std::time::Instant::now() + std::time::Duration::from_millis(500);
+                        let deadline = Instant::now() + Duration::from_millis(500);
                         let mut data_received = false;
-                        while std::time::Instant::now() < deadline {
-                            match sample_rx.recv_timeout(std::time::Duration::from_millis(10)) {
-                                Ok(captured) => {
-                                    converted.clear();
-                                    resampler.push(&captured, &mut converted);
-                                    process_audio(
-                                        &converted,
-                                        &vad,
-                                        &mut frame_accumulator,
-                                        &mut audio_buffer,
-                                    );
-                                    // A buffer arriving no longer implies usable output:
-                                    // the resampler needs a full FFT block before it emits
-                                    // anything, and the first pass after a reset always
-                                    // emits zero. Breaking on "a buffer arrived" would end
-                                    // this wait having captured nothing at all.
-                                    if !converted.is_empty() {
-                                        data_received = true;
-                                        break;
-                                    }
-                                }
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        while Instant::now() < deadline {
+                            if drain_ring(&mut consumer, &mut resampler, &mut converted) == 0 {
+                                std::thread::sleep(RING_POLL_INTERVAL);
+                                continue;
+                            }
+                            process_audio(
+                                &converted,
+                                &vad,
+                                &mut frame_accumulator,
+                                &mut audio_buffer,
+                            );
+                            // Audio arriving no longer implies usable output: the resampler
+                            // needs a full FFT block before it emits anything, and the
+                            // first pass after a reset always emits zero. Breaking on
+                            // "audio arrived" would end this wait having captured nothing.
+                            if !converted.is_empty() {
+                                data_received = true;
+                                break;
                             }
                         }
                         if data_received {
@@ -560,12 +565,9 @@ fn run_worker(
                         }
                     }
 
-                    // Drain any audio chunks captured but not yet consumed
-                    while let Ok(remaining) = sample_rx.try_recv() {
-                        converted.clear();
-                        resampler.push(&remaining, &mut converted);
-                        process_audio(&converted, &vad, &mut frame_accumulator, &mut audio_buffer);
-                    }
+                    // Drain whatever the callback wrote since the last pass
+                    drain_ring(&mut consumer, &mut resampler, &mut converted);
+                    process_audio(&converted, &vad, &mut frame_accumulator, &mut audio_buffer);
 
                     // Drain the resampler itself: tens of milliseconds of real audio are
                     // still inside it, and that is the end of the last word. Goes through
@@ -755,7 +757,7 @@ fn resolve_device(device_name: Option<&str>) -> Result<cpal::Device, String> {
                     Err(e) => crate::dev_log!("[AUDIO/BT] Failed to run pactl: {}", e),
                     _ => {}
                 }
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                std::thread::sleep(Duration::from_millis(500));
             }
 
             match std::process::Command::new("pactl")
@@ -769,7 +771,7 @@ fn resolve_device(device_name: Option<&str>) -> Result<cpal::Device, String> {
                 Err(e) => crate::dev_log!("[AUDIO/WORKER] Failed to run pactl: {}", e),
                 _ => {}
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(100));
             crate::dev_log!("[AUDIO/WORKER] Opening CPAL default (routed to PipeWire source)");
             host.default_input_device()
                 .ok_or("No default input device available".to_string())
@@ -823,34 +825,41 @@ fn negotiate_config(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
 
-    /// A bare `run_worker` on its own thread, fed by hand.
+    /// A bare `run_worker` on its own thread, fed by hand through the same ring the
+    /// cpal callback would write to.
     struct WorkerUnderTest {
-        /// Stand-in for cpal's data callback. Must stay alive even when unused:
-        /// dropping it disconnects the channel and the worker exits at once.
-        sample_tx: mpsc::SyncSender<Vec<f32>>,
+        producer: rtrb::Producer<f32>,
         cmd_tx: mpsc::Sender<Cmd>,
         handle: std::thread::JoinHandle<()>,
     }
 
     impl WorkerUnderTest {
         fn spawn() -> Self {
-            let (sample_tx, sample_rx) = mpsc::sync_channel::<Vec<f32>>(SAMPLE_QUEUE_BUFFERS);
+            let (producer, consumer) = RingBuffer::<f32>::new(ring_capacity(16_000));
             let (cmd_tx, cmd_rx) = mpsc::channel::<Cmd>();
             let vad = Arc::new(Mutex::new(None));
+            let overrun = Arc::new(AtomicU64::new(0));
             let handle = std::thread::spawn(move || {
-                run_worker(vad, sample_rx, cmd_rx, 16_000, 16_000);
+                run_worker(vad, consumer, overrun, cmd_rx, 16_000, 16_000);
             });
             Self {
-                sample_tx,
+                producer,
                 cmd_tx,
                 handle,
             }
         }
 
-        fn feed_silence(&self) {
-            self.sample_tx.send(vec![0.0; 160]).expect("worker alive");
+        fn feed_silence(&mut self) {
+            self.feed(&[0.0; 160]);
+        }
+
+        fn feed(&mut self, samples: &[f32]) {
+            let (_, rest) = self.producer.push_partial_slice(samples);
+            assert!(
+                rest.is_empty(),
+                "test ring must take the whole feed — worker not draining?"
+            );
         }
 
         fn exits_within(&self, timeout: Duration) -> bool {
@@ -898,7 +907,7 @@ mod tests {
 
     #[test]
     fn idle_worker_releases_a_stalled_stream() {
-        let worker = WorkerUnderTest::spawn();
+        let mut worker = WorkerUnderTest::spawn();
         worker.feed_silence();
         assert!(
             !worker.exits_within(STALLED_STREAM_TIMEOUT / 2),
@@ -914,7 +923,7 @@ mod tests {
 
     #[test]
     fn recording_worker_stays_up_while_stalled() {
-        let worker = WorkerUnderTest::spawn();
+        let mut worker = WorkerUnderTest::spawn();
         worker.feed_silence();
         worker.cmd_tx.send(Cmd::Start).expect("send Start");
         assert!(
@@ -935,10 +944,74 @@ mod tests {
     }
 
     #[test]
-    fn start_queued_during_the_last_wait_is_honoured() {
+    fn drain_ring_feeds_both_halves_in_order() {
+        let (mut producer, mut consumer) = RingBuffer::<f32>::new(100);
+        let mut resampler = AudioResampler::new(16_000, 16_000); // passthrough
+        let mut converted = Vec::new();
+        // Fill, drain, then write past the end so the next read wraps around.
+        assert!(producer.push_partial_slice(&[0.0; 60]).1.is_empty());
+        assert_eq!(
+            drain_ring(&mut consumer, &mut resampler, &mut converted),
+            60
+        );
+        let wrapped: Vec<f32> = (0..80).map(|i| i as f32).collect();
+        assert!(producer.push_partial_slice(&wrapped).1.is_empty());
+        assert_eq!(
+            drain_ring(&mut consumer, &mut resampler, &mut converted),
+            80
+        );
+        assert_eq!(
+            converted, wrapped,
+            "both ring halves, in order, nothing duplicated"
+        );
+        assert_eq!(
+            drain_ring(&mut consumer, &mut resampler, &mut converted),
+            0,
+            "nothing left"
+        );
+        assert!(converted.is_empty(), "drain clears the output first");
+    }
+
+    #[test]
+    fn shutdown_is_processed_without_audio() {
         let worker = WorkerUnderTest::spawn();
+        worker.cmd_tx.send(Cmd::Shutdown).expect("send Shutdown");
+        assert!(
+            worker.exits_within(Duration::from_secs(1)),
+            "Shutdown must not wait for a sample to arrive"
+        );
+        worker.handle.join().expect("worker panicked");
+    }
+
+    #[test]
+    fn stop_returns_pre_roll_and_everything_written_before_it() {
+        let mut worker = WorkerUnderTest::spawn();
+        // Idle: more than the pre-roll ring holds, so only its tail can survive —
+        // which is how this test tells the pre-roll path from a recording.
+        let pre_roll_capacity = 16_000 * PRE_ROLL_MS / 1000;
+        worker.feed(&vec![0.1; pre_roll_capacity + 2_000]);
+        std::thread::sleep(RING_POLL_INTERVAL * 5);
+        worker.cmd_tx.send(Cmd::Start).expect("send Start");
+        std::thread::sleep(RING_POLL_INTERVAL * 5);
+        worker.feed(&[0.2; 1_600]); // recording: captured
+        let samples = worker.stop(); // drains the ring before answering
+        assert_eq!(
+            samples.len(),
+            pre_roll_capacity + 1_600,
+            "pre-roll tail + recording, nothing lost"
+        );
+        assert!(samples[..pre_roll_capacity].iter().all(|&s| s == 0.1));
+        assert!(samples[pre_roll_capacity..].iter().all(|&s| s == 0.2));
+        worker.cmd_tx.send(Cmd::Shutdown).expect("send Shutdown");
+        worker.handle.join().expect("worker panicked");
+    }
+
+    #[test]
+    fn start_queued_during_the_last_wait_is_honoured() {
+        let mut worker = WorkerUnderTest::spawn();
         worker.feed_silence();
-        // Land the Start inside the final 500 ms wait before the timeout expires.
+        // Land the Start shortly before the release check; it must be drained and
+        // honoured, not dropped with the channel.
         std::thread::sleep(STALLED_STREAM_TIMEOUT - Duration::from_millis(300));
         worker.cmd_tx.send(Cmd::Start).expect("send Start");
         assert!(

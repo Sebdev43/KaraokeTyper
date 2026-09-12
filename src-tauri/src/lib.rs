@@ -16,6 +16,8 @@ mod model_downloader;
 mod ollama_client;
 mod output;
 mod resampler;
+mod shortcut_activation;
+mod shortcut_session;
 mod stt;
 mod text_processing;
 mod updater;
@@ -188,6 +190,24 @@ impl AppState {
     ///
     /// Reads the in-memory cache rather than settings.json: a per-paste disk read
     /// would also risk triggering a migration write from `AppConfig::load()`.
+    /// Start of the current session for `[TIMING]` logs, or now if none was recorded.
+    pub(crate) fn session_start(&self) -> std::time::Instant {
+        self.recording_start_time
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
+    /// Record that a session starts now; returns that instant.
+    pub(crate) fn mark_session_start(&self) -> std::time::Instant {
+        let t0 = std::time::Instant::now();
+        *self
+            .recording_start_time
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(t0);
+        t0
+    }
+
     pub(crate) fn paste_settings(&self) -> PasteSettings {
         let config = self.config.lock().unwrap_or_else(|e| e.into_inner());
         PasteSettings {
@@ -951,7 +971,12 @@ fn create_overlay_window(app_handle: &AppHandle) {
 
 /// Position the overlay on the monitor where the cursor is, then show it.
 /// Called from evdev_listener, keyboard_listener, and show_overlay command.
+/// Bumped by every `show_overlay_with_state`; a delayed hide only applies if nothing
+/// showed the overlay again since it was scheduled.
+static OVERLAY_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) fn show_overlay_with_state(app: &AppHandle, state: &str) {
+    OVERLAY_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     if let Some(window) = app.get_webview_window("overlay") {
         // Reposition overlay centered on the monitor with the cursor
         if let Ok(monitors) = app.available_monitors() {
@@ -1023,14 +1048,30 @@ pub(crate) fn show_overlay_with_state(app: &AppHandle, state: &str) {
 /// Hide overlay: emit hide-overlay (triggers CSS fade-out), then hide window after 300ms
 pub(crate) fn hide_overlay_animated(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("overlay") {
+        // Captured before the emit: a show racing in after this point must win.
+        let generation = OVERLAY_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
         // Emit event → React removes fade-in class → opacity transitions to 0
         let _ = window.emit("hide-overlay", ());
-        // Hide window after fade-out animation completes (300ms)
+        // Hide window after fade-out animation completes (300ms) — unless a new
+        // session showed the overlay again meanwhile (a press remembered during the
+        // pipeline starts recording right as the previous one fades out).
         let window_clone = window.clone();
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            let _ = window_clone.hide();
+            if OVERLAY_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == generation {
+                let _ = window_clone.hide();
+            }
         });
+    }
+}
+
+/// Hide the overlay at once, without the fade-out. The event still has to be emitted:
+/// it is what tells the webview to tear down its content — without it the overlay keeps
+/// running its infinite animations forever behind a hidden window.
+pub(crate) fn hide_overlay_now(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.emit("hide-overlay", ());
+        let _ = window.hide();
     }
 }
 

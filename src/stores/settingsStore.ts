@@ -9,6 +9,7 @@ import type {
   ModelUnloadTimeout,
   OllamaStatus,
   PasteMethod,
+  ShortcutActivation,
 } from "@/bindings";
 
 interface SettingsState {
@@ -49,6 +50,10 @@ interface SettingsState {
   // Paste method
   pasteMethod: PasteMethod;
 
+  // Shortcut activation (hold / toggle / hold-or-toggle)
+  shortcutActivation: ShortcutActivation;
+  holdThresholdMs: number;
+
   // Text processing
   customWords: string[];
   customWordsThreshold: number;
@@ -84,6 +89,8 @@ interface SettingsState {
   setAudioFeedbackVolume: (volume: number) => void;
   setModelUnloadTimeout: (timeout: ModelUnloadTimeout) => void;
   setPasteMethod: (method: PasteMethod) => void;
+  setShortcutActivation: (mode: ShortcutActivation) => void;
+  setHoldThresholdMs: (ms: number) => void;
   setCustomWords: (words: string[]) => void;
   setCustomWordsThreshold: (threshold: number) => void;
   setFillerRemovalEnabled: (enabled: boolean) => void;
@@ -117,6 +124,8 @@ const initialState = {
   audioFeedbackVolume: 0.7,
   modelUnloadTimeout: "Never" as ModelUnloadTimeout,
   pasteMethod: "Direct" as PasteMethod,
+  shortcutActivation: "Hold" as ShortcutActivation,
+  holdThresholdMs: 300,
   customWords: [] as string[],
   customWordsThreshold: 0.3,
   fillerRemovalEnabled: true,
@@ -170,6 +179,8 @@ export const useSettingsStore = create<SettingsState>()(
       setAudioFeedbackVolume: (volume) => set({ audioFeedbackVolume: volume }),
       setModelUnloadTimeout: (timeout) => set({ modelUnloadTimeout: timeout }),
       setPasteMethod: (method) => set({ pasteMethod: method }),
+      setShortcutActivation: (mode) => set({ shortcutActivation: mode }),
+      setHoldThresholdMs: (ms) => set({ holdThresholdMs: ms }),
       setCustomWords: (words) => set({ customWords: words }),
       setCustomWordsThreshold: (threshold) => set({ customWordsThreshold: threshold }),
       setFillerRemovalEnabled: (enabled) => set({ fillerRemovalEnabled: enabled }),
@@ -201,6 +212,8 @@ export const useSettingsStore = create<SettingsState>()(
         audioFeedbackVolume: state.audioFeedbackVolume,
         modelUnloadTimeout: state.modelUnloadTimeout,
         pasteMethod: state.pasteMethod,
+        shortcutActivation: state.shortcutActivation,
+        holdThresholdMs: state.holdThresholdMs,
         ollamaEnabled: state.ollamaEnabled,
         ollamaUrl: state.ollamaUrl,
         ollamaModel: state.ollamaModel,

@@ -79,96 +79,17 @@ pub struct GpuStatus {
     pub failure_count: u32,
 }
 
-use stt::{EngineType, LoadedEngine};
+use stt::{capture_secs, EngineSlots, SttEngine};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
-/// STT engine wrapper — dispatches over any backend supported by `stt::engines`.
-pub struct SttEngine {
-    engine: LoadedEngine,
-    language: String,
-}
-
-impl SttEngine {
-    pub fn new(config: &AppConfig) -> Result<Self, String> {
-        // Use model_path if provided AND it's a valid local file, otherwise resolve from model name
-        let resolved_path = config
-            .model_path
-            .clone()
-            .filter(|p| {
-                if p.starts_with("http://") || p.starts_with("https://") {
-                    dev_log!("[STT] Ignoring URL in model_path: {}", p);
-                    return false;
-                }
-                let exists = std::path::Path::new(p).exists();
-                if !exists {
-                    dev_log!(
-                        "[STT] model_path doesn't exist, will resolve from model name: {}",
-                        p
-                    );
-                }
-                exists
-            })
-            .or_else(|| model_downloader::get_model_path(&config.model));
-
-        let model_path = resolved_path
-            .ok_or("No model downloaded. Download a model from Settings → STT Models.")?;
-
-        let engine = match stt::load(EngineType::Whisper, std::path::Path::new(&model_path)) {
-            Ok(engine) => {
-                // GPU health: a successful load with GPU enabled clears the
-                // failure streak. Gated to GPU builds so the default CPU build is
-                // unaffected (the GPU backend is wired into transcribe-rs in a
-                // later lot; this keeps the auto-disable mechanism live).
-                #[cfg(any(feature = "gpu-vulkan", feature = "gpu-metal"))]
-                if config.use_gpu {
-                    crate::stt::gpu_health::reset_gpu_failures();
-                }
-                engine
-            }
-            Err(e) => {
-                #[cfg(any(feature = "gpu-vulkan", feature = "gpu-metal"))]
-                if config.use_gpu {
-                    let count = crate::stt::gpu_health::record_gpu_failure();
-                    dev_log!("[GPU] Engine load failed with GPU enabled (failure #{count})");
-                }
-                return Err(e.to_string());
-            }
-        };
-
-        Ok(SttEngine {
-            engine,
-            language: config.language.clone(),
-        })
-    }
-
-    pub fn transcribe(
-        &mut self,
-        audio_data: Vec<f32>,
-        initial_prompt: Option<&str>,
-    ) -> Result<String, String> {
-        stt::transcribe(
-            &mut self.engine,
-            audio_data,
-            &self.language,
-            false,
-            initial_prompt,
-        )
-        .map_err(|e| e.to_string())
-    }
-
-    pub fn backend_name(&self) -> &'static str {
-        self.engine.backend_name()
-    }
-}
-
 // Worker-thread audio capture: stream opened in background thread, commands via mpsc channel.
 // Eliminates PTT race conditions — start/stop are queued and processed after stream is ready.
 pub(crate) struct AppState {
     audio_capture: Arc<Mutex<AudioCapture>>,
-    stt_engine: Arc<Mutex<Option<SttEngine>>>,
+    engines: EngineSlots,
     config: Arc<Mutex<AppConfig>>,
     /// Timestamp of the hotkey press — used for [TIMING] logs
     pub recording_start_time: Arc<Mutex<Option<std::time::Instant>>>,
@@ -215,13 +136,30 @@ impl AppState {
             key_delay_ms: config.key_delay_ms,
         }
     }
+
+    /// Route on the raw duration, then run the inference off the async runtime.
+    async fn transcribe(
+        &self,
+        duration_secs: f32,
+        padded_audio: Vec<f32>,
+        prompt_for_whisper: Option<String>,
+    ) -> Result<String, String> {
+        let lane = self.engines.lane_for_recording(&self.config, duration_secs);
+        let engines = self.engines.clone();
+        let config = Arc::clone(&self.config);
+        tokio::task::spawn_blocking(move || {
+            engines.transcribe_blocking(&config, lane, padded_audio, prompt_for_whisper)
+        })
+        .await
+        .map_err(|e| format!("Transcription task panicked: {}", e))?
+    }
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             audio_capture: Arc::new(Mutex::new(AudioCapture::new(16000))),
-            stt_engine: Arc::new(Mutex::new(None)),
+            engines: EngineSlots::default(),
             config: Arc::new(Mutex::new(AppConfig::load().unwrap_or_default())),
             recording_start_time: Arc::new(Mutex::new(None)),
             last_stt_activity: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -233,7 +171,7 @@ impl Default for AppState {
 fn start_idle_watcher(state: &AppState) {
     use std::sync::atomic::Ordering;
 
-    let engine = state.stt_engine.clone();
+    let engines = state.engines.clone();
     let config = state.config.clone();
     let last_activity = state.last_stt_activity.clone();
     let shutdown = state.idle_watcher_shutdown.clone();
@@ -268,12 +206,11 @@ fn start_idle_watcher(state: &AppState) {
                 .unwrap_or_default()
                 .as_secs();
 
-            if now - last >= timeout_secs {
-                let mut guard = engine.lock().unwrap_or_else(|e| e.into_inner());
-                if guard.is_some() {
-                    *guard = None;
-                    dev_log!("[IDLE_WATCHER] Model unloaded after {}s idle", timeout_secs);
-                }
+            if now - last >= timeout_secs && engines.unload_all() {
+                dev_log!(
+                    "[IDLE_WATCHER] Models unloaded after {}s idle",
+                    timeout_secs
+                );
             }
         }
     });
@@ -286,66 +223,6 @@ fn update_stt_activity(state: &AppState) {
         .unwrap_or_default()
         .as_secs();
     state.last_stt_activity.store(now, Ordering::Relaxed);
-}
-
-/// Run a blocking transcription with panic isolation and without holding the
-/// engine lock for the (multi-second) inference.
-///
-/// 1. Under a short lock, lazily reload the engine if the idle watcher unloaded
-///    it, then *take* it out of the shared `Option` so the inference below runs
-///    lock-free (the idle watcher sees `None` and skips unloading; a concurrent
-///    settings reload can install a fresh engine).
-/// 2. Transcribe inside `catch_unwind` so a panic in the C/ONNX backend cannot
-///    poison the mutex or leave a corrupt engine in place.
-/// 3. On success, return the engine to the slot **only if it is still empty** —
-///    if a newer engine was installed meanwhile (e.g. model change), keep that
-///    one and drop ours. On panic, drop the engine so the next call reloads.
-///
-/// Must be called from a blocking context (e.g. `spawn_blocking`).
-fn run_transcription_blocking(
-    stt_engine_arc: &Arc<Mutex<Option<SttEngine>>>,
-    config_arc: &Arc<Mutex<AppConfig>>,
-    padded_audio: Vec<f32>,
-    prompt_for_whisper: Option<String>,
-) -> Result<String, String> {
-    // Serialize inferences: overlapping transcriptions would otherwise each see
-    // the slot empty (the running one took the engine out) and reload a fresh
-    // model, briefly holding two engines in memory. This guard is separate from
-    // the engine-storage lock, so it does NOT block the idle watcher or a
-    // settings reload (those use `stt_engine_arc`).
-    static INFERENCE_GUARD: Mutex<()> = Mutex::new(());
-    let _inference = INFERENCE_GUARD.lock().unwrap_or_else(|e| e.into_inner());
-
-    let mut engine = {
-        let mut guard = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.is_none() {
-            dev_log!("[STT] Model was unloaded by idle watcher, reloading...");
-            let config = config_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            *guard = Some(
-                SttEngine::new(&config).map_err(|e| format!("Failed to reload model: {}", e))?,
-            );
-            dev_log!("[STT] ✅ Model reloaded successfully");
-        }
-        guard.take().ok_or("STT engine not initialized")?
-    };
-
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        engine.transcribe(padded_audio, prompt_for_whisper.as_deref())
-    }));
-
-    match outcome {
-        Ok(result) => {
-            let mut guard = stt_engine_arc.lock().unwrap_or_else(|e| e.into_inner());
-            if guard.is_none() {
-                *guard = Some(engine);
-            }
-            result
-        }
-        Err(_) => {
-            dev_log!("[STT] ❌ Transcription panicked — engine reset, will reload next time");
-            Err("Transcription failed (engine crashed). It has been reset and will reload on the next attempt.".to_string())
-        }
-    }
 }
 
 /// Get D-Bus environment variables needed for PulseAudio/PipeWire/GNOME commands
@@ -425,7 +302,8 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
     })?;
 
     dev_log!("[STT] ✓ {} engine initialized", engine.backend_name());
-    *state.stt_engine.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
+    state.engines.install_primary(engine);
+    state.engines.sync_fast_lane(&state.config);
 
     // Initialize Voice Activity Detection (Silero VAD v4)
     {
@@ -682,11 +560,14 @@ pub(crate) async fn do_stop_recording(
     // Mutex is released — now block waiting for the worker's reply
     let audio_data = stop_handle.wait()?;
 
+    // Raw capture length is what the hybrid routing compares against the threshold;
+    // the padding added below is silence and must not count.
+    let duration_secs = capture_secs(audio_data.len());
     dev_log!(
         "[TIMING] T+{}ms: audio capture stopped, got {} samples ({:.2}s)",
         t0.elapsed().as_millis(),
         audio_data.len(),
-        audio_data.len() as f32 / 16000.0
+        duration_secs
     );
 
     // DEBUG: Save audio to file for inspection (dev builds only)
@@ -700,7 +581,7 @@ pub(crate) async fn do_stop_recording(
                 "[DEBUG] Audio saved to: {} ({} samples, {:.2}s)",
                 debug_path.display(),
                 audio_data.len(),
-                audio_data.len() as f32 / 16000.0
+                duration_secs
             );
         }
     }
@@ -773,27 +654,14 @@ pub(crate) async fn do_stop_recording(
         &state.config.lock().unwrap().language
     });
 
-    // Clone Arcs to move into spawn_blocking
-    let stt_engine_arc = Arc::clone(&state.stt_engine);
-    let config_arc = Arc::clone(&state.config);
-
-    // Use spawn_blocking to offload CPU-intensive Whisper transcription
-    // Lazy reload is done INSIDE the lock to prevent race with idle watcher
     let prompt_for_whisper = if initial_prompt.is_empty() {
         None
     } else {
         Some(initial_prompt.clone())
     };
-    let transcription = tokio::task::spawn_blocking(move || {
-        run_transcription_blocking(
-            &stt_engine_arc,
-            &config_arc,
-            padded_audio,
-            prompt_for_whisper,
-        )
-    })
-    .await
-    .map_err(|e| format!("Transcription task panicked: {}", e))??;
+    let transcription = state
+        .transcribe(duration_secs, padded_audio, prompt_for_whisper)
+        .await?;
 
     // Update activity again after transcription
     update_stt_activity(state);
@@ -1195,7 +1063,15 @@ async fn save_settings(
     state: State<'_, AppState>,
     new_config: AppConfig,
 ) -> Result<(), String> {
-    let (old_shortcut, old_device, old_model, old_language, old_model_path, old_use_gpu) = {
+    let (
+        old_shortcut,
+        old_device,
+        old_model,
+        old_language,
+        old_model_path,
+        old_use_gpu,
+        old_backend,
+    ) = {
         let config = state.config.lock().unwrap();
         (
             config.shortcut.clone(),
@@ -1204,6 +1080,7 @@ async fn save_settings(
             config.language.clone(),
             config.model_path.clone(),
             config.use_gpu,
+            config.stt_backend,
         )
     };
 
@@ -1243,8 +1120,9 @@ async fn save_settings(
         }
     }
 
-    // Re-init STT engine if model, language, or GPU setting changed
-    let stt_needs_reload = old_model != new_config.model
+    // Re-init STT engine if backend, model, language, or GPU setting changed
+    let stt_needs_reload = old_backend != new_config.stt_backend
+        || old_model != new_config.model
         || old_language != new_config.language
         || old_model_path != new_config.model_path
         || old_use_gpu != new_config.use_gpu;
@@ -1255,21 +1133,37 @@ async fn save_settings(
             new_config.language
         );
         stt::suppress_backend_logs();
-        match SttEngine::new(&new_config) {
-            Ok(engine) => {
-                *state.stt_engine.lock().unwrap_or_else(|e| e.into_inner()) = Some(engine);
-                dev_log!("[STT] ✅ Engine reloaded successfully");
-            }
-            Err(e) => {
-                dev_log!(
-                    "[STT] ⚠️ Engine reload failed: {} — keeping current engine",
-                    e
-                );
-            }
-        }
+        let _ = reload_primary_engine(&state.engines, new_config.clone()).await;
     }
 
+    // After the reload so the warm-up is not skipped behind the inference guard.
+    state.engines.sync_fast_lane(&state.config);
+
     Ok(())
+}
+
+/// Release-then-load the primary engine off the async runtime (a multi-GB load).
+/// Failure is logged, not returned: the settings are already saved, and the next
+/// dictation retries the load lazily. True when the new engine is in place.
+async fn reload_primary_engine(engines: &EngineSlots, config: AppConfig) -> bool {
+    let engines = engines.clone();
+    let outcome = tokio::task::spawn_blocking(move || engines.replace_primary(&config))
+        .await
+        .map_err(|e| format!("reload task panicked: {}", e))
+        .and_then(|r| r);
+    match outcome {
+        Ok(()) => {
+            dev_log!("[STT] ✅ Engine reloaded successfully");
+            true
+        }
+        Err(e) => {
+            dev_log!(
+                "[STT] ⚠️ Engine reload failed: {} — will retry on next dictation",
+                e
+            );
+            false
+        }
+    }
 }
 
 /// Check if a shortcut string contains a mouse button (which Tauri's global shortcut doesn't support)
@@ -1333,8 +1227,8 @@ async fn transcribe_audio(
         return Err("No audio data received".to_string());
     }
 
-    let duration = audio_data.len() as f32 / 16000.0;
-    dev_log!("[TRANSCRIBE] Audio duration: {:.2}s", duration);
+    let duration_secs = capture_secs(audio_data.len());
+    dev_log!("[TRANSCRIBE] Audio duration: {:.2}s", duration_secs);
 
     // Add 1 second of silence at the END to prevent Whisper from cutting off last words
     let padding_samples = 16000; // 1s at 16kHz (increased for better end capture)
@@ -1360,22 +1254,9 @@ async fn transcribe_audio(
         Some(initial_prompt)
     };
 
-    // Clone Arcs to move into spawn_blocking
-    let stt_engine_arc = Arc::clone(&state.stt_engine);
-    let config_arc = Arc::clone(&state.config);
-
-    // Use spawn_blocking to offload CPU-intensive Whisper transcription
-    // This prevents blocking the async executor
-    let transcription = tokio::task::spawn_blocking(move || {
-        run_transcription_blocking(
-            &stt_engine_arc,
-            &config_arc,
-            padded_audio,
-            prompt_for_whisper,
-        )
-    })
-    .await
-    .map_err(|e| format!("Transcription task panicked: {}", e))??;
+    let transcription = state
+        .transcribe(duration_secs, padded_audio, prompt_for_whisper)
+        .await?;
 
     dev_log!("[TRANSCRIBE] Result: '{}'", transcription);
 
@@ -1616,6 +1497,26 @@ async fn download_model(
         model_name
     );
 
+    // Auto-select the download only when it belongs to the active backend. A
+    // Parakeet download with Whisper as primary is the hybrid fast lane's model:
+    // it must not evict the primary engine, only warm the lane up (below).
+    let downloaded_backend = model_downloader::get_available_models()
+        .iter()
+        .find(|m| m.name == model_name)
+        .map(|m| m.engine_type);
+    let same_backend = {
+        let config = state.config.lock().unwrap();
+        downloaded_backend == Some(config.stt_backend)
+    };
+    if !same_backend {
+        dev_log!(
+            "[STT] Downloaded model {} belongs to another backend — primary engine kept",
+            model_name
+        );
+        state.engines.sync_fast_lane(&state.config);
+        return Ok(());
+    }
+
     // Update config to use the new model and reinit
     {
         let mut config = state.config.lock().unwrap();
@@ -1623,31 +1524,18 @@ async fn download_model(
         config.model_path = None; // Clear any stale model_path
     }
 
-    // Reinitialize STT engine
+    // Reinitialize STT engine (release-then-load, see `EngineSlots::replace_primary`)
     let config = state.config.lock().unwrap().clone();
-    match SttEngine::new(&config) {
-        Ok(engine) => {
-            let mut stt = state.stt_engine.lock().unwrap_or_else(|e| e.into_inner());
-            *stt = Some(engine);
-            dev_log!(
-                "[STT] ✅ STT engine reinitialized with model: {}",
-                model_name
-            );
-
-            app_handle
-                .emit(
-                    "status-changed",
-                    StatusEvent {
-                        status: "idle".to_string(),
-                        message: "Model ready! Press shortcut to dictate".to_string(),
-                    },
-                )
-                .ok();
-        }
-        Err(e) => {
-            dev_log!("[STT] ⚠️ Failed to reinitialize STT engine: {}", e);
-            // Don't return error - model download succeeded, just init failed
-        }
+    if reload_primary_engine(&state.engines, config).await {
+        app_handle
+            .emit(
+                "status-changed",
+                StatusEvent {
+                    status: "idle".to_string(),
+                    message: "Model ready! Press shortcut to dictate".to_string(),
+                },
+            )
+            .ok();
     }
 
     Ok(())

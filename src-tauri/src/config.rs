@@ -3,7 +3,7 @@ use specta::Type;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::stt::EngineType;
+use crate::stt::{EngineType, HybridPolicy};
 
 /// How the shortcut's press and release drive a recording.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq, Default)]
@@ -116,6 +116,13 @@ pub struct AppConfig {
     /// Selected speech-to-text backend (Whisper by default, all backends are self-hosted).
     #[serde(default)]
     pub stt_backend: EngineType,
+    /// Route short dictations to Parakeet (when installed) while Whisper stays the
+    /// primary engine. Parakeet is far faster; Whisper keeps the long dictations.
+    #[serde(default)]
+    pub hybrid_engine_enabled: bool,
+    /// Longest dictation (seconds) Parakeet handles in hybrid mode; longer ones go to Whisper.
+    #[serde(default = "default_hybrid_threshold_secs")]
+    pub hybrid_threshold_secs: u32,
     /// Hold (the historical push-to-talk), toggle, or hold-or-toggle.
     #[serde(default)]
     pub shortcut_activation: ShortcutActivation,
@@ -155,8 +162,15 @@ const DEFAULT_KEY_DELAY_MS: u32 = 60;
 /// preference (there is no UI control for this field), and `load()` rewrites it.
 const LEGACY_UNUSED_KEY_DELAY_MS: u32 = 8;
 
+/// A sentence or two; long enough that a quick note stays on Parakeet, short enough
+/// that a real paragraph still gets the Whisper pass.
+const DEFAULT_HYBRID_THRESHOLD_SECS: u32 = 20;
+
 fn default_true() -> bool {
     true
+}
+fn default_hybrid_threshold_secs() -> u32 {
+    DEFAULT_HYBRID_THRESHOLD_SECS
 }
 fn default_volume() -> f32 {
     0.7
@@ -200,8 +214,28 @@ impl Default for AppConfig {
             filler_removal_enabled: true,
             stutter_collapse_enabled: true,
             stt_backend: EngineType::default(),
+            hybrid_engine_enabled: false,
+            hybrid_threshold_secs: DEFAULT_HYBRID_THRESHOLD_SECS,
             shortcut_activation: ShortcutActivation::default(),
             hold_threshold_ms: default_hold_threshold_ms(),
+        }
+    }
+}
+
+impl AppConfig {
+    /// The hybrid-routing settings, as a `Copy` snapshot that outlives any lock.
+    #[must_use]
+    pub fn hybrid_policy(&self) -> HybridPolicy {
+        HybridPolicy::from(self)
+    }
+}
+
+impl From<&AppConfig> for HybridPolicy {
+    fn from(config: &AppConfig) -> Self {
+        Self {
+            primary: config.stt_backend,
+            enabled: config.hybrid_engine_enabled,
+            threshold_secs: config.hybrid_threshold_secs,
         }
     }
 }
@@ -412,6 +446,8 @@ mod tests {
             filler_removal_enabled: true,
             stutter_collapse_enabled: true,
             stt_backend: EngineType::default(),
+            hybrid_engine_enabled: true,
+            hybrid_threshold_secs: 45,
             shortcut_activation: ShortcutActivation::default(),
             hold_threshold_ms: default_hold_threshold_ms(),
         };
@@ -426,6 +462,51 @@ mod tests {
         assert_eq!(restored.language, "en");
         assert!(restored.use_gpu);
         assert_eq!(restored.gpu_device_index, Some(1));
+        assert!(restored.hybrid_engine_enabled);
+        assert_eq!(restored.hybrid_threshold_secs, 45);
+    }
+
+    #[test]
+    fn hybrid_defaults_are_off_and_20s() {
+        let config = AppConfig::default();
+        assert!(!config.hybrid_engine_enabled);
+        assert_eq!(config.hybrid_threshold_secs, 20);
+    }
+
+    #[test]
+    fn legacy_config_without_hybrid_fields_uses_defaults() {
+        let json = r#"{
+            "shortcut": "Ctrl+Space",
+            "audio_device_index": 0,
+            "model": "ggml-large-v3",
+            "key_delay_ms": 60,
+            "language": "fr",
+            "stt_backend": "whisper"
+        }"#;
+        let config: AppConfig = serde_json::from_str(json).unwrap();
+        assert!(!config.hybrid_engine_enabled);
+        assert_eq!(config.hybrid_threshold_secs, DEFAULT_HYBRID_THRESHOLD_SECS);
+        assert!(!config.hybrid_policy().is_active());
+    }
+
+    #[test]
+    fn hybrid_policy_mirrors_config() {
+        let config = AppConfig {
+            stt_backend: EngineType::Whisper,
+            hybrid_engine_enabled: true,
+            hybrid_threshold_secs: 12,
+            ..AppConfig::default()
+        };
+        let policy = config.hybrid_policy();
+        assert_eq!(
+            policy,
+            HybridPolicy {
+                primary: EngineType::Whisper,
+                enabled: true,
+                threshold_secs: 12,
+            }
+        );
+        assert!(policy.is_active());
     }
 
     #[test]

@@ -347,6 +347,15 @@ stutter_collapse_enabled?: boolean;
  */
 stt_backend?: EngineType; 
 /**
+ * Route short dictations to Parakeet (when installed) while Whisper stays the
+ * primary engine. Parakeet is far faster; Whisper keeps the long dictations.
+ */
+hybrid_engine_enabled?: boolean; 
+/**
+ * Longest dictation (seconds) Parakeet handles in hybrid mode; longer ones go to Whisper.
+ */
+hybrid_threshold_secs?: number; 
+/**
  * Hold (the historical push-to-talk), toggle, or hold-or-toggle.
  */
 shortcut_activation?: ShortcutActivation; 

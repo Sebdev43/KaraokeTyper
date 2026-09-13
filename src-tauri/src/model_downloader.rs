@@ -551,18 +551,34 @@ pub fn check_installed_models() -> Result<Vec<ModelInfo>, String> {
     Ok(models)
 }
 
+/// Where a catalogue entry lives once installed: a directory for ONNX bundles, a
+/// single `.bin` for Whisper.
+fn model_path_of(model: &ModelInfo) -> PathBuf {
+    if model.is_directory {
+        get_models_dir().join(&model.name)
+    } else {
+        get_model_file_path(&model.name)
+    }
+}
+
 pub fn get_model_path(model_name: &str) -> Option<String> {
     let models = get_available_models();
     let model = models.iter().find(|m| m.name == model_name)?;
     if !is_model_installed(model) {
         return None;
     }
-    let path = if model.is_directory {
-        get_models_dir().join(&model.name)
-    } else {
-        get_model_file_path(model_name)
-    };
-    Some(path.to_string_lossy().to_string())
+    Some(model_path_of(model).to_string_lossy().to_string())
+}
+
+/// Path of a model `engine` can load, if one is installed — how the hybrid fast lane
+/// finds Parakeet without hard-coding a catalogue name. Walks the catalogue and stats
+/// each candidate until the first installed one; nothing is cloned.
+#[must_use]
+pub fn installed_model_path_for(engine: EngineType) -> Option<PathBuf> {
+    crate::catalog::models()
+        .iter()
+        .find(|m| m.engine_type == engine && !m.coming_soon && is_model_installed(m))
+        .map(model_path_of)
 }
 
 pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result<(), String> {
@@ -1351,6 +1367,21 @@ mod tests {
         assert!(models
             .iter()
             .any(|m| m.engine_type == EngineType::Moonshine));
+    }
+
+    #[test]
+    fn model_path_of_is_a_directory_for_bundles_and_a_bin_for_whisper() {
+        let models = get_available_models();
+        let parakeet = models
+            .iter()
+            .find(|m| m.engine_type == EngineType::Parakeet)
+            .expect("Parakeet V3 should be registered");
+        assert!(model_path_of(parakeet).ends_with(&parakeet.name));
+        let small = models
+            .iter()
+            .find(|m| m.name == "ggml-small")
+            .expect("ggml-small should be registered");
+        assert!(model_path_of(small).ends_with("ggml-small.bin"));
     }
 
     #[test]

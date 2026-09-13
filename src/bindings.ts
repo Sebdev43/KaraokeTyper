@@ -345,7 +345,16 @@ stutter_collapse_enabled?: boolean;
 /**
  * Selected speech-to-text backend (Whisper by default, all backends are self-hosted).
  */
-stt_backend?: EngineType }
+stt_backend?: EngineType; 
+/**
+ * Route short dictations to Parakeet (when installed) while Whisper stays the
+ * primary engine. Parakeet is far faster; Whisper keeps the long dictations.
+ */
+hybrid_engine_enabled?: boolean; 
+/**
+ * Longest dictation (seconds) Parakeet handles in hybrid mode; longer ones go to Whisper.
+ */
+hybrid_threshold_secs?: number }
 export type AppDataInfo = { items: AppDataItem[]; total_size_mb: number }
 export type AppDataItem = { name: string; path: string; exists: boolean; size_mb: number }
 export type AudioDevice = { name: string; raw_name: string; index: number }

@@ -21,6 +21,8 @@ interface SettingsState {
   sttBackend: EngineType;
   model: string;
   language: string;
+  hybridEngineEnabled: boolean;
+  hybridThresholdSecs: number;
 
   // Keyboard shortcut
   shortcut: string;
@@ -71,6 +73,8 @@ interface SettingsState {
   setSttBackend: (backend: EngineType) => void;
   setModel: (model: string) => void;
   setLanguage: (language: string) => void;
+  setHybridEngineEnabled: (enabled: boolean) => void;
+  setHybridThresholdSecs: (seconds: number) => void;
   setShortcut: (shortcut: string) => void;
   setInstalledModels: (models: ModelInfo[]) => void;
   setDownloadingModel: (model: string | null) => void;
@@ -104,6 +108,8 @@ const initialState = {
   sttBackend: "whisper" as EngineType,
   model: "ggml-small",
   language: "fr",
+  hybridEngineEnabled: false,
+  hybridThresholdSecs: 20,
   shortcut: "Ctrl+Space",
   installedModels: [],
   downloadingModel: null,
@@ -147,6 +153,10 @@ export const useSettingsStore = create<SettingsState>()(
       setModel: (model) => set({ model }),
 
       setLanguage: (language) => set({ language }),
+
+      setHybridEngineEnabled: (enabled) => set({ hybridEngineEnabled: enabled }),
+
+      setHybridThresholdSecs: (seconds) => set({ hybridThresholdSecs: seconds }),
 
       setShortcut: (shortcut) => set({ shortcut }),
 
@@ -193,6 +203,8 @@ export const useSettingsStore = create<SettingsState>()(
         sttBackend: state.sttBackend,
         model: state.model,
         language: state.language,
+        hybridEngineEnabled: state.hybridEngineEnabled,
+        hybridThresholdSecs: state.hybridThresholdSecs,
         shortcut: state.shortcut,
         autostart: state.autostart,
         useGpuAcceleration: state.useGpuAcceleration,

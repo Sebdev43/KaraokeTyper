@@ -16,7 +16,7 @@ import {
   Monitor,
   RefreshCw,
   Settings,
-  Sparkles,
+  SpellCheck,
   Volume2,
   VolumeX,
   X,
@@ -43,6 +43,10 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { useSettingsStore, useSystemStore } from "@/stores";
+
+// Read at call time: the OS setting can change while the window stays open.
+const prefersReducedMotion = () =>
+  typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // Event type for model download progress (not in generated bindings)
 interface DownloadProgress {
@@ -90,6 +94,10 @@ function SettingsWindow() {
     setModel,
     language,
     setLanguage,
+    hybridEngineEnabled,
+    setHybridEngineEnabled,
+    hybridThresholdSecs,
+    setHybridThresholdSecs,
     installedModels,
     setInstalledModels,
     downloadingModel,
@@ -123,9 +131,13 @@ function SettingsWindow() {
     holdThresholdMs,
     setHoldThresholdMs,
     customWords,
+    setCustomWords,
     customWordsThreshold,
+    setCustomWordsThreshold,
     fillerRemovalEnabled,
+    setFillerRemovalEnabled,
     stutterCollapseEnabled,
+    setStutterCollapseEnabled,
     ollamaStatus,
     setOllamaStatus,
     isRefreshing,
@@ -158,8 +170,25 @@ function SettingsWindow() {
 
   // Local UI state
   const [isCapturing, setIsCapturing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [activeSection, setActiveSection] = useState("audio");
   const inputRef = useRef<HTMLInputElement>(null);
+  // The shortcut in place before a capture started, restored on Escape or blur so a
+  // stray click never replaces the user's hotkey with a default.
+  const previousShortcutRef = useRef("");
+  // The device name the backend actually records with. The list of devices loads in
+  // parallel with the settings, so the match happens once both are here (effect below);
+  // selecting by stored index alone picks a different microphone whenever the list order
+  // changes, and Save then silently rewrites the config with that wrong device.
+  const [configuredDeviceName, setConfiguredDeviceName] = useState<string | null>(null);
+  // What the backend has loaded. Save compares against it to tell the user when it is
+  // about to reload a multi-GB model rather than just write a file.
+  const loadedEngineRef = useRef<{
+    model: string;
+    language: string;
+    sttBackend: string;
+    useGpu: boolean;
+  } | null>(null);
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const lastVolumeRef = useRef(0.7);
   // key_delay_ms has no control in this window, so its value has to be round-tripped:
@@ -196,10 +225,13 @@ function SettingsWindow() {
       if (result.status === "ok") {
         setShortcut(result.data.shortcut);
         keyDelayMsRef.current = result.data.key_delay_ms;
-        setSelectedDevice(result.data.audio_device_index);
+        setSelectedDevice(result.data.audio_device_index, result.data.audio_device_name ?? "");
+        setConfiguredDeviceName(result.data.audio_device_name ?? null);
         setSttBackend(result.data.stt_backend ?? "whisper");
         setModel(result.data.model);
         setLanguage(result.data.language);
+        setHybridEngineEnabled(result.data.hybrid_engine_enabled ?? false);
+        setHybridThresholdSecs(result.data.hybrid_threshold_secs ?? 20);
         setUseGpuAcceleration(result.data.use_gpu ?? false);
         setAudioFeedbackEnabled(result.data.audio_feedback_enabled ?? true);
         setAudioFeedbackVolume(result.data.audio_feedback_volume ?? 0.7);
@@ -212,6 +244,18 @@ function SettingsWindow() {
         setHoldThresholdMs(
           clampHoldThreshold(result.data.hold_threshold_ms ?? HOLD_THRESHOLD.default),
         );
+        // No control in this window for these four: without the round-trip, Save would
+        // overwrite whatever the backend holds with the store defaults.
+        setCustomWords(result.data.custom_words ?? []);
+        setCustomWordsThreshold(result.data.custom_words_threshold ?? 0.3);
+        setFillerRemovalEnabled(result.data.filler_removal_enabled ?? true);
+        setStutterCollapseEnabled(result.data.stutter_collapse_enabled ?? true);
+        loadedEngineRef.current = {
+          model: result.data.model,
+          language: result.data.language,
+          sttBackend: result.data.stt_backend ?? "whisper",
+          useGpu: result.data.use_gpu ?? false,
+        };
       } else {
         console.error("Failed to load settings:", result.error);
       }
@@ -224,6 +268,8 @@ function SettingsWindow() {
     setSttBackend,
     setModel,
     setLanguage,
+    setHybridEngineEnabled,
+    setHybridThresholdSecs,
     setUseGpuAcceleration,
     setAudioFeedbackEnabled,
     setAudioFeedbackVolume,
@@ -234,7 +280,20 @@ function SettingsWindow() {
     setPasteMethod,
     setShortcutActivation,
     setHoldThresholdMs,
+    setCustomWords,
+    setCustomWordsThreshold,
+    setFillerRemovalEnabled,
+    setStutterCollapseEnabled,
   ]);
+
+  // Match the configured microphone by name once the device list is in, then forget the
+  // name so a later refresh of the list does not override a choice the user just made.
+  useEffect(() => {
+    if (configuredDeviceName === null || audioDevices.length === 0) return;
+    const match = audioDevices.find((d) => d.raw_name === configuredDeviceName);
+    if (match) setSelectedDevice(match.index, match.raw_name);
+    setConfiguredDeviceName(null);
+  }, [audioDevices, configuredDeviceName, setSelectedDevice]);
 
   const checkPermissions = useCallback(async () => {
     try {
@@ -424,6 +483,18 @@ function SettingsWindow() {
     loadGpuStatus,
   ]);
 
+  // The window is hidden, never destroyed: edits abandoned with the close button or
+  // Alt+F4 would otherwise still be on screen the next time it is shown, looking saved.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") return;
+      void loadSettings();
+      void loadInstalledModels();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [loadSettings, loadInstalledModels]);
+
   useEffect(() => {
     const unlistenProgress = listen<DownloadProgress>("model-download-progress", (event) => {
       setDownloadProgress(event.payload.percent);
@@ -440,15 +511,40 @@ function SettingsWindow() {
     };
   }, [loadInstalledModels, setDownloadProgress]);
 
-  const handleShortcutCapture = (e: React.MouseEvent) => {
-    e.preventDefault();
+  const startShortcutCapture = () => {
+    if (isCapturing) return;
+    previousShortcutRef.current = shortcut;
     setIsCapturing(true);
-    setShortcut("Press any key...");
     inputRef.current?.focus();
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const cancelShortcutCapture = () => {
     if (!isCapturing) return;
+    setShortcut(previousShortcutRef.current);
+    setIsCapturing(false);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (!isCapturing) {
+      // Keyboard users reach the field with Tab; Enter or Space starts the capture.
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        startShortcutCapture();
+      }
+      return;
+    }
+
+    // Escape cancels; Tab and Enter are never a hotkey (Tab moves focus, the blur cancels).
+    // stopPropagation keeps the window-level Escape (close) from seeing the same event:
+    // React re-renders synchronously here, so that listener would already see
+    // isCapturing === false by the time the native event reaches it.
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      cancelShortcutCapture();
+      return;
+    }
+    if (e.key === "Tab" || e.key === "Enter") return;
 
     e.preventDefault();
     e.stopPropagation();
@@ -512,10 +608,7 @@ function SettingsWindow() {
   };
 
   const handleBlur = () => {
-    if (isCapturing) {
-      setShortcut("Ctrl+Space");
-      setIsCapturing(false);
-    }
+    cancelShortcutCapture();
   };
 
   const handleRefreshDevices = async () => {
@@ -530,8 +623,24 @@ function SettingsWindow() {
   };
 
   const handleSave = async () => {
+    if (isSaving) return;
+    setIsSaving(true);
     try {
-      setSaveStatus("Enregistrement…");
+      // save_settings reloads the engine inline when any of these changed, which takes
+      // seconds for a multi-GB Whisper: say so instead of hanging on "Enregistrement…".
+      const loaded = loadedEngineRef.current;
+      const engineReload =
+        loaded !== null &&
+        (loaded.model !== model ||
+          loaded.language !== language ||
+          loaded.sttBackend !== sttBackend ||
+          loaded.useGpu !== useGpuAcceleration);
+      const modelLabel = installedModels.find((m) => m.name === model)?.display_name ?? model;
+      setSaveStatus(
+        engineReload
+          ? `Enregistrement, puis chargement de ${modelLabel} (quelques secondes)…`
+          : "Enregistrement…",
+      );
 
       const selectedDeviceName =
         audioDevices.find((d) => d.index === selectedDevice)?.raw_name || null;
@@ -563,21 +672,43 @@ function SettingsWindow() {
         stt_backend: sttBackend,
         shortcut_activation: shortcutActivation,
         hold_threshold_ms: holdThresholdMs,
+        hybrid_engine_enabled: hybridEngineEnabled,
+        hybrid_threshold_secs: hybridThresholdSecs,
       };
 
       const result = await commands.saveSettings(config);
       if (result.status === "ok") {
-        setSaveStatus("Paramètres enregistrés !");
-        setTimeout(() => setSaveStatus(""), 2000);
+        loadedEngineRef.current = {
+          model,
+          language,
+          sttBackend,
+          useGpu: useGpuAcceleration,
+        };
+        setSaveStatus(
+          engineReload ? `Enregistré, ${modelLabel} chargé.` : "Paramètres enregistrés.",
+        );
+        // Leave the confirmation on screen long enough to be read before the window goes.
+        await new Promise((resolve) => setTimeout(resolve, 700));
         await getCurrentWindow().hide();
+        setSaveStatus("");
       } else {
-        setSaveStatus(`Error: ${result.error}`);
+        setSaveStatus(`Erreur : ${result.error}`);
         console.error("Failed to save settings:", result.error);
       }
     } catch (error) {
-      setSaveStatus(`Error: ${error}`);
+      setSaveStatus(`Erreur : ${error}`);
       console.error("Failed to save settings:", error);
+    } finally {
+      setIsSaving(false);
     }
+  };
+
+  // Drop unsaved edits: hide, then reload what the backend actually holds.
+  const handleCancel = async () => {
+    if (isSaving) return;
+    setSaveStatus("");
+    await getCurrentWindow().hide();
+    void loadSettings();
   };
 
   const handleInstallSystem = async () => {
@@ -680,6 +811,13 @@ function SettingsWindow() {
 
   const systemDepsInstalled = permissionsInstalled && uinputAvailable;
 
+  // Hybrid mode only makes sense with Whisper as primary: `model` is one field, so a
+  // Parakeet primary has no Whisper model to hand long dictations to.
+  const hybridAvailable = sttBackend === "whisper";
+  const parakeetInstalled = installedModels.some(
+    (m) => m.engine_type === "parakeet" && m.installed,
+  );
+
   const handleMinimize = async () => {
     await getCurrentWindow().minimize();
   };
@@ -694,8 +832,26 @@ function SettingsWindow() {
   };
 
   const handleClose = async () => {
-    await getCurrentWindow().hide();
+    await handleCancel();
   };
+
+  // Ctrl+S saves, Escape cancels, unless a capture or an open menu owns the key.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (isCapturing || e.defaultPrevented) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void handleSave();
+        return;
+      }
+      if (e.key === "Escape" && !document.querySelector("[data-radix-popper-content-wrapper]")) {
+        e.preventDefault();
+        void handleCancel();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-background">
@@ -706,7 +862,7 @@ function SettingsWindow() {
       >
         <div data-tauri-drag-region className="flex items-center gap-2">
           <Settings className="h-4 w-4 text-primary" />
-          <span className="text-sm font-medium">KaraokeTyper — Paramètres</span>
+          <h1 className="text-sm font-medium">KaraokeTyper · Paramètres</h1>
         </div>
         <div className="flex items-center gap-1">
           <Button
@@ -714,6 +870,7 @@ function SettingsWindow() {
             size="icon"
             className="h-7 w-7 hover:bg-muted"
             onClick={handleMinimize}
+            aria-label="Réduire la fenêtre"
           >
             <Minimize2 className="h-3.5 w-3.5" />
           </Button>
@@ -722,6 +879,7 @@ function SettingsWindow() {
             size="icon"
             className="h-7 w-7 hover:bg-muted"
             onClick={handleMaximize}
+            aria-label="Agrandir la fenêtre"
           >
             <Maximize2 className="h-3.5 w-3.5" />
           </Button>
@@ -730,6 +888,7 @@ function SettingsWindow() {
             size="icon"
             className="h-7 w-7 hover:bg-destructive hover:text-destructive-foreground"
             onClick={handleClose}
+            aria-label="Fermer sans enregistrer"
           >
             <X className="h-3.5 w-3.5" />
           </Button>
@@ -739,38 +898,36 @@ function SettingsWindow() {
       {/* Sidebar + Content */}
       <div className="flex flex-1 min-h-0">
         {/* Sidebar Navigation */}
-        <nav className="flex-none w-48 border-r border-border bg-muted/30 py-2 overflow-y-auto">
+        <nav
+          aria-label="Sections des paramètres"
+          className="flex-none w-48 border-r border-border bg-muted/30 py-2 overflow-y-auto"
+        >
           {[
-            { id: "audio", icon: Mic, label: "Audio", color: "text-rose-400" },
+            { id: "audio", icon: Mic, label: "Audio" },
             {
               id: "shortcut",
               icon: Keyboard,
               label: "Raccourci",
-              color: "text-amber-400",
             },
             {
               id: "stt",
               icon: Brain,
               label: "Reconnaissance",
-              color: "text-violet-400",
             },
             {
               id: "performance",
               icon: Cpu,
               label: "Performance",
-              color: "text-cyan-400",
             },
             {
               id: "models",
               icon: Download,
               label: "Modèles",
-              color: "text-emerald-400",
             },
             {
               id: "system",
               icon: Settings,
               label: "Système",
-              color: "text-orange-400",
             },
             ...(isGnomeWayland
               ? [
@@ -778,7 +935,6 @@ function SettingsWindow() {
                     id: "gnome",
                     icon: Monitor,
                     label: "Terminal",
-                    color: "text-sky-400",
                   },
                 ]
               : []),
@@ -786,39 +942,37 @@ function SettingsWindow() {
               id: "feedback",
               icon: Volume2,
               label: "Sons",
-              color: "text-pink-400",
             },
             {
               id: "unload",
               icon: Clock,
               label: "Déchargement",
-              color: "text-teal-400",
             },
             {
               id: "ollama",
-              icon: Sparkles,
+              icon: SpellCheck,
               label: "Ollama",
-              color: "text-fuchsia-400",
             },
             {
               id: "about",
               icon: Info,
               label: "À propos",
-              color: "text-zinc-400",
             },
-          ].map(({ id, icon: Icon, label, color }) => (
+          ].map(({ id, icon: Icon, label }) => (
             <button
               key={id}
               type="button"
               onClick={() => {
                 setActiveSection(id);
                 sectionRefs.current[id]?.scrollIntoView({
-                  behavior: "smooth",
+                  behavior: prefersReducedMotion() ? "auto" : "smooth",
                   block: "start",
                 });
               }}
+              aria-current={activeSection === id ? "true" : undefined}
               className={cn(
                 "flex items-center gap-2.5 w-full px-4 py-2 text-sm transition-colors text-left",
+                "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-ring/50",
                 activeSection === id
                   ? "bg-primary/10 text-foreground font-medium border-r-2 border-primary"
                   : "text-muted-foreground hover:text-foreground hover:bg-muted/50",
@@ -827,7 +981,7 @@ function SettingsWindow() {
               <Icon
                 className={cn(
                   "h-4 w-4 shrink-0",
-                  activeSection === id ? color : "text-muted-foreground",
+                  activeSection === id ? "text-foreground" : "text-muted-foreground",
                 )}
               />
               {label}
@@ -846,7 +1000,7 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Mic className="h-5 w-5 text-rose-400" />
+                  <Mic className="h-5 w-5 text-muted-foreground" />
                   Entrée audio
                 </CardTitle>
               </CardHeader>
@@ -858,13 +1012,17 @@ function SettingsWindow() {
                       value={String(selectedDevice)}
                       onValueChange={(value) => setSelectedDevice(Number(value))}
                     >
-                      <SelectTrigger className="flex-1">
+                      <SelectTrigger id="microphone" className="flex-1">
                         <SelectValue placeholder="Sélectionner un micro" />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent className="max-w-[calc(100vw-15rem)]">
                         {audioDevices.map((device) => (
-                          <SelectItem key={device.index} value={String(device.index)}>
-                            {device.name}
+                          <SelectItem
+                            key={device.index}
+                            value={String(device.index)}
+                            title={device.name}
+                          >
+                            <span className="truncate">{device.name}</span>
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -874,8 +1032,14 @@ function SettingsWindow() {
                       size="icon"
                       onClick={handleRefreshDevices}
                       disabled={isRefreshing}
+                      aria-label="Actualiser la liste des micros"
                     >
-                      <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
+                      <RefreshCw
+                        className={cn(
+                          "h-4 w-4",
+                          isRefreshing && "animate-spin motion-reduce:animate-none",
+                        )}
+                      />
                     </Button>
                   </div>
                 </div>
@@ -890,32 +1054,51 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Keyboard className="h-5 w-5 text-amber-400" />
+                  <Keyboard className="h-5 w-5 text-muted-foreground" />
                   Raccourci clavier
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="shortcut">Touche d'enregistrement</Label>
-                  <Input
-                    ref={inputRef}
-                    id="shortcut"
-                    type="text"
-                    value={shortcut}
-                    onClick={handleShortcutCapture}
-                    onKeyDown={handleKeyDown}
-                    onMouseDown={handleMouseDown}
-                    onBlur={handleBlur}
-                    onContextMenu={(e) => e.preventDefault()}
-                    readOnly
-                    placeholder="Cliquez pour définir..."
-                    className={cn(
-                      "cursor-pointer",
-                      isCapturing && "ring-2 ring-primary bg-primary/10",
-                    )}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Cliquez, puis appuyez sur une touche ou un bouton souris (Mouse4, Mouse5...)
+                  <div className="flex gap-2">
+                    <Input
+                      ref={inputRef}
+                      id="shortcut"
+                      type="text"
+                      value={isCapturing ? "" : shortcut}
+                      onClick={startShortcutCapture}
+                      onKeyDown={handleKeyDown}
+                      onMouseDown={handleMouseDown}
+                      onBlur={handleBlur}
+                      onContextMenu={(e) => e.preventDefault()}
+                      readOnly
+                      aria-describedby="shortcut-hint"
+                      placeholder={
+                        isCapturing ? "Appuyez sur une touche ou un bouton souris…" : "Non défini"
+                      }
+                      className={cn(
+                        "flex-1 cursor-pointer",
+                        isCapturing && "ring-[3px] ring-ring/50 border-ring bg-primary/10",
+                      )}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={isCapturing ? cancelShortcutCapture : startShortcutCapture}
+                      onMouseDown={handleMouseDown}
+                    >
+                      {isCapturing ? "Annuler" : "Modifier"}
+                    </Button>
+                  </div>
+                  <p
+                    id="shortcut-hint"
+                    className="text-xs text-muted-foreground"
+                    aria-live="polite"
+                  >
+                    {isCapturing
+                      ? "En attente d'une touche ou d'un bouton souris (Mouse4, Mouse5…). Échap pour annuler."
+                      : "Cliquez sur Modifier, puis appuyez sur la combinaison voulue."}
                   </p>
                 </div>
 
@@ -970,7 +1153,7 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Brain className="h-5 w-5 text-violet-400" />
+                  <Brain className="h-5 w-5 text-muted-foreground" />
                   Reconnaissance vocale
                 </CardTitle>
               </CardHeader>
@@ -992,15 +1175,15 @@ function SettingsWindow() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="whisper">Whisper — généraliste, 99 langues</SelectItem>
+                      <SelectItem value="whisper">Whisper · généraliste, 99 langues</SelectItem>
                       <SelectItem value="parakeet">
-                        Parakeet V3 ⭐ — FR + 24 langues UE, très précis
+                        Parakeet V3 · FR + 24 langues UE, très précis (recommandé)
                       </SelectItem>
                       <SelectItem value="sense-voice" disabled>
-                        SenseVoice — multilingue (FR/EN/ES/DE) · bientôt
+                        SenseVoice · multilingue (FR/EN/ES/DE), bientôt
                       </SelectItem>
                       <SelectItem value="moonshine" disabled>
-                        Moonshine — ultra-léger (EN) · bientôt
+                        Moonshine · ultra-léger (EN), bientôt
                       </SelectItem>
                     </SelectContent>
                   </Select>
@@ -1013,7 +1196,7 @@ function SettingsWindow() {
                 <div className="space-y-2">
                   <Label htmlFor="model">Modèle actif</Label>
                   <Select value={model} onValueChange={setModel}>
-                    <SelectTrigger>
+                    <SelectTrigger id="model">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1034,16 +1217,61 @@ function SettingsWindow() {
                   </Select>
                   {model && !installedModels.find((m) => m.name === model)?.installed && (
                     <p className="text-xs text-destructive">
-                      ⚠️ Le modèle "{model}" n'est pas installé. Téléchargez-le dans "Modèles"
+                      Le modèle "{model}" n'est pas installé. Téléchargez-le dans "Modèles"
                       ci-dessous.
                     </p>
+                  )}
+                </div>
+
+                {/* Hybrid mode: Parakeet for short dictations, Whisper beyond the threshold */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="space-y-1">
+                      <Label htmlFor="hybrid-engine">Parakeet pour les dictées courtes</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Parakeet V3 est bien plus rapide que Whisper : il transcrit les dictées
+                        courtes, Whisper reprend la main au-delà du seuil.
+                      </p>
+                    </div>
+                    <Switch
+                      id="hybrid-engine"
+                      checked={hybridEngineEnabled}
+                      onCheckedChange={setHybridEngineEnabled}
+                      disabled={!hybridAvailable}
+                    />
+                  </div>
+                  {!hybridAvailable && (
+                    <p className="text-xs text-muted-foreground">
+                      Disponible uniquement avec Whisper comme moteur principal.
+                    </p>
+                  )}
+                  {hybridAvailable && hybridEngineEnabled && !parakeetInstalled && (
+                    <p className="text-xs text-destructive">
+                      Parakeet V3 n'est pas installé : toutes les dictées passent par Whisper
+                      jusqu'à son téléchargement dans "Modèles" ci-dessous.
+                    </p>
+                  )}
+                  {hybridAvailable && hybridEngineEnabled && (
+                    <div className="space-y-2 pt-1">
+                      <Label id="hybrid-threshold-label">
+                        Bascule vers Whisper au-delà de {hybridThresholdSecs} s
+                      </Label>
+                      <Slider
+                        aria-labelledby="hybrid-threshold-label"
+                        min={3}
+                        max={120}
+                        step={1}
+                        value={[hybridThresholdSecs]}
+                        onValueChange={([v]) => setHybridThresholdSecs(v)}
+                      />
+                    </div>
                   )}
                 </div>
 
                 <div className="space-y-2">
                   <Label htmlFor="language">Langue</Label>
                   <Select value={language} onValueChange={setLanguage}>
-                    <SelectTrigger>
+                    <SelectTrigger id="language">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1073,7 +1301,7 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Cpu className="h-5 w-5 text-cyan-400" />
+                  <Cpu className="h-5 w-5 text-muted-foreground" />
                   Performance
                 </CardTitle>
               </CardHeader>
@@ -1096,10 +1324,12 @@ function SettingsWindow() {
 
                 {/* VRAM Recommendation */}
                 {gpuInfo?.vram_mb && gpuInfo.recommended_model && (
-                  <div className="p-2 rounded bg-cyan-500/10 border border-cyan-500/30">
-                    <p className="text-sm text-cyan-400">
+                  <div className="p-2 rounded-md bg-muted/50 border border-border">
+                    <p className="text-sm text-muted-foreground">
                       Modèle max recommandé pour votre GPU :{" "}
-                      <span className="font-medium">{gpuInfo.recommended_model}</span>
+                      <span className="font-medium text-foreground">
+                        {gpuInfo.recommended_model}
+                      </span>
                     </p>
                     {(() => {
                       const vramTable: Record<string, number> = {
@@ -1114,7 +1344,7 @@ function SettingsWindow() {
                         gpuInfo.vram_mb !== null && currentVram > gpuInfo.vram_mb * 0.7;
                       if (useGpuAcceleration && isTooLarge) {
                         return (
-                          <p className="text-xs text-yellow-400 mt-1">
+                          <p className="text-xs text-destructive mt-1">
                             Votre modèle actuel ({model}) risque de dépasser la capacité VRAM et
                             provoquer des crashs. Essayez {gpuInfo.recommended_model}.
                           </p>
@@ -1134,13 +1364,7 @@ function SettingsWindow() {
                         {gpuStatus.fallback_reason || "Fonctionne normalement"}
                       </p>
                     </div>
-                    <Badge
-                      variant={gpuStatus.mode === "gpu" ? "default" : "secondary"}
-                      className={cn(
-                        gpuStatus.mode === "gpu" && "bg-green-600",
-                        gpuStatus.mode === "cpu" && gpuStatus.fallback_reason && "bg-yellow-600",
-                      )}
-                    >
+                    <Badge variant={gpuStatus.mode === "gpu" ? "default" : "secondary"}>
                       {gpuStatus.mode === "gpu" ? "GPU actif" : "Mode CPU"}
                     </Badge>
                   </div>
@@ -1148,9 +1372,9 @@ function SettingsWindow() {
 
                 {/* GPU Failure Warning */}
                 {gpuInfo && gpuInfo.failure_count > 0 && (
-                  <div className="flex items-center justify-between p-2 rounded bg-yellow-500/10 border border-yellow-500/30">
+                  <div className="flex items-center justify-between p-2 rounded-md bg-destructive/10 border border-destructive/30">
                     <div className="space-y-1">
-                      <p className="text-sm text-yellow-500 font-medium">
+                      <p className="text-sm text-destructive font-medium">
                         {gpuInfo.disabled_by_failures
                           ? `GPU désactivé après ${gpuInfo.failure_count} échecs`
                           : `${gpuInfo.failure_count} échec(s) GPU enregistré(s)`}
@@ -1178,7 +1402,7 @@ function SettingsWindow() {
                 {/* GPU Toggle */}
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Accélération GPU</Label>
+                    <Label htmlFor="gpu-acceleration">Accélération GPU</Label>
                     <p className="text-sm text-muted-foreground">
                       {useGpuAcceleration
                         ? "GPU utilisé pour la transcription"
@@ -1186,6 +1410,7 @@ function SettingsWindow() {
                     </p>
                   </div>
                   <Switch
+                    id="gpu-acceleration"
                     checked={useGpuAcceleration}
                     onCheckedChange={setUseGpuAcceleration}
                     disabled={!gpuInfo?.available || gpuInfo?.disabled_by_failures}
@@ -1209,7 +1434,7 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Download className="h-5 w-5 text-emerald-400" />
+                  <Download className="h-5 w-5 text-muted-foreground" />
                   Gestion des modèles
                 </CardTitle>
               </CardHeader>
@@ -1231,9 +1456,14 @@ function SettingsWindow() {
                             Installé
                           </Badge>
                         )}
-                        {modelInfo.name === "ggml-small" && (
+                        {modelInfo.is_recommended && (
                           <Badge variant="secondary" className="text-xs">
                             Recommandé
+                          </Badge>
+                        )}
+                        {modelInfo.coming_soon && (
+                          <Badge variant="secondary" className="text-xs">
+                            Bientôt
                           </Badge>
                         )}
                       </div>
@@ -1251,14 +1481,16 @@ function SettingsWindow() {
                       )}
                     </div>
 
-                    <Button
-                      variant={modelInfo.installed ? "outline" : "default"}
-                      size="sm"
-                      onClick={() => handleDownloadModel(modelInfo.name)}
-                      disabled={modelInfo.installed || downloadingModel !== null}
-                    >
-                      {modelInfo.installed ? "Installé ✓" : "Télécharger"}
-                    </Button>
+                    {!modelInfo.installed && !modelInfo.coming_soon && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleDownloadModel(modelInfo.name)}
+                        disabled={downloadingModel !== null}
+                      >
+                        Télécharger
+                      </Button>
+                    )}
                   </div>
                 ))}
               </CardContent>
@@ -1272,7 +1504,7 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Settings className="h-5 w-5 text-orange-400" />
+                  <Settings className="h-5 w-5 text-muted-foreground" />
                   Configuration système
                 </CardTitle>
               </CardHeader>
@@ -1290,13 +1522,13 @@ function SettingsWindow() {
                     <div className="flex flex-col gap-2">
                       <div className="flex items-center gap-2">
                         <Badge variant={permissionsInstalled ? "default" : "secondary"}>
-                          {permissionsInstalled ? "✓" : "○"}
+                          {permissionsInstalled ? "Actif" : "Manquant"}
                         </Badge>
                         <span className="text-sm">Appui pour parler (evdev)</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <Badge variant={uinputAvailable ? "default" : "secondary"}>
-                          {uinputAvailable ? "✓" : "○"}
+                          {uinputAvailable ? "Actif" : "Manquant"}
                         </Badge>
                         <span className="text-sm">Saisie de texte (uinput)</span>
                       </div>
@@ -1311,7 +1543,7 @@ function SettingsWindow() {
                       {isInstallingSystem
                         ? "Installation…"
                         : systemDepsInstalled
-                          ? "Configuré ✓"
+                          ? "Configuré"
                           : "Configurer les permissions"}
                     </Button>
                   </div>
@@ -1321,7 +1553,7 @@ function SettingsWindow() {
 
                 {/* Paste Method */}
                 <div className="space-y-3">
-                  <Label>Méthode de collage</Label>
+                  <Label htmlFor="paste-method">Méthode de collage</Label>
                   <p className="text-sm text-muted-foreground">
                     Comment le texte est injecté dans l'application active
                   </p>
@@ -1329,12 +1561,12 @@ function SettingsWindow() {
                     value={pasteMethod}
                     onValueChange={(v) => setPasteMethod(v as import("@/bindings").PasteMethod)}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger id="paste-method">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="Direct">
-                        Direct (wtype/xdotool) — recommandé Linux
+                        Direct (wtype/xdotool), recommandé sur Linux
                       </SelectItem>
                       <SelectItem value="CtrlV">Ctrl+V (clipboard)</SelectItem>
                       <SelectItem value="CtrlShiftV">Ctrl+Shift+V (terminaux)</SelectItem>
@@ -1350,20 +1582,16 @@ function SettingsWindow() {
 
                 {/* Autostart */}
                 <div className="space-y-3">
-                  <Label>Lancement au démarrage</Label>
+                  <Label htmlFor="autostart">Lancement au démarrage</Label>
                   <p className="text-sm text-muted-foreground">
                     Démarrer automatiquement KaraokeTyper à la connexion
                   </p>
                   <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Badge variant={autostart ? "default" : "secondary"}>
-                        {autostart ? "Activé" : "Désactivé"}
-                      </Badge>
-                      <span className="text-sm">
-                        {autostart ? "Démarre à la connexion" : "Démarrage manuel"}
-                      </span>
-                    </div>
+                    <span className="text-sm">
+                      {autostart ? "Démarre à la connexion" : "Démarrage manuel"}
+                    </span>
                     <Switch
+                      id="autostart"
                       checked={autostart}
                       onCheckedChange={handleToggleAutostart}
                       disabled={isTogglingAutostart}
@@ -1382,7 +1610,7 @@ function SettingsWindow() {
               >
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2 text-lg">
-                    <Monitor className="h-5 w-5 text-sky-400" />
+                    <Monitor className="h-5 w-5 text-muted-foreground" />
                     Détection de terminal
                   </CardTitle>
                 </CardHeader>
@@ -1420,7 +1648,7 @@ function SettingsWindow() {
                         {isInstallingGnomeExt
                           ? "Installation…"
                           : gnomeExtInstalled
-                            ? "Installée ✓"
+                            ? "Installée"
                             : "Installer l'extension"}
                       </Button>
                       {gnomeExtInstalled && (
@@ -1437,7 +1665,7 @@ function SettingsWindow() {
                   </div>
 
                   {gnomeExtInstalled && !gnomeExtEnabled && (
-                    <p className="text-sm text-yellow-500">
+                    <p className="text-sm text-destructive">
                       Extension installée mais non activée. Activez-la dans l'application Extensions
                       GNOME ou lancez : gnome-extensions enable focused-window-dbus@karaoketyper
                     </p>
@@ -1454,19 +1682,20 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Volume2 className="h-5 w-5 text-pink-400" />
+                  <Volume2 className="h-5 w-5 text-muted-foreground" />
                   Sons de l'application
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Notifications sonores</Label>
+                    <Label htmlFor="audio-feedback">Notifications sonores</Label>
                     <p className="text-sm text-muted-foreground">
                       Jouer un son au début et à la fin de l'enregistrement
                     </p>
                   </div>
                   <Switch
+                    id="audio-feedback"
                     checked={audioFeedbackEnabled}
                     onCheckedChange={setAudioFeedbackEnabled}
                   />
@@ -1485,8 +1714,10 @@ function SettingsWindow() {
                             setAudioFeedbackVolume(lastVolumeRef.current || 0.7);
                           }
                         }}
-                        className="text-muted-foreground hover:text-foreground transition-colors"
+                        className="rounded-md text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                         title={audioFeedbackVolume > 0 ? "Couper le son" : "Rétablir le son"}
+                        aria-label={audioFeedbackVolume > 0 ? "Couper le son" : "Rétablir le son"}
+                        aria-pressed={audioFeedbackVolume === 0}
                       >
                         {audioFeedbackVolume > 0 ? (
                           <Volume2 className="h-4 w-4" />
@@ -1494,11 +1725,12 @@ function SettingsWindow() {
                           <VolumeX className="h-4 w-4" />
                         )}
                       </button>
-                      <Label className="flex-1">
+                      <Label id="audio-volume-label" className="flex-1">
                         Volume ({Math.round(audioFeedbackVolume * 100)}%)
                       </Label>
                     </div>
                     <Slider
+                      aria-labelledby="audio-volume-label"
                       min={0}
                       max={1}
                       step={0.05}
@@ -1518,13 +1750,13 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Clock className="h-5 w-5 text-teal-400" />
+                  <Clock className="h-5 w-5 text-muted-foreground" />
                   Déchargement du modèle
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label>Décharger après inactivité</Label>
+                  <Label htmlFor="model-unload">Décharger après inactivité</Label>
                   <p className="text-sm text-muted-foreground">
                     Libérer la mémoire en déchargeant le modèle STT après une période d'inactivité.
                     Le modèle se recharge automatiquement.
@@ -1535,7 +1767,7 @@ function SettingsWindow() {
                       setModelUnloadTimeout(value as "Never" | "Min5" | "Min15" | "Hour1")
                     }
                   >
-                    <SelectTrigger>
+                    <SelectTrigger id="model-unload">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -1557,20 +1789,21 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Sparkles className="h-5 w-5 text-fuchsia-400" />
+                  <SpellCheck className="h-5 w-5 text-muted-foreground" />
                   Intégration Ollama
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>Correction de texte</Label>
+                    <Label htmlFor="ollama-enabled">Correction de texte</Label>
                     <p className="text-sm text-muted-foreground">
                       Utiliser un LLM local pour corriger la grammaire et l'orthographe après la
                       transcription
                     </p>
                   </div>
                   <Switch
+                    id="ollama-enabled"
                     checked={ollamaEnabled}
                     onCheckedChange={(enabled) => {
                       setOllamaEnabled(enabled);
@@ -1601,10 +1834,7 @@ function SettingsWindow() {
 
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <Badge
-                          variant={ollamaStatus?.available ? "default" : "secondary"}
-                          className={cn(ollamaStatus?.available && "bg-green-600")}
-                        >
+                        <Badge variant={ollamaStatus?.available ? "default" : "secondary"}>
                           {ollamaStatus?.available ? "Connecté" : "Déconnecté"}
                         </Badge>
                         <span className="text-sm text-muted-foreground">
@@ -1631,7 +1861,7 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Info className="h-5 w-5 text-zinc-400" />À propos
+                  <Info className="h-5 w-5 text-muted-foreground" />À propos
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
@@ -1656,16 +1886,22 @@ function SettingsWindow() {
       {/* Fixed Footer */}
       <div className="flex-none flex items-center justify-end gap-4 px-6 py-4 border-t border-border">
         {saveStatus && (
-          <span
+          <output
+            aria-live="polite"
             className={cn(
               "text-sm",
-              saveStatus.startsWith("Error") ? "text-destructive" : "text-green-500",
+              saveStatus.startsWith("Erreur") ? "text-destructive" : "text-muted-foreground",
             )}
           >
             {saveStatus}
-          </span>
+          </output>
         )}
-        <Button onClick={handleSave}>Enregistrer et fermer</Button>
+        <Button variant="ghost" onClick={handleCancel} disabled={isSaving}>
+          Annuler
+        </Button>
+        <Button onClick={handleSave} disabled={isSaving}>
+          Enregistrer et fermer
+        </Button>
       </div>
     </div>
   );

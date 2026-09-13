@@ -28,13 +28,11 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   );
 }
 
-function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
+// A heading, not a div: every card is a section of the settings window, and screen
+// readers navigate by headings.
+function CardTitle({ className, ...props }: React.ComponentProps<"h2">) {
   return (
-    <div
-      data-slot="card-title"
-      className={cn("leading-none font-semibold", className)}
-      {...props}
-    />
+    <h2 data-slot="card-title" className={cn("leading-none font-semibold", className)} {...props} />
   );
 }
 

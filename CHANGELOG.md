@@ -5,6 +5,25 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-09-13
+
+### Ajouté
+
+- **Mode STT hybride Parakeet/Whisper** : les dictées courtes passent par Parakeet (bien plus rapide), les longues restent sur Whisper ; seuil de bascule réglable, avec rechargement de moteur sécurisé
+- **Modes d'activation du raccourci** : *Maintenir* (push-to-talk, comportement historique par défaut), *Basculer* (un appui démarre, le suivant arrête) et *Maintenir ou basculer* (appui long = push-to-talk, appui bref = bascule, seuil réglable)
+
+### Modifié
+
+- **Refonte visuelle** de la fenêtre de paramètres
+- **Callback micro temps-réel** : plus aucune allocation sur le thread audio (ring SPSC `rtrb`)
+- **Message de statut** adapté au mode d'activation (« relâchez » vs « appuyez de nouveau ») et sans touche codée en dur
+
+### Corrigé
+
+- **xdotool** : plus de modificateur (Ctrl…) latché sur le clavier XTEST après un collage ou une frappe (`--clearmodifiers`)
+- **Micro** : le flux de capture est rebâti après une perte de périphérique (débranchement, dropout) au lieu d'enregistrer du silence jusqu'au redémarrage
+- **Wayland/GNOME** : `wtype` n'est plus tenté sous Mutter (qui ne l'implémente pas), évitant un échec systématique par dictée
+
 ## [1.5.2] - 2026-06-17
 
 ### Changed

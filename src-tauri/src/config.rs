@@ -5,6 +5,20 @@ use std::path::PathBuf;
 
 use crate::stt::{EngineType, HybridPolicy};
 
+/// How the shortcut's press and release drive a recording.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type, PartialEq, Eq, Default)]
+pub enum ShortcutActivation {
+    /// Hold to record, release to stop (push-to-talk).
+    #[default]
+    Hold,
+    /// Press to start, press again to stop.
+    Toggle,
+    /// Hold to record and release to stop, or tap to keep recording until the next
+    /// press. Which one it was is decided by how long the key was held
+    /// (`hold_threshold_ms`).
+    HoldOrToggle,
+}
+
 /// How text is pasted into the focused application.
 /// Inspired by Handy's approach: user picks the method, no auto-detection.
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
@@ -109,6 +123,33 @@ pub struct AppConfig {
     /// Longest dictation (seconds) Parakeet handles in hybrid mode; longer ones go to Whisper.
     #[serde(default = "default_hybrid_threshold_secs")]
     pub hybrid_threshold_secs: u32,
+    /// Hold (the historical push-to-talk), toggle, or hold-or-toggle.
+    #[serde(default)]
+    pub shortcut_activation: ShortcutActivation,
+    /// Hold-or-toggle only: a press held at least this long is push-to-talk, anything
+    /// shorter is a tap that locks recording on.
+    #[serde(default = "default_hold_threshold_ms")]
+    pub hold_threshold_ms: u32,
+}
+
+/// Handy's value: comfortably longer than a tap, shorter than the shortest dictation.
+const DEFAULT_HOLD_THRESHOLD_MS: u32 = 300;
+
+/// What the settings UI offers; a hand-edited value outside it is clamped when used.
+const HOLD_THRESHOLD_MS: std::ops::RangeInclusive<u32> = 100..=1000;
+
+fn default_hold_threshold_ms() -> u32 {
+    DEFAULT_HOLD_THRESHOLD_MS
+}
+
+impl AppConfig {
+    /// `hold_threshold_ms` as a `Duration`, clamped to the range the UI offers.
+    pub fn hold_threshold(&self) -> std::time::Duration {
+        let ms = self
+            .hold_threshold_ms
+            .clamp(*HOLD_THRESHOLD_MS.start(), *HOLD_THRESHOLD_MS.end());
+        std::time::Duration::from_millis(u64::from(ms))
+    }
 }
 
 /// Wait between writing the clipboard and sending the paste shortcut.
@@ -175,6 +216,8 @@ impl Default for AppConfig {
             stt_backend: EngineType::default(),
             hybrid_engine_enabled: false,
             hybrid_threshold_secs: DEFAULT_HYBRID_THRESHOLD_SECS,
+            shortcut_activation: ShortcutActivation::default(),
+            hold_threshold_ms: default_hold_threshold_ms(),
         }
     }
 }
@@ -405,6 +448,8 @@ mod tests {
             stt_backend: EngineType::default(),
             hybrid_engine_enabled: true,
             hybrid_threshold_secs: 45,
+            shortcut_activation: ShortcutActivation::default(),
+            hold_threshold_ms: default_hold_threshold_ms(),
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -496,6 +541,22 @@ mod tests {
         assert!(config.gpu_device_index.is_none());
         assert!(config.model_path.is_none());
         assert!(config.audio_device_name.is_none());
+        // Existing installs keep push-to-talk exactly as it was.
+        assert_eq!(config.shortcut_activation, ShortcutActivation::Hold);
+        assert_eq!(config.hold_threshold_ms, DEFAULT_HOLD_THRESHOLD_MS);
+    }
+
+    #[test]
+    fn shortcut_activation_round_trips_every_mode() {
+        for mode in [
+            ShortcutActivation::Hold,
+            ShortcutActivation::Toggle,
+            ShortcutActivation::HoldOrToggle,
+        ] {
+            let json = serde_json::to_string(&mode).expect("serialize");
+            let back: ShortcutActivation = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, mode, "{json}");
+        }
     }
 
     fn default_config_json() -> serde_json::Value {

@@ -1,28 +1,21 @@
-// On Linux, only basic imports (evdev is used instead of rdev)
-#[cfg(target_os = "linux")]
+//! Platform dispatch for the recording shortcut: evdev on Linux, rdev elsewhere. Both
+//! hand their key events to `shortcut_session`, which owns everything after that.
+
 use tauri::AppHandle;
 
-// On Windows/macOS: full rdev-based implementation
+// On Windows/macOS: rdev-based implementation
+#[cfg(not(target_os = "linux"))]
+use crate::shortcut_activation::{KeyEvent, SharedMachine};
+#[cfg(not(target_os = "linux"))]
+use crate::shortcut_session::{feed_key, spawn_effect_executor};
 #[cfg(not(target_os = "linux"))]
 use rdev::{listen, Event, EventType, Key};
 #[cfg(not(target_os = "linux"))]
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(target_os = "linux"))]
 use std::sync::Arc;
-#[cfg(not(target_os = "linux"))]
-use tauri::{AppHandle, Emitter, Manager};
-#[cfg(not(target_os = "linux"))]
-use tokio::sync::mpsc;
 
-/// Hotkey events for push-to-talk (used on Windows/macOS only)
-#[cfg(not(target_os = "linux"))]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum HotkeyEvent {
-    PushToTalkPressed,
-    PushToTalkReleased,
-}
-
-/// Start the cross-platform keyboard listener for push-to-talk
+/// Start the cross-platform keyboard listener
 /// On Linux: Uses evdev for best Wayland compatibility
 /// On Windows/macOS: Uses rdev
 pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String> {
@@ -43,33 +36,34 @@ pub async fn start_keyboard_listener(app_handle: AppHandle) -> Result<(), String
     }
 }
 
-/// rdev-based keyboard listener for Windows/macOS
+/// rdev-based keyboard listener for Windows/macOS: Ctrl+Space, fed to the machine from
+/// the rdev thread itself so every edge carries its real timestamp.
 #[cfg(not(target_os = "linux"))]
 async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
     crate::dev_log!("[KEYBOARD] Using rdev for keyboard capture");
 
-    // Channel for communicating hotkey events to async context
-    let (tx, mut rx) = mpsc::unbounded_channel::<HotkeyEvent>();
+    let machine = SharedMachine::default();
+    let effects = spawn_effect_executor(app_handle.clone(), machine.clone());
 
     // Shared state for modifier keys
     let ctrl_pressed = Arc::new(AtomicBool::new(false));
     let space_pressed = Arc::new(AtomicBool::new(false));
 
-    let ctrl_pressed_clone = ctrl_pressed.clone();
-    let space_pressed_clone = space_pressed.clone();
-
     // Spawn the rdev listener in a blocking thread
     std::thread::spawn(move || {
         crate::dev_log!("[KEYBOARD] rdev listener thread started");
 
-        let callback = move |event: Event| match event.event_type {
-            EventType::KeyPress(key) => {
-                handle_key_press(key, &ctrl_pressed_clone, &space_pressed_clone, &tx);
+        let callback = move |event: Event| {
+            let key_event = match event.event_type {
+                EventType::KeyPress(key) => handle_key_press(key, &ctrl_pressed, &space_pressed),
+                EventType::KeyRelease(key) => {
+                    handle_key_release(key, &ctrl_pressed, &space_pressed)
+                }
+                _ => None,
+            };
+            if let Some(key_event) = key_event {
+                feed_key(&app_handle, &machine, &effects, key_event);
             }
-            EventType::KeyRelease(key) => {
-                handle_key_release(key, &ctrl_pressed_clone, &space_pressed_clone, &tx);
-            }
-            _ => {}
         };
 
         // Start listening - this blocks
@@ -78,72 +72,7 @@ async fn start_rdev_listener(app_handle: AppHandle) -> Result<(), String> {
         }
     });
 
-    // Spawn async task to handle hotkey events
-    let app_clone = app_handle.clone();
-    tokio::spawn(async move {
-        crate::dev_log!("[KEYBOARD] ✅ Push-to-talk listener started!");
-        crate::dev_log!("[KEYBOARD] Hold Ctrl+Space to record, release to transcribe and paste");
-
-        while let Some(event) = rx.recv().await {
-            match event {
-                HotkeyEvent::PushToTalkPressed => {
-                    crate::dev_log!("[KEYBOARD] 🎤 Ctrl+Space PRESSED - starting recording");
-
-                    // Start recording using helper function
-                    let state = app_clone.state::<crate::AppState>();
-                    if let Err(e) = crate::do_start_recording(app_clone.clone(), &state).await {
-                        crate::dev_log!("[KEYBOARD] Failed to start recording: {}", e);
-                    }
-
-                    // Show overlay centered on cursor's monitor
-                    crate::show_overlay_with_state(&app_clone, "recording");
-                }
-                HotkeyEvent::PushToTalkReleased => {
-                    crate::dev_log!("[KEYBOARD] Ctrl+Space RELEASED - stopping recording");
-
-                    // Switch overlay to processing state
-                    crate::show_overlay_with_state(&app_clone, "processing");
-
-                    // Stop recording and transcribe using helper function
-                    let state = app_clone.state::<crate::AppState>();
-                    match crate::do_stop_recording(app_clone.clone(), &state).await {
-                        Ok(transcription) => {
-                            crate::dev_log!("[KEYBOARD] Transcription: {}", transcription);
-
-                            // Wait for physical keys to fully release
-                            tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
-
-                            // Paste BEFORE hiding overlay (like Handy) — target app
-                            // keeps focus while overlay is visible, no chars lost.
-                            let paste_result = crate::do_type_text(
-                                transcription,
-                                &app_clone,
-                                state.paste_settings(),
-                            )
-                            .await;
-
-                            // Hide overlay AFTER paste completes
-                            crate::hide_overlay_animated(&app_clone);
-
-                            match paste_result {
-                                Ok(_) => {
-                                    crate::dev_log!("[KEYBOARD] Text pasted successfully");
-                                }
-                                Err(e) => {
-                                    crate::dev_log!("[KEYBOARD] Failed to paste text: {}", e);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            crate::dev_log!("[KEYBOARD] Failed to transcribe: {}", e);
-                            crate::hide_overlay_animated(&app_clone);
-                        }
-                    }
-                }
-            }
-        }
-    });
-
+    crate::dev_log!("[KEYBOARD] ✅ Shortcut listener started!");
     Ok(())
 }
 
@@ -153,23 +82,23 @@ fn handle_key_press(
     key: Key,
     ctrl_pressed: &Arc<AtomicBool>,
     space_pressed: &Arc<AtomicBool>,
-    tx: &mpsc::UnboundedSender<HotkeyEvent>,
-) {
+) -> Option<KeyEvent> {
     match key {
         Key::ControlLeft | Key::ControlRight => {
             ctrl_pressed.store(true, Ordering::SeqCst);
+            None
         }
         Key::Space => {
-            if !space_pressed.load(Ordering::SeqCst) {
-                space_pressed.store(true, Ordering::SeqCst);
-
-                // Check if Ctrl is held
-                if ctrl_pressed.load(Ordering::SeqCst) {
-                    let _ = tx.send(HotkeyEvent::PushToTalkPressed);
-                }
+            if space_pressed.load(Ordering::SeqCst) {
+                return None; // auto-repeat
             }
+            space_pressed.store(true, Ordering::SeqCst);
+            // Only Ctrl+Space is the shortcut
+            ctrl_pressed
+                .load(Ordering::SeqCst)
+                .then_some(KeyEvent::Pressed)
         }
-        _ => {}
+        _ => None,
     }
 }
 
@@ -179,24 +108,23 @@ fn handle_key_release(
     key: Key,
     ctrl_pressed: &Arc<AtomicBool>,
     space_pressed: &Arc<AtomicBool>,
-    tx: &mpsc::UnboundedSender<HotkeyEvent>,
-) {
+) -> Option<KeyEvent> {
     match key {
         Key::ControlLeft | Key::ControlRight => {
             ctrl_pressed.store(false, Ordering::SeqCst);
+            None
         }
         Key::Space => {
-            if space_pressed.load(Ordering::SeqCst) {
-                // Only trigger release if Ctrl was being held (i.e., we were recording)
-                let was_ctrl_pressed = ctrl_pressed.load(Ordering::SeqCst);
-                space_pressed.store(false, Ordering::SeqCst);
-
-                if was_ctrl_pressed {
-                    let _ = tx.send(HotkeyEvent::PushToTalkReleased);
-                }
+            if !space_pressed.load(Ordering::SeqCst) {
+                return None;
             }
+            space_pressed.store(false, Ordering::SeqCst);
+            // Sent regardless of Ctrl (often let go before Space): the machine ignores a
+            // release that has nothing to end, and a hold-or-toggle recording must see
+            // its release even after Ctrl went up.
+            Some(KeyEvent::Released)
         }
-        _ => {}
+        _ => None,
     }
 }
 

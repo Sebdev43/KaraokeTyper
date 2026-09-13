@@ -354,7 +354,16 @@ hybrid_engine_enabled?: boolean;
 /**
  * Longest dictation (seconds) Parakeet handles in hybrid mode; longer ones go to Whisper.
  */
-hybrid_threshold_secs?: number }
+hybrid_threshold_secs?: number; 
+/**
+ * Hold (the historical push-to-talk), toggle, or hold-or-toggle.
+ */
+shortcut_activation?: ShortcutActivation; 
+/**
+ * Hold-or-toggle only: a press held at least this long is push-to-talk, anything
+ * shorter is a tap that locks recording on.
+ */
+hold_threshold_ms?: number }
 export type AppDataInfo = { items: AppDataItem[]; total_size_mb: number }
 export type AppDataItem = { name: string; path: string; exists: boolean; size_mb: number }
 export type AudioDevice = { name: string; raw_name: string; index: number }
@@ -531,6 +540,24 @@ export type PasteMethod =
  * Do nothing (disable paste).
  */
 "None"
+/**
+ * How the shortcut's press and release drive a recording.
+ */
+export type ShortcutActivation = 
+/**
+ * Hold to record, release to stop (push-to-talk).
+ */
+"Hold" | 
+/**
+ * Press to start, press again to stop.
+ */
+"Toggle" | 
+/**
+ * Hold to record and release to stop, or tap to keep recording until the next
+ * press. Which one it was is decided by how long the key was held
+ * (`hold_threshold_ms`).
+ */
+"HoldOrToggle"
 /**
  * System information
  */

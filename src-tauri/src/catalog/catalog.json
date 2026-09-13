@@ -90,7 +90,7 @@
     },
     {
       "name": "ggml-small",
-      "display_name": "Whisper Small ⭐ Recommandé",
+      "display_name": "Whisper Small",
       "description": "466 MB • 99 langues • Meilleure précision pour le français",
       "engine_type": "whisper",
       "is_directory": false,
@@ -138,7 +138,7 @@
     },
     {
       "name": "parakeet-tdt-0.6b-v3-int8",
-      "display_name": "Parakeet V3 (FR + 24 langues UE) ⭐ Recommandé FR",
+      "display_name": "Parakeet V3 (FR + 24 langues UE)",
       "description": "640 MB • 25 langues UE dont français • CPU, ~3-5× temps réel",
       "engine_type": "parakeet",
       "is_directory": true,

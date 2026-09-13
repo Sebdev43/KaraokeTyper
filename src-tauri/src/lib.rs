@@ -31,7 +31,7 @@ mod evdev_listener;
 // Key design: stream opened once on first PTT, kept paused between recordings for instant response
 
 use audio::AudioCapture;
-use config::AppConfig;
+use config::{AppConfig, ShortcutActivation};
 use output::TextOutput;
 use serde::Serialize;
 use specta::Type;
@@ -490,7 +490,7 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
             "status-changed",
             StatusEvent {
                 status: "idle".to_string(),
-                message: "Ready! Press Ctrl+Space to dictate".to_string(),
+                message: "Ready! Press your shortcut to dictate".to_string(),
             },
         )
         .ok();
@@ -554,12 +554,17 @@ pub(crate) async fn do_start_recording(
         t0.elapsed().as_millis()
     );
 
+    let activation = state
+        .config
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .shortcut_activation;
     app_handle
         .emit(
             "status-changed",
             StatusEvent {
                 status: "recording".to_string(),
-                message: "Recording... Release Ctrl+Space to stop".to_string(),
+                message: recording_status_message(activation).to_string(),
             },
         )
         .ok();
@@ -859,7 +864,7 @@ pub(crate) async fn do_stop_recording(
             "status-changed",
             StatusEvent {
                 status: "idle".to_string(),
-                message: "Ready! Press Ctrl+Space to dictate".to_string(),
+                message: "Ready! Press your shortcut to dictate".to_string(),
             },
         )
         .ok();
@@ -1164,6 +1169,16 @@ async fn hide_overlay(app: AppHandle) -> Result<(), String> {
 struct StatusEvent {
     status: String,
     message: String,
+}
+
+/// How to end a recording, phrased for the active shortcut mode: the historical
+/// push-to-talk releases, toggle needs a second press, hold-or-toggle accepts either.
+fn recording_status_message(mode: ShortcutActivation) -> &'static str {
+    match mode {
+        ShortcutActivation::Hold => "Recording... release to stop",
+        ShortcutActivation::Toggle => "Recording... press again to stop",
+        ShortcutActivation::HoldOrToggle => "Recording... release or press again to stop",
+    }
 }
 
 #[tauri::command]
@@ -2026,4 +2041,27 @@ pub fn run() {
         .invoke_handler(builder.invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_status_message_matches_the_activation_mode() {
+        // Each mode gets its own wording, and only push-to-talk mentions releasing.
+        let hold = recording_status_message(ShortcutActivation::Hold);
+        let toggle = recording_status_message(ShortcutActivation::Toggle);
+        let hold_or_toggle = recording_status_message(ShortcutActivation::HoldOrToggle);
+
+        assert!(hold.contains("release") && !hold.contains("press again"));
+        assert!(toggle.contains("press again") && !toggle.contains("release"));
+        assert!(hold_or_toggle.contains("release") && hold_or_toggle.contains("press again"));
+        assert!(
+            [hold, toggle, hold_or_toggle]
+                .iter()
+                .all(|m| m.starts_with("Recording...")),
+            "every mode keeps the shared prefix the overlay expects"
+        );
+    }
 }

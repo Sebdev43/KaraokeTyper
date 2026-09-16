@@ -1,3 +1,4 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, message } from "@tauri-apps/plugin-dialog";
@@ -205,6 +206,15 @@ function SettingsWindow() {
       setPlatform("linux");
     }
   }, [setPlatform]);
+
+  // The running binary's version (tauri.conf.json), so « À propos » cannot drift
+  // from a release the way a literal did.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+  }, []);
 
   const loadAudioDevices = useCallback(async () => {
     try {
@@ -1866,7 +1876,9 @@ function SettingsWindow() {
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
                 <div>
-                  <p className="text-sm text-muted-foreground">KaraokeTyper v1.5.0</p>
+                  <p className="text-sm text-muted-foreground">
+                    KaraokeTyper{appVersion ? ` v${appVersion}` : ""}
+                  </p>
                   <p className="text-sm text-muted-foreground">
                     Dictée vocale hors-ligne pour{" "}
                     {currentPlatform === "macos"

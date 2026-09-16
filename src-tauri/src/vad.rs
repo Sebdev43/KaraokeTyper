@@ -35,7 +35,7 @@ impl SileroVad {
             return Err("threshold must be between 0.0 and 1.0".to_string());
         }
 
-        let builder = Session::builder()
+        let mut builder = Session::builder()
             .map_err(|e| format!("ORT session builder error: {e}"))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| format!("ORT optimization error: {e}"))?

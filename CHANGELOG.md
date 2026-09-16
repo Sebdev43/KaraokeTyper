@@ -5,6 +5,22 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-09-16
+
+### Modifié
+
+- **Moteur de transcription** : transcribe-rs 0.3.11 — whisper.cpp 1.7.4 → 1.8.3 (whisper-rs 0.16) et ONNX Runtime 1.22 → 1.24.2 (Parakeet)
+- **Réglage GPU effectif** : l'interrupteur « GPU » et l'index de device sont désormais transmis à whisper.cpp (ils étaient ignorés) ; le GPU auto-désactivé après échecs l'est réellement au chargement, et un modèle manquant ne compte plus comme un échec GPU
+- **Features Cargo `gpu-vulkan` / `gpu-metal`** : activent réellement le backend GPU de whisper.cpp (un `cargo build` nu est CPU seul ; les builds publiés passent la feature)
+- **Dépendances** : mise à jour complète Rust (tauri 2.11.5, reqwest 0.13, evdev 0.13, sha2 0.11, ollama-rs 0.3 en rustls, zip 8, dirs 6, thiserror 2, jemalloc 0.7) et npm (Vite 8, TypeScript 7, Biome 2.5, lucide 1, React 19.3, Tailwind 4.3)
+
+### Corrigé
+
+- **Sécurité** : avis corrigés par les mises à jour (tauri CVE-2026-42184, `tar` ×3, 7 avis npm) ; plus d'OpenSSL embarqué avec la feature `ollama`
+- **À propos** affiche la version réelle de l'application (1.5.0 était codée en dur)
+- **Ollama** : plus de chemin de panique si le client HTTP ne peut pas être construit
+- **Journal** : `[APP] Exit requested` indique désormais pourquoi l'application se ferme (dernière fenêtre détruite ou sortie explicite)
+
 ## [1.7.0] - 2026-09-13
 
 ### Ajouté

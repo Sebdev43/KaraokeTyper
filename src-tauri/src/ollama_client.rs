@@ -67,9 +67,10 @@ fn build_correction_prompt(language: &str, text: &str) -> String {
     )
 }
 
-/// Parse Ollama URL into (host, port) for ollama-rs client
+/// The Ollama base URL as ollama-rs wants it: scheme, host and an explicit port
+/// (11434 when the setting has none), nothing else.
 #[cfg(feature = "ollama")]
-fn parse_ollama_url(url: &str) -> Result<(String, u16), String> {
+fn normalize_ollama_url(url: &str) -> Result<String, String> {
     let url = url.trim_end_matches('/');
     // Ensure scheme is present for parsing
     let with_scheme = if url.starts_with("http://") || url.starts_with("https://") {
@@ -80,15 +81,10 @@ fn parse_ollama_url(url: &str) -> Result<(String, u16), String> {
 
     let parsed = reqwest::Url::parse(&with_scheme)
         .map_err(|e| format!("Invalid Ollama URL '{}': {}", url, e))?;
-
-    let host = format!(
-        "{}://{}",
-        parsed.scheme(),
-        parsed.host_str().ok_or("No host in Ollama URL")?
-    );
+    let host = parsed.host_str().ok_or("No host in Ollama URL")?;
     let port = parsed.port().unwrap_or(11434);
 
-    Ok((host, port))
+    Ok(format!("{}://{host}:{port}", parsed.scheme()))
 }
 
 #[cfg(feature = "ollama")]
@@ -101,8 +97,9 @@ pub async fn correct_text(
     use ollama_rs::generation::completion::request::GenerationRequest;
     use ollama_rs::Ollama;
 
-    let (host, port) = parse_ollama_url(url)?;
-    let ollama = Ollama::new(host, port);
+    // `try_new` over `builder()`: the builder unwraps its URL parse internally.
+    let ollama = Ollama::try_new(normalize_ollama_url(url)?)
+        .map_err(|e| format!("Invalid Ollama URL '{url}': {e}"))?;
 
     let prompt = build_correction_prompt(language, text);
 
@@ -137,10 +134,13 @@ pub async fn correct_text(
 }
 
 pub async fn check_ollama_available(url: &str) -> bool {
-    let client = reqwest::Client::builder()
+    // `Client::default()` would panic on the very failure `build()` just reported.
+    let Ok(client) = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(2))
         .build()
-        .unwrap_or_default();
+    else {
+        return false;
+    };
 
     client
         .get(format!("{}/api/tags", url.trim_end_matches('/')))

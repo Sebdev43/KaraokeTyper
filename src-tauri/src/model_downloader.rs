@@ -141,7 +141,7 @@ async fn file_sha256(path: &Path) -> Result<String, String> {
         hasher.update(&buf[..n]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hex::encode(hasher.finalize()))
 }
 
 /// Verify `path` against `expected_sha256`, deleting it on mismatch.
@@ -948,7 +948,7 @@ async fn download_and_verify_files(
             .map_err(|e| format!("Flush error on {}: {}", mf.filename, e))?;
         drop(file);
 
-        let actual_sha256 = format!("{:x}", hasher.finalize());
+        let actual_sha256 = hex::encode(hasher.finalize());
         if !actual_sha256.eq_ignore_ascii_case(&mf.sha256) {
             return Err(format!(
                 "Intégrité: SHA-256 de {} ne correspond pas. Attendu {}, obtenu {}. Installation refusée.",
@@ -1658,7 +1658,7 @@ mod tests {
 
     fn sha_of(bytes: &[u8]) -> String {
         use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::new().chain_update(bytes).finalize())
+        hex::encode(Sha256::new().chain_update(bytes).finalize())
     }
 
     /// The headline property: a transfer cut in half resumes and ends up correct.

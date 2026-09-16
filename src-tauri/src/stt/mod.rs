@@ -11,7 +11,7 @@ pub mod hybrid;
 pub mod runtime;
 pub mod types;
 
-pub use engines::{load, suppress_backend_logs, transcribe, unload, LoadedEngine};
+pub use engines::{load, transcribe, GpuChoice, LoadedEngine};
 pub use error::SttError;
 pub use hybrid::{HybridPolicy, SttLane};
 pub use runtime::{capture_secs, EngineSlots, SttEngine};

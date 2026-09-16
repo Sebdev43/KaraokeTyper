@@ -1,4 +1,4 @@
-use evdev::{Device, EventType, InputEventKind, Key};
+use evdev::{Device, EventSummary, EventType, KeyCode};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -81,7 +81,7 @@ struct HotkeyConfig {
     require_ctrl: bool,
     require_alt: bool,
     require_shift: bool,
-    trigger_key: Option<Key>,       // For keyboard keys
+    trigger_key: Option<KeyCode>,   // For keyboard keys
     trigger_mouse_btn: Option<u16>, // For mouse buttons (BTN_SIDE=0x114, BTN_EXTRA=0x115, etc.)
 }
 
@@ -102,7 +102,7 @@ impl HotkeyConfig {
                 "alt" => config.require_alt = true,
                 "shift" => config.require_shift = true,
                 "super" | "meta" => {} // Ignore Super/Meta for now
-                "space" => config.trigger_key = Some(Key::KEY_SPACE),
+                "space" => config.trigger_key = Some(KeyCode::KEY_SPACE),
                 "mouse4" => config.trigger_mouse_btn = Some(0x115), // BTN_EXTRA
                 "mouse5" => config.trigger_mouse_btn = Some(0x114), // BTN_SIDE
                 "mouseright" => config.trigger_mouse_btn = Some(0x111), // BTN_RIGHT
@@ -122,7 +122,7 @@ impl HotkeyConfig {
         // Default to Ctrl+Space if nothing parsed
         if config.trigger_key.is_none() && config.trigger_mouse_btn.is_none() {
             config.require_ctrl = true;
-            config.trigger_key = Some(Key::KEY_SPACE);
+            config.trigger_key = Some(KeyCode::KEY_SPACE);
         }
 
         crate::dev_log!("[EVDEV] Parsed hotkey config: {:?}", config);
@@ -131,44 +131,44 @@ impl HotkeyConfig {
 }
 
 /// Convert a character to evdev Key
-fn char_to_key(c: char) -> Option<Key> {
+fn char_to_key(c: char) -> Option<KeyCode> {
     match c.to_ascii_uppercase() {
-        'A' => Some(Key::KEY_A),
-        'B' => Some(Key::KEY_B),
-        'C' => Some(Key::KEY_C),
-        'D' => Some(Key::KEY_D),
-        'E' => Some(Key::KEY_E),
-        'F' => Some(Key::KEY_F),
-        'G' => Some(Key::KEY_G),
-        'H' => Some(Key::KEY_H),
-        'I' => Some(Key::KEY_I),
-        'J' => Some(Key::KEY_J),
-        'K' => Some(Key::KEY_K),
-        'L' => Some(Key::KEY_L),
-        'M' => Some(Key::KEY_M),
-        'N' => Some(Key::KEY_N),
-        'O' => Some(Key::KEY_O),
-        'P' => Some(Key::KEY_P),
-        'Q' => Some(Key::KEY_Q),
-        'R' => Some(Key::KEY_R),
-        'S' => Some(Key::KEY_S),
-        'T' => Some(Key::KEY_T),
-        'U' => Some(Key::KEY_U),
-        'V' => Some(Key::KEY_V),
-        'W' => Some(Key::KEY_W),
-        'X' => Some(Key::KEY_X),
-        'Y' => Some(Key::KEY_Y),
-        'Z' => Some(Key::KEY_Z),
-        '0' => Some(Key::KEY_0),
-        '1' => Some(Key::KEY_1),
-        '2' => Some(Key::KEY_2),
-        '3' => Some(Key::KEY_3),
-        '4' => Some(Key::KEY_4),
-        '5' => Some(Key::KEY_5),
-        '6' => Some(Key::KEY_6),
-        '7' => Some(Key::KEY_7),
-        '8' => Some(Key::KEY_8),
-        '9' => Some(Key::KEY_9),
+        'A' => Some(KeyCode::KEY_A),
+        'B' => Some(KeyCode::KEY_B),
+        'C' => Some(KeyCode::KEY_C),
+        'D' => Some(KeyCode::KEY_D),
+        'E' => Some(KeyCode::KEY_E),
+        'F' => Some(KeyCode::KEY_F),
+        'G' => Some(KeyCode::KEY_G),
+        'H' => Some(KeyCode::KEY_H),
+        'I' => Some(KeyCode::KEY_I),
+        'J' => Some(KeyCode::KEY_J),
+        'K' => Some(KeyCode::KEY_K),
+        'L' => Some(KeyCode::KEY_L),
+        'M' => Some(KeyCode::KEY_M),
+        'N' => Some(KeyCode::KEY_N),
+        'O' => Some(KeyCode::KEY_O),
+        'P' => Some(KeyCode::KEY_P),
+        'Q' => Some(KeyCode::KEY_Q),
+        'R' => Some(KeyCode::KEY_R),
+        'S' => Some(KeyCode::KEY_S),
+        'T' => Some(KeyCode::KEY_T),
+        'U' => Some(KeyCode::KEY_U),
+        'V' => Some(KeyCode::KEY_V),
+        'W' => Some(KeyCode::KEY_W),
+        'X' => Some(KeyCode::KEY_X),
+        'Y' => Some(KeyCode::KEY_Y),
+        'Z' => Some(KeyCode::KEY_Z),
+        '0' => Some(KeyCode::KEY_0),
+        '1' => Some(KeyCode::KEY_1),
+        '2' => Some(KeyCode::KEY_2),
+        '3' => Some(KeyCode::KEY_3),
+        '4' => Some(KeyCode::KEY_4),
+        '5' => Some(KeyCode::KEY_5),
+        '6' => Some(KeyCode::KEY_6),
+        '7' => Some(KeyCode::KEY_7),
+        '8' => Some(KeyCode::KEY_8),
+        '9' => Some(KeyCode::KEY_9),
         _ => None,
     }
 }
@@ -241,11 +241,11 @@ fn find_input_devices(hotkey: &HotkeyConfig) -> Result<Vec<PathBuf>, String> {
                     .supported_keys()
                     .map(|keys| {
                         // Check for mouse buttons (BTN_LEFT through BTN_TASK range: 0x110-0x11f)
-                        keys.contains(Key::BTN_LEFT)
-                            || keys.contains(Key::BTN_RIGHT)
-                            || keys.contains(Key::BTN_MIDDLE)
-                            || keys.contains(Key::BTN_SIDE)
-                            || keys.contains(Key::BTN_EXTRA)
+                        keys.contains(KeyCode::BTN_LEFT)
+                            || keys.contains(KeyCode::BTN_RIGHT)
+                            || keys.contains(KeyCode::BTN_MIDDLE)
+                            || keys.contains(KeyCode::BTN_SIDE)
+                            || keys.contains(KeyCode::BTN_EXTRA)
                             || (0x110..=0x11f).contains(&btn_code)
                     })
                     .unwrap_or(false)
@@ -260,14 +260,14 @@ fn find_input_devices(hotkey: &HotkeyConfig) -> Result<Vec<PathBuf>, String> {
                     .supported_keys()
                     .map(|keys| {
                         let has_ctrl = !hotkey.require_ctrl
-                            || keys.contains(Key::KEY_LEFTCTRL)
-                            || keys.contains(Key::KEY_RIGHTCTRL);
+                            || keys.contains(KeyCode::KEY_LEFTCTRL)
+                            || keys.contains(KeyCode::KEY_RIGHTCTRL);
                         let has_alt = !hotkey.require_alt
-                            || keys.contains(Key::KEY_LEFTALT)
-                            || keys.contains(Key::KEY_RIGHTALT);
+                            || keys.contains(KeyCode::KEY_LEFTALT)
+                            || keys.contains(KeyCode::KEY_RIGHTALT);
                         let has_shift = !hotkey.require_shift
-                            || keys.contains(Key::KEY_LEFTSHIFT)
-                            || keys.contains(Key::KEY_RIGHTSHIFT);
+                            || keys.contains(KeyCode::KEY_LEFTSHIFT)
+                            || keys.contains(KeyCode::KEY_RIGHTSHIFT);
                         has_ctrl && has_alt && has_shift
                     })
                     .unwrap_or(false)
@@ -456,27 +456,27 @@ fn monitor_input_device(config: &DeviceMonitorConfig) -> Result<(), String> {
             .map_err(|e| format!("Device {} lost: {}", device_name, e))?;
 
         for event in events {
-            if let InputEventKind::Key(key) = event.kind() {
-                let pressed = event.value() == 1;
-                let released = event.value() == 0;
+            if let EventSummary::Key(_, key, value) = event.destructure() {
+                let pressed = value == 1;
+                let released = value == 0;
 
                 // Track modifier keys
                 match key {
-                    Key::KEY_LEFTCTRL | Key::KEY_RIGHTCTRL => {
+                    KeyCode::KEY_LEFTCTRL | KeyCode::KEY_RIGHTCTRL => {
                         if pressed {
                             config.state.ctrl_pressed.store(true, Ordering::SeqCst);
                         } else if released {
                             config.state.ctrl_pressed.store(false, Ordering::SeqCst);
                         }
                     }
-                    Key::KEY_LEFTALT | Key::KEY_RIGHTALT => {
+                    KeyCode::KEY_LEFTALT | KeyCode::KEY_RIGHTALT => {
                         if pressed {
                             config.state.alt_pressed.store(true, Ordering::SeqCst);
                         } else if released {
                             config.state.alt_pressed.store(false, Ordering::SeqCst);
                         }
                     }
-                    Key::KEY_LEFTSHIFT | Key::KEY_RIGHTSHIFT => {
+                    KeyCode::KEY_LEFTSHIFT | KeyCode::KEY_RIGHTSHIFT => {
                         if pressed {
                             config.state.shift_pressed.store(true, Ordering::SeqCst);
                         } else if released {

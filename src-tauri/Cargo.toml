@@ -40,23 +40,24 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 
 # HTTP client for model downloads (using rustls to avoid OpenSSL system dependency)
-reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
+reqwest = { version = "0.13", features = ["stream", "rustls"], default-features = false }
 futures = "0.3"
 
 # Low-level system calls
 libc = "0.2"
 
 # Cross-platform paths
-dirs = "5.0"
+dirs = "6"
 
 # Audio capture - hound for WAV encoding
 hound = "3.5"
 
 # Zip archive for GNOME extension packaging
-zip = "2.2"
+zip = "8"
 
 # SHA-256 for verifying model bundle integrity during download.
-sha2 = "0.10"
+sha2 = "0.11"
+hex = "0.4"
 
 # Tar + gzip for extracting ONNX model bundles (kept for future engines that
 # actually ship as .tar.gz; Parakeet V3 is fetched as individual files with
@@ -73,13 +74,17 @@ enigo = "0.6"
 # Keyboard event listening (cross-platform)
 rdev = "0.5"
 
-# Speech-to-text — unified multi-backend engine (Whisper + ONNX engines)
-# Whisper feature kept active; ONNX engines added in lot 4.
-transcribe-rs = { version = "=0.2.8", features = ["whisper", "parakeet"] }
-
-# Voice Activity Detection (Silero VAD v4) — direct ort usage
-# vad-rs crates.io pins ort rc.9 which doesn't compile on Rust 1.92+
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "download-binaries"] }
+# Speech-to-text — unified multi-backend engine: Whisper via whisper-rs 0.16 and
+# ONNX engines (Parakeet; Canary/Cohere available) via ort. The Whisper GPU backend
+# is enabled by the `gpu-vulkan` / `gpu-metal` features below. Pinned: 0.3.x is
+# declared unstable upstream until 0.5.
+#
+# Voice Activity Detection (Silero VAD v4) uses ort directly (vad.rs). Only one ort
+# can be linked (`links = "onnxruntime"`), so its version is dictated by transcribe-rs
+# (0.3.11 requires exactly rc.12). `download-binaries` needs a TLS feature since
+# rc.11; rustls keeps OpenSSL out of the build.
+transcribe-rs = { version = "=0.3.11", default-features = false, features = ["whisper-cpp", "onnx"] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
 
 # Audio playback for feedback sounds
 rodio = "0.20"
@@ -91,36 +96,39 @@ cpal = "0.15"
 rtrb = "0.4"
 
 # Anti-aliased sample-rate conversion for devices that can't give us 16kHz directly.
-# Pinned to 0.16 for its FftFixedIn API; 0.17 renamed it to Fft + FixedSync.
+# Kept on 0.16 for its FftFixedIn API: 1.0 renamed it to Fft + FixedSync::Input and
+# moved buffers to audioadapter (resampler.rs rewrite, planned with the cpal 0.18 lot).
 rubato = "0.16"
 
-# Optional: Ollama LLM client for text correction
-ollama-rs = { version = "0.2", features = ["stream"], optional = true }
+# Optional: Ollama LLM client for text correction. `rustls` instead of its
+# default native-tls, so the `ollama` feature does not pull OpenSSL into the binary.
+ollama-rs = { version = "0.3", default-features = false, features = ["rustls", "stream"], optional = true }
 
 # String similarity for custom word matching (Levenshtein distance)
 strsim = "0.11"
 
 # Typed errors for the STT dispatcher
-thiserror = "1"
+thiserror = "2"
 
 # evdev for low-level keyboard access on Wayland (fallback)
 [target.'cfg(target_os = "linux")'.dependencies]
-evdev = "0.12"
+evdev = "0.13"
 
 # jemalloc - reduces virtual memory fragmentation with many threads (Linux/macOS)
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = "0.6"
+tikv-jemallocator = "0.7"
 # Raw mallctl access, so memory.rs can purge jemalloc's arenas after a dictation.
 # tikv-jemallocator installs the allocator but exposes no control interface.
-tikv-jemalloc-sys = "0.6"
+tikv-jemalloc-sys = "0.7.1"
 
 [features]
 default = []
-# GPU acceleration features (requires SDK installed for compilation)
+# GPU acceleration for Whisper (requires the SDK at compile time). tauri.conf.json
+# and the release workflow pass one of them; a plain `cargo build` is CPU-only and
+# `use_gpu` defaults accordingly (config.rs).
 # Linux/Windows: cargo build --features gpu-vulkan
 # macOS: cargo build --features gpu-metal
-# GPU acceleration — currently inert placeholders, wired back to transcribe-rs in a later lot.
-gpu-vulkan = []
-gpu-metal = []
+gpu-vulkan = ["transcribe-rs/whisper-vulkan"]
+gpu-metal = ["transcribe-rs/whisper-metal"]
 # Ollama integration for post-transcription text correction
 ollama = ["dep:ollama-rs"]

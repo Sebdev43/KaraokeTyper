@@ -265,9 +265,6 @@ fn save_debug_wav(audio_data: &[f32], path: &std::path::PathBuf) -> Result<(), S
 #[tauri::command]
 #[specta::specta]
 async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    // Suppress whisper.cpp C library verbose output (beam search, model loading, etc.)
-    stt::suppress_backend_logs();
-
     let config = {
         let config = state.config.lock().unwrap();
         config.clone()
@@ -1132,7 +1129,6 @@ async fn save_settings(
             new_config.model,
             new_config.language
         );
-        stt::suppress_backend_logs();
         let _ = reload_primary_engine(&state.engines, new_config.clone()).await;
     }
 
@@ -1912,8 +1908,8 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 let label = window.label();
                 dev_log!("[WINDOW] Close requested for window: {}", label);
 
@@ -1925,10 +1921,21 @@ pub fn run() {
                 }
                 api.prevent_close();
             }
+            WindowEvent::Destroyed => {
+                dev_log!("[WINDOW] Window {} destroyed", window.label());
+            }
+            _ => {}
         })
         .invoke_handler(builder.invoke_handler())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // `code: None` means the last window was destroyed, `Some` an explicit
+            // `app.exit()`; the log says which when the app disappears without a panic.
+            if let tauri::RunEvent::ExitRequested { code, .. } = &event {
+                dev_log!("[APP] Exit requested (code={:?})", code);
+            }
+        });
 }
 
 #[cfg(test)]

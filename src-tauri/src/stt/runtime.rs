@@ -50,7 +50,13 @@ impl SttEngine {
                 )?,
             ),
         };
-        let engine = load_engine(engine_type, &model_path, config.use_gpu)?;
+        // The GPU toggle and the auto-disable after repeated load failures both
+        // apply here, so what Settings reports ("GPU auto-disabled") is what runs.
+        let gpu = stt::GpuChoice {
+            use_gpu: config.use_gpu && !stt::gpu_health::is_gpu_disabled_by_failures(),
+            device_index: config.gpu_device_index,
+        };
+        let engine = load_engine(engine_type, &model_path, gpu)?;
         Ok(Self {
             engine,
             language: config.language.clone(),
@@ -59,7 +65,7 @@ impl SttEngine {
 
     pub fn transcribe(
         &mut self,
-        audio_data: Vec<f32>,
+        audio_data: &[f32],
         initial_prompt: Option<&str>,
     ) -> Result<String, String> {
         stt::transcribe(
@@ -107,13 +113,20 @@ fn primary_model_path(config: &AppConfig) -> Result<PathBuf, String> {
 fn load_engine(
     engine_type: EngineType,
     model_path: &Path,
-    use_gpu: bool,
+    gpu: stt::GpuChoice,
 ) -> Result<LoadedEngine, String> {
-    let result = stt::load(engine_type, model_path);
+    let result = stt::load(engine_type, model_path, gpu);
     // GPU health only tracks Whisper: it is the backend the GPU feature accelerates,
-    // and a Parakeet (ONNX, CPU) failure must not trip the GPU auto-disable.
+    // and a Parakeet (ONNX, CPU) failure must not trip the GPU auto-disable. Nor
+    // must a missing model file: only the backend refusing to load counts.
     if engine_type == EngineType::Whisper {
-        stt::gpu_health::note_engine_load(use_gpu, result.is_ok());
+        let counts_for_gpu_health = !matches!(
+            result,
+            Err(stt::SttError::ModelNotFound(_) | stt::SttError::BackendUnavailable(_))
+        );
+        if counts_for_gpu_health {
+            stt::gpu_health::note_engine_load(gpu.use_gpu, result.is_ok());
+        }
     }
     result.map_err(|e| e.to_string())
 }
@@ -286,7 +299,7 @@ impl EngineSlots {
         };
 
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            engine.transcribe(padded_audio, prompt_for_whisper.as_deref())
+            engine.transcribe(&padded_audio, prompt_for_whisper.as_deref())
         }));
 
         match outcome {

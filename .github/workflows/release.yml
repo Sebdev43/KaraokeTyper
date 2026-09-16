@@ -215,10 +215,14 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # whisper.cpp 1.8's Vulkan shader generator is a nested CMake ExternalProject:
+      # under the default target dir its scratch files exceed MSVC's 260-character
+      # path limit ("C1083: Cannot open source file"). A short target dir keeps every
+      # path well under it.
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: src-tauri -> D:\kt
 
       - name: Install frontend dependencies
         run: npm ci
@@ -229,6 +233,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CARGO_TARGET_DIR: D:\kt
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: --features gpu-vulkan

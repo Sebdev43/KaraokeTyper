@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **À propos** affiche la version réelle de l'application (1.5.0 était codée en dur)
 - **Ollama** : plus de chemin de panique si le client HTTP ne peut pas être construit
 - **Journal** : `[APP] Exit requested` indique désormais pourquoi l'application se ferme (dernière fenêtre détruite ou sortie explicite)
+- **Builds de release** : Linux — transferts `__isoc23_strto*` pour lier la bibliothèque ONNX Runtime 1.24 (glibc ≥ 2.38) sur Ubuntu 22.04 sans relever le plancher glibc ; Windows — répertoire cible court pour le sous-build Vulkan de whisper.cpp (limite de 260 caractères)
 
 ## [1.7.0] - 2026-09-13
 

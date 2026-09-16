@@ -8,6 +8,7 @@ mod audio_feedback;
 mod autostart;
 mod catalog;
 mod config;
+mod glibc_compat;
 mod gnome_extension;
 mod gpu;
 mod keyboard_listener;

@@ -21,8 +21,9 @@ export default defineConfig(async () => ({
   clearScreen: false,
 
   // Multi-page app configuration - include all HTML entry points
+  // (Vite 8 bundles with Rolldown; `rollupOptions` is only kept as a deprecated alias)
   build: {
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
         settings: resolve(__dirname, "settings.html"),

@@ -16,7 +16,7 @@
 
 <p align="center">
   <a href="https://github.com/Sebdev43/KaraokeTyper/releases/latest"><img src="https://img.shields.io/github/v/release/Sebdev43/KaraokeTyper?color=blue&label=version" alt="Version"></a>
-  <img src="https://img.shields.io/badge/license-Polyform%20NC-blue.svg" alt="License">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
   <img src="https://img.shields.io/badge/platform-Linux%20|%20Windows%20|%20macOS-lightgrey.svg" alt="Platform">
   <img src="https://img.shields.io/badge/rust-stable-orange.svg" alt="Rust">
   <img src="https://img.shields.io/badge/tauri-2.11-blueviolet.svg" alt="Tauri">
@@ -258,7 +258,7 @@ npm run tauri build
 
 ## License
 
-This project is licensed under the **Polyform Noncommercial License 1.0.0** - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
 
 **You CAN**: Use, modify, and share for personal/non-commercial purposes.
 **You CANNOT**: Use commercially or sell without explicit permission.
@@ -485,7 +485,7 @@ npm run tauri build
 
 ## Licence
 
-Ce projet est sous licence **Polyform Noncommercial License 1.0.0** - voir le fichier [LICENSE](LICENSE) pour plus de détails.
+Ce projet est sous licence **MIT** - voir le fichier [LICENSE](LICENSE) pour plus de détails.
 
 **Vous POUVEZ** : Utiliser, modifier et partager pour usage personnel/non-commercial.
 **Vous NE POUVEZ PAS** : Utiliser commercialement ou vendre sans autorisation explicite.

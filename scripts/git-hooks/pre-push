@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Refuse a push that the CI would reject anyway. Install with:
+#   git config core.hooksPath scripts/git-hooks
+#
+# Runs the same three gates as the Rust job, in the order that fails cheapest
+# first. Skip deliberately with `git push --no-verify` when you know why.
+set -uo pipefail
+
+cd "$(git rev-parse --show-toplevel)/src-tauri" || exit 1
+
+fail() {
+    printf '\n\033[31mpush refusé : %s\033[0m\n' "$1" >&2
+    printf 'Corrige, ou pousse avec --no-verify si tu assumes.\n' >&2
+    exit 1
+}
+
+printf 'pre-push : cargo fmt…\n'
+cargo fmt --check >/dev/null 2>&1 || fail "cargo fmt --check (lance: cargo fmt)"
+
+printf 'pre-push : cargo clippy…\n'
+cargo clippy --all-targets -- -D warnings >/dev/null 2>&1 \
+    || fail "cargo clippy -D warnings"
+
+printf 'pre-push : cargo test…\n'
+cargo test --quiet >/dev/null 2>&1 || fail "cargo test"
+
+printf '\033[32mpre-push : fmt, clippy et tests passent.\033[0m\n'

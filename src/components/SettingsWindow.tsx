@@ -1342,12 +1342,16 @@ function SettingsWindow() {
                       </span>
                     </p>
                     {(() => {
+                      // Mirrors model_vram_mb() in src-tauri/src/gpu.rs: the GGUF
+                      // file plus its compute buffers. Quantised models need far
+                      // less than the GGML ones this table used to describe.
                       const vramTable: Record<string, number> = {
-                        "ggml-tiny": 150,
-                        "ggml-base": 300,
-                        "ggml-small": 700,
-                        "ggml-medium": 1500,
-                        "ggml-large-v3": 3000,
+                        "whisper-tiny": 100,
+                        "whisper-base": 150,
+                        "whisper-small": 450,
+                        "whisper-medium": 1300,
+                        "whisper-large-v3-turbo": 1400,
+                        "whisper-large-v3": 1800,
                       };
                       const currentVram = vramTable[model] ?? 0;
                       const isTooLarge =

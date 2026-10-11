@@ -38,10 +38,17 @@ SMALL_FILE_LIMIT = 4 * 1024 * 1024
 # `https://huggingface.co/<repo>/resolve/<revision>/<path>`
 HF_URL = re.compile(r"^https://huggingface\.co/(?P<repo>[^/]+/[^/]+)/resolve/(?P<revision>[^/]+)/(?P<path>.+)$")
 
+# `https://blob.handy.computer/<repo>/<revision>/<path>` — the GGUF mirror, laid
+# out so the three parts map one-for-one onto the HuggingFace repo it serves.
+# Checking the mirror itself would only prove the CDN answers; pinned hashes have
+# to be compared against the repository the files come from.
+MIRROR_URL = re.compile(r"^https://blob\.handy\.computer/(?P<repo>[^/]+/[^/]+)/(?P<revision>[^/]+)/(?P<path>.+)$")
+
 
 def parse_hf_url(url: str):
-    """Split a HuggingFace resolve URL, or return None if it is not one."""
-    m = HF_URL.match(url)
+    """Split a file URL into repo / revision / path, or return None when it is
+    neither a HuggingFace resolve URL nor a mirror URL that maps onto one."""
+    m = HF_URL.match(url) or MIRROR_URL.match(url)
     return m.groupdict() if m else None
 
 
@@ -65,7 +72,7 @@ def upstream_for(url: str, cache: dict) -> tuple[str, int]:
     """Return (sha256, size_bytes) for a HuggingFace file URL."""
     parts = parse_hf_url(url)
     if not parts:
-        raise ValueError(f"not a HuggingFace resolve URL: {url}")
+        raise ValueError(f"neither a HuggingFace resolve URL nor a known mirror: {url}")
 
     key = (parts["repo"], parts["revision"])
     if key not in cache:
@@ -89,7 +96,8 @@ def upstream_for(url: str, cache: dict) -> tuple[str, int]:
         raise ValueError(
             f"{parts['path']} has no LFS metadata and is {size} bytes — too large to hash here"
         )
-    req = urllib.request.Request(url, headers={"User-Agent": "KaraokeTyper-catalog/1"})
+    req = urllib.request.Request(
+        "https://huggingface.co/{repo}/resolve/{revision}/{path}".format(**parts), headers={"User-Agent": "KaraokeTyper-catalog/1"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         blob = resp.read(SMALL_FILE_LIMIT + 1)
     # The hash of a small file comes from *downloading* it, so a transient wrong body

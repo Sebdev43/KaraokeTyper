@@ -272,38 +272,44 @@ mod tests {
     #[test]
     fn the_shipped_catalog_is_valid() {
         let models = parse(CATALOG_JSON).expect("the shipped catalog.json must be valid");
-        assert_eq!(models.len(), 8, "model count changed unexpectedly");
+        assert_eq!(models.len(), 9, "model count changed unexpectedly");
     }
 
-    /// The five hashes pinned by hand in block 3 must survive the extraction unchanged.
-    /// Wrong values here mean every Whisper download fails verification.
+    /// Every Whisper download verifies against these. They come from the published
+    /// catalogue of the GGUF mirror, never typed by hand; a wrong value here means
+    /// the download is rejected after the user waited for it.
     #[test]
     fn the_pinned_whisper_hashes_are_unchanged() {
         let expected = [
             (
-                "ggml-tiny",
-                "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
-                77_691_713u64,
+                "whisper-tiny",
+                "325b9c7997cd1eff81ef709d55766565e71be696130cc3a3d444713798706834",
+                45_981_088u64,
             ),
             (
-                "ggml-base",
-                "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
-                147_951_465,
+                "whisper-base",
+                "81c069428bc8a24551a8169cf31cf09bcfd9d4cf50389ae281323c9aa9648c81",
+                84_962_880,
             ),
             (
-                "ggml-small",
-                "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
-                487_601_967,
+                "whisper-small",
+                "9b9c8811bbcc82a7766f0fb0925614bdacb0923b2cc630daeac17108b655b860",
+                269_751_136,
             ),
             (
-                "ggml-medium",
-                "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
-                1_533_763_059,
+                "whisper-medium",
+                "09e6a65e7de377aa5b10bae24608bc6f8ca2ed04b3993ef10d4a02bcd9a82adf",
+                831_538_144,
             ),
             (
-                "ggml-large-v3",
-                "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
-                3_095_033_483,
+                "whisper-large-v3",
+                "6053d0fd69a0fd48b8fea5ea7a52b9e0cde389343566fa30e453a1b2b258dc38",
+                1_161_143_008,
+            ),
+            (
+                "whisper-large-v3-turbo",
+                "b2e30cc286bc9f3aba4db9099fc7403543497c05ce7100d0d83091ddfd25a183",
+                886_381_760,
             ),
         ];
         let models = parse(CATALOG_JSON).unwrap();
@@ -314,6 +320,29 @@ mod tests {
                 .unwrap_or_else(|| panic!("{name} vanished from the catalogue"));
             assert_eq!(m.sha256, sha, "{name} hash changed");
             assert_eq!(m.size_bytes, size, "{name} size changed");
+        }
+    }
+
+    /// The Whisper engine reads GGUF and refuses anything else, so an entry still
+    /// pointing at a GGML `.bin` would download fine and fail at load time.
+    #[test]
+    fn every_whisper_entry_ships_a_gguf() {
+        let models = parse(CATALOG_JSON).unwrap();
+        let whisper: Vec<_> = models
+            .iter()
+            .filter(|m| m.engine_type == EngineType::Whisper && !m.coming_soon)
+            .collect();
+        assert!(!whisper.is_empty(), "the catalogue lost its Whisper models");
+        for m in whisper {
+            assert!(
+                m.url.ends_with(".gguf"),
+                "{} is not a GGUF: {}",
+                m.name,
+                m.url
+            );
+            assert!(!m.is_directory, "{} must stay a single file", m.name);
+            assert_eq!(m.sha256.len(), 64, "{} has no usable hash", m.name);
+            assert!(m.size_bytes > 0, "{} has no size", m.name);
         }
     }
 
@@ -342,8 +371,8 @@ mod tests {
     #[test]
     fn a_truncated_hash_is_refused() {
         let err = parse(&tampered(
-            "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
-            "be07e048",
+            "325b9c7997cd1eff81ef709d55766565e71be696130cc3a3d444713798706834",
+            "325b9c79",
         ))
         .unwrap_err();
         assert!(err.contains("64 hex"), "{err}");
@@ -352,8 +381,8 @@ mod tests {
     #[test]
     fn a_non_hex_hash_is_refused() {
         let err = parse(&tampered(
-            "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
-            "zzzzzzzze1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+            "325b9c7997cd1eff81ef709d55766565e71be696130cc3a3d444713798706834",
+            "zzzzzzzz97cd1eff81ef709d55766565e71be696130cc3a3d444713798706834",
         ))
         .unwrap_err();
         assert!(err.contains("64 hex"), "{err}");
@@ -401,7 +430,7 @@ mod tests {
         )
     }
 
-    const OK_SHA: &str = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21";
+    const OK_SHA: &str = "325b9c7997cd1eff81ef709d55766565e71be696130cc3a3d444713798706834";
 
     fn single(extra: &str) -> String {
         minimal(&format!(

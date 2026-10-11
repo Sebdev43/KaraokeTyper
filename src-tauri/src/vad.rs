@@ -19,7 +19,11 @@ pub trait VoiceActivityDetector: Send + Sync {
     fn is_voice(&mut self, frame: &[f32]) -> Result<bool, String> {
         Ok(matches!(self.push_frame(frame)?, VadFrame::Speech(_)))
     }
-    fn reset(&mut self) {}
+    /// Forget everything the detector carries between frames, at a dictation
+    /// boundary. Required rather than defaulted to a no-op: a detector that
+    /// silently keeps its state across sessions eats the first words of the
+    /// next one (see `SileroVad::reset`).
+    fn reset(&mut self);
 }
 
 pub struct SileroVad {
@@ -106,6 +110,17 @@ impl SileroVad {
 }
 
 impl VoiceActivityDetector for SileroVad {
+    /// Zero the recurrent state. Silero is an LSTM: `h`/`c` summarise everything
+    /// it has heard, and at the end of a dictation they hold "this has been
+    /// silence for a while". Carried into the next one, that bias can keep the
+    /// detector below its threshold for several seconds of real speech — the
+    /// beginning of the dictation is then dropped as noise before any engine
+    /// sees it.
+    fn reset(&mut self) {
+        self.h_data.fill(0.0);
+        self.c_data.fill(0.0);
+    }
+
     fn push_frame<'a>(&'a mut self, frame: &'a [f32]) -> Result<VadFrame<'a>, String> {
         if frame.len() != SILERO_FRAME_SAMPLES {
             return Err(format!(
@@ -214,6 +229,8 @@ impl VoiceActivityDetector for SmoothedVad {
     }
 
     fn reset(&mut self) {
+        // First: the wrapped detector carries its own state (see `SileroVad::reset`).
+        self.inner_vad.reset();
         self.frame_buffer.clear();
         self.hangover_counter = 0;
         self.onset_counter = 0;
@@ -225,19 +242,32 @@ impl VoiceActivityDetector for SmoothedVad {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     struct MockVad {
         results: Vec<bool>,
         index: usize,
+        /// Shared so the test can still read it after the mock is boxed away.
+        resets: Arc<AtomicUsize>,
     }
 
     impl MockVad {
         fn new(results: Vec<bool>) -> Self {
-            Self { results, index: 0 }
+            Self {
+                results,
+                index: 0,
+                resets: Arc::new(AtomicUsize::new(0)),
+            }
         }
     }
 
     impl VoiceActivityDetector for MockVad {
+        fn reset(&mut self) {
+            self.resets.fetch_add(1, Ordering::SeqCst);
+            self.index = 0;
+        }
+
         fn push_frame<'a>(&'a mut self, frame: &'a [f32]) -> Result<VadFrame<'a>, String> {
             let is_speech = self.results.get(self.index).copied().unwrap_or(false);
             self.index += 1;
@@ -317,5 +347,63 @@ mod tests {
             .frame_buffer
             .iter()
             .all(|b| b.len() == SILERO_FRAME_SAMPLES));
+    }
+
+    #[test]
+    fn reset_reaches_the_wrapped_detector() {
+        let mock = MockVad::new(vec![true; 4]);
+        let resets = Arc::clone(&mock.resets);
+        let mut vad = SmoothedVad::new(Box::new(mock), 15, 15, 2);
+
+        vad.reset();
+
+        assert_eq!(
+            resets.load(Ordering::SeqCst),
+            1,
+            "a dictation boundary must clear the detector's own state, or it \
+             carries the previous session's bias into the first words of the next"
+        );
+    }
+
+    #[test]
+    fn silero_reset_clears_the_recurrent_state() {
+        let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources/models/silero_vad_v4.onnx");
+        assert!(
+            model.exists(),
+            "the bundled VAD model moved: {}",
+            model.display()
+        );
+        let Ok(mut vad) = SileroVad::new(&model, 0.3) else {
+            // No usable ONNX runtime here; the propagation test above still covers
+            // the wiring, which is what regressed. Loud, so it is never a silent pass.
+            eprintln!("SKIPPED silero_reset_clears_the_recurrent_state: ORT unavailable");
+            return;
+        };
+
+        // A ramp is enough to move the LSTM state away from zero.
+        let frame: Vec<f32> = (0..SILERO_FRAME_SAMPLES)
+            .map(|i| ((i as f32) / 50.0).sin() * 0.3)
+            .collect();
+        for _ in 0..5 {
+            vad.push_frame(&frame).expect("frame accepted");
+        }
+        assert!(
+            vad.h_data
+                .iter()
+                .chain(vad.c_data.iter())
+                .any(|v| *v != 0.0),
+            "the test needs a non-zero state to prove reset does something"
+        );
+
+        vad.reset();
+
+        assert!(
+            vad.h_data
+                .iter()
+                .chain(vad.c_data.iter())
+                .all(|v| *v == 0.0),
+            "reset must zero h/c, or Silero starts the next dictation biased towards silence"
+        );
     }
 }

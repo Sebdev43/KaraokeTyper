@@ -50,6 +50,15 @@ pub(crate) fn spawn_effect_executor(app_handle: AppHandle, machine: SharedMachin
             if ran.is_err() {
                 crate::dev_log!("[SHORTCUT] {:?} panicked — session abandoned", effect);
                 machine.on_start_failed();
+                // The capture claim is taken before the stream is touched; a panic
+                // between there and the stop would otherwise hold it until it ages
+                // out, refusing every dictation in between.
+                app_handle
+                    .state::<AppState>()
+                    .audio_capture
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .end_session();
                 crate::hide_overlay_animated(&app_handle);
             }
             // The pipeline drained: a press remembered meanwhile starts the next session,

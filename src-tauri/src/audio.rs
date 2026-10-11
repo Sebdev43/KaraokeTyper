@@ -81,6 +81,11 @@ fn is_valid_device_name(name: &str) -> bool {
 /// is gone — on PipeWire a lost device stalls the ALSA plugin without any error callback.
 const STALLED_STREAM_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Longest a dictation can plausibly hold the capture. Past this, a claim left
+/// behind by a caller that never stopped is taken over rather than blocking
+/// every later dictation.
+const MAX_DICTATION: Duration = Duration::from_secs(600);
+
 /// Same, before the first sample ever arrived: some devices (Bluetooth HFP) take a few
 /// seconds to start delivering, and giving up early would waste the warm-up open.
 const STARTUP_STREAM_TIMEOUT: Duration = Duration::from_secs(10);
@@ -99,6 +104,22 @@ const AUDIO_RING_SECONDS: usize = 4;
 /// Device-rate samples the ring holds.
 fn ring_capacity(sample_rate: u32) -> usize {
     sample_rate as usize * AUDIO_RING_SECONDS
+}
+
+/// Whether a dictation about to start needs a fresh worker.
+///
+/// Callers must hold a session claim before asking: reopening tears the current
+/// worker down, and doing that under a live dictation throws its buffer away.
+/// A device that changed while a dictation was running is picked up here, which
+/// is why the settings window is allowed to defer the switch instead of forcing it.
+#[must_use]
+pub fn needs_reopen(
+    worker_alive: bool,
+    stream_failed: bool,
+    opened_device: Option<&str>,
+    wanted_device: Option<&str>,
+) -> bool {
+    !worker_alive || stream_failed || opened_device != wanted_device
 }
 
 /// How long the worker waits for a command before draining the ring again — the upper
@@ -121,9 +142,22 @@ pub struct AudioCapture {
     is_open: Arc<AtomicBool>,
     /// Set by cpal's error callback, cleared by the next data callback and by
     /// `close_stream()`: `true` means cpal reported an error and no audio has arrived
-    /// since. Lets `is_stream_open()` report the loss at once, before the worker
+    /// since. Lets `stream_failed()` report the loss at once, before the worker
     /// notices the gap itself.
     stream_error: Arc<AtomicBool>,
+    /// When a dictation was claimed, `None` when none is in flight. Without the
+    /// claim, a second start walks the reopen path in `do_start_recording` and
+    /// `close_stream()` kills the worker mid-dictation, buffer and all — the
+    /// recording silently loses everything said so far. Handy guards the same
+    /// way, one layer up: any start outside `RecordingState::Idle` is refused.
+    ///
+    /// The timestamp is what keeps a caller that dies before stopping (a reloaded
+    /// webview, a panic between start and stop) from refusing every later
+    /// dictation: past `MAX_DICTATION`, the next start takes the claim over.
+    session_claimed_at: Mutex<Option<Instant>>,
+    /// The device the live worker was opened on, so a device change that had to
+    /// wait for a dictation to end is picked up at the next one.
+    opened_device: Mutex<Option<String>>,
     /// Whether current device is Bluetooth (for auto-close logic)
     is_bluetooth: AtomicBool,
     /// Generation counter for Bluetooth auto-close timer
@@ -139,6 +173,8 @@ impl AudioCapture {
             vad: Arc::new(Mutex::new(None)),
             is_open: Arc::new(AtomicBool::new(false)),
             stream_error: Arc::new(AtomicBool::new(false)),
+            session_claimed_at: Mutex::new(None),
+            opened_device: Mutex::new(None),
             is_bluetooth: AtomicBool::new(false),
             stop_generation: Arc::new(AtomicU64::new(0)),
         }
@@ -149,9 +185,84 @@ impl AudioCapture {
         *self.vad.lock().unwrap() = Some(vad);
     }
 
-    /// Check if a stream is currently open and has not reported an error.
-    pub fn is_stream_open(&self) -> bool {
-        self.is_open.load(Ordering::SeqCst) && !self.stream_error.load(Ordering::SeqCst)
+    /// Whether a worker thread exists and is still running.
+    ///
+    /// This is the honest test for "someone may be capturing", and `is_open` is
+    /// not: the worker only raises `is_open` once `stream.play()` returns, after
+    /// device enumeration (1-2 s on ALSA). For that whole window a worker exists
+    /// with a `Cmd::Start` already queued while `is_open` is still false.
+    #[must_use]
+    pub fn worker_alive(&self) -> bool {
+        self.worker_handle
+            .as_ref()
+            .is_some_and(|h| !h.is_finished())
+    }
+
+    /// Claim the capture for one dictation, before anything touches the stream.
+    ///
+    /// `Err` when a dictation is already in flight: the caller must then leave the
+    /// stream alone rather than reopen it under a live capture. A claim is taken
+    /// over when no worker can be holding it any more, or when it is older than
+    /// any plausible dictation — a caller that died before stopping must not
+    /// refuse recording for the rest of the session.
+    pub fn try_begin_session(&mut self) -> Result<(), String> {
+        let mut claimed = self
+            .session_claimed_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match *claimed {
+            Some(_) if !self.worker_alive() => {
+                crate::dev_log!("[AUDIO] Stale session claim taken over: no worker is running");
+            }
+            Some(since) if since.elapsed() > MAX_DICTATION => {
+                crate::dev_log!(
+                    "[AUDIO] Stale session claim taken over: {}s old, past the {}s ceiling",
+                    since.elapsed().as_secs(),
+                    MAX_DICTATION.as_secs()
+                );
+            }
+            Some(_) => return Err("a recording is already in flight".to_string()),
+            None => {}
+        }
+        *claimed = Some(Instant::now());
+        Ok(())
+    }
+
+    /// Whether a dictation currently holds the capture.
+    #[must_use]
+    pub fn session_in_flight(&self) -> bool {
+        self.session_claimed_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    /// The device the current worker was opened on.
+    #[must_use]
+    pub fn opened_device(&self) -> Option<String> {
+        self.opened_device
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Release the claim taken by `try_begin_session`. Idempotent.
+    pub fn end_session(&self) {
+        *self
+            .session_claimed_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    /// Whether cpal reported an error and no audio has arrived since.
+    ///
+    /// Deliberately not "is the stream open": a worker that has not reached
+    /// `stream.play()` yet is still the owner of the queued dictation, and tearing
+    /// it down to open another one costs the first seconds of speech. Only a
+    /// reported failure justifies a respawn before the worker gives up on its own.
+    #[must_use]
+    pub fn stream_failed(&self) -> bool {
+        self.stream_error.load(Ordering::SeqCst)
     }
 
     /// Open the audio stream for a device.
@@ -168,6 +279,8 @@ impl AudioCapture {
     pub fn open_stream(&mut self, device_name: Option<&str>) -> Result<(), String> {
         // Close any existing worker first
         self.close_stream();
+        *self.opened_device.lock().unwrap_or_else(|e| e.into_inner()) =
+            device_name.map(str::to_owned);
 
         // Track if this is a Bluetooth device (for auto-close logic)
         let is_bt = device_name
@@ -302,6 +415,8 @@ impl AudioCapture {
         self.is_open.store(false, Ordering::SeqCst);
         // Joined above: no callback of that stream can set this again.
         self.stream_error.store(false, Ordering::SeqCst);
+        // The worker that owned the dictation is gone with its buffer.
+        self.end_session();
     }
 
     /// Start recording — sends `Cmd::Start` to the worker (instant).
@@ -323,6 +438,9 @@ impl AudioCapture {
     /// This is a non-blocking send — call `StopHandle::wait()` AFTER dropping the Mutex
     /// to avoid holding it during the blocking recv (up to 5s).
     pub fn stop_recording(&self) -> Result<StopHandle, String> {
+        // Released first: the dictation is over whatever happens below, and a
+        // claim kept after a failed send would refuse every later start.
+        self.end_session();
         let tx = self.cmd_tx.as_ref().ok_or("Audio worker not running")?;
         let (reply_tx, reply_rx) = mpsc::channel();
         tx.send(Cmd::Stop(reply_tx))
@@ -423,6 +541,11 @@ fn run_worker(
     let mut audio_buffer: Vec<f32> = Vec::new();
     let mut frame_accumulator: Vec<f32> = Vec::new();
     let mut recording = false;
+    // Whether the device has delivered anything since this dictation started. The
+    // pre-roll is prepended at `Cmd::Start`, so "buffer is empty" stopped meaning
+    // "nothing was captured" long ago: on a cold stream a Stop would then return
+    // the pre-roll alone — audio from *before* the press — and call it a dictation.
+    let mut captured_this_session = false;
     let mut first_callback_logged = false;
     let mut last_audio = Instant::now();
     let mut ever_received = false;
@@ -456,6 +579,10 @@ fn run_worker(
             ever_received = true;
             let samples = &converted[..];
             if recording {
+                // Usable output, not merely "the ring had bytes": the resampler
+                // needs a full FFT block before it emits anything, and a Stop in
+                // that window must still wait for the device (see `Cmd::Stop`).
+                captured_this_session |= !samples.is_empty();
                 if !first_callback_logged {
                     crate::dev_log!(
                         "[AUDIO/WORKER] First audio chunk while recording: {} samples ({} captured)",
@@ -489,6 +616,7 @@ fn run_worker(
                     audio_buffer.clear();
                     frame_accumulator.clear();
                     recording = true;
+                    captured_this_session = false;
                     first_callback_logged = false;
 
                     // Deliberately NOT resetting the resampler here, unlike Handy, whose
@@ -525,15 +653,18 @@ fn run_worker(
                 Cmd::Stop(reply_tx) => {
                     // Note: recording=false is set before the wait intentionally.
                     // New Cmd::Start during the wait is deferred to the next loop iteration.
-                    recording = false;
+                    let was_recording = std::mem::replace(&mut recording, false);
 
                     // First-PTT race fix: if buffer is empty, wait for audio to arrive.
                     // On first PTT, ALSA can take 2s+ to open. Both Start and Stop
                     // queue before the stream produces any samples, resulting in 0 audio.
                     // Wait up to 500ms for the first chunk — instant on subsequent PTTs.
-                    if audio_buffer.is_empty() {
+                    // An unpaired Stop (a second one, or one for a session another
+                    // path already ended) must not spend the grace window pulling
+                    // idle-time audio into a buffer and returning it as a dictation.
+                    if was_recording && !captured_this_session {
                         crate::dev_log!(
-                            "[AUDIO/WORKER] Buffer empty on Stop — waiting up to 500ms for audio..."
+                            "[AUDIO/WORKER] Nothing captured yet on Stop — waiting up to 500ms for audio..."
                         );
                         let deadline = Instant::now() + Duration::from_millis(500);
                         let mut data_received = false;
@@ -554,6 +685,7 @@ fn run_worker(
                             // "audio arrived" would end this wait having captured nothing.
                             if !converted.is_empty() {
                                 data_received = true;
+                                captured_this_session = true;
                                 break;
                             }
                         }
@@ -884,16 +1016,142 @@ mod tests {
 
     const SLACK: Duration = Duration::from_secs(2);
 
+    /// A stand-in for a worker thread that is alive until the test lets it go.
+    fn live_worker() -> (std::thread::JoinHandle<()>, mpsc::Sender<()>) {
+        let (tx, rx) = mpsc::channel::<()>();
+        let handle = std::thread::spawn(move || {
+            let _ = rx.recv();
+        });
+        (handle, tx)
+    }
+
     #[test]
-    fn stream_error_hides_an_open_stream() {
+    fn reopen_is_decided_on_the_worker_and_the_device_it_holds() {
+        // Nothing running: open.
+        assert!(needs_reopen(false, false, None, None));
+        // Live worker on the wanted device, nothing reported: leave it alone. This
+        // is the case the claim protects — reopening here kills the dictation.
+        assert!(!needs_reopen(true, false, Some("mic-a"), Some("mic-a")));
+        // Enumerating (worker alive, nothing reported) on the wanted device: the
+        // Start is already queued on it, do not respawn.
+        assert!(!needs_reopen(true, false, Some("mic-a"), Some("mic-a")));
+        // A reported failure does justify a respawn.
+        assert!(needs_reopen(true, true, Some("mic-a"), Some("mic-a")));
+        // A device change the settings window deferred is picked up here.
+        assert!(needs_reopen(true, false, Some("mic-a"), Some("mic-b")));
+        assert!(needs_reopen(true, false, None, Some("mic-b")));
+        // A worker that died must be replaced whatever the device says.
+        assert!(needs_reopen(false, false, Some("mic-a"), Some("mic-a")));
+    }
+
+    #[test]
+    fn a_second_session_is_refused_while_a_worker_holds_one() {
+        let mut capture = AudioCapture::new(16_000);
+        let (handle, release) = live_worker();
+        capture.worker_handle = Some(handle);
+
+        capture.try_begin_session().expect("first claim");
+        assert!(
+            capture.try_begin_session().is_err(),
+            "a start under a live dictation must be refused, not reopen the stream \
+             and take the worker (and its buffer) down with it"
+        );
+
+        capture.end_session();
+        capture
+            .try_begin_session()
+            .expect("the next dictation must be allowed once the session ended");
+
+        drop(release);
+        capture.worker_handle.take().expect("handle").join().ok();
+    }
+
+    #[test]
+    fn a_claim_survives_the_window_where_the_stream_is_not_open_yet() {
+        let mut capture = AudioCapture::new(16_000);
+        let (handle, release) = live_worker();
+        capture.worker_handle = Some(handle);
+        // The worker is enumerating the device: it exists and already holds the
+        // queued Start, but has not reached `stream.play()` yet.
+        assert!(
+            !capture.is_open.load(Ordering::SeqCst),
+            "precondition: the worker has not reached stream.play() yet"
+        );
+        assert!(!capture.stream_failed(), "precondition: nothing reported");
+
+        capture.try_begin_session().expect("first claim");
+        assert!(
+            capture.try_begin_session().is_err(),
+            "the claim must hold during device enumeration — that is the window \
+             where a reopen would kill the worker that owns the dictation"
+        );
+
+        drop(release);
+        capture.worker_handle.take().expect("handle").join().ok();
+    }
+
+    #[test]
+    fn a_claim_left_behind_by_a_dead_caller_does_not_wedge_recording() {
+        let mut capture = AudioCapture::new(16_000);
+        capture.try_begin_session().expect("claim");
+        // No worker can be holding it: the caller died before stopping.
+        capture
+            .try_begin_session()
+            .expect("no worker means no session to protect");
+    }
+
+    #[test]
+    fn stop_waits_for_the_device_even_when_a_pre_roll_filled_the_buffer() {
+        let mut worker = WorkerUnderTest::spawn();
+        // Pre-roll: captured before the press, so it lands in the buffer at Start.
+        worker.feed(&[0.5; 480]);
+        std::thread::sleep(Duration::from_millis(50));
+        worker.cmd_tx.send(Cmd::Start).expect("send Start");
+        std::thread::sleep(Duration::from_millis(50));
+
+        // The device delivers the dictation itself only after the Stop is queued —
+        // a cold stream. The buffer is not empty (pre-roll), which is exactly the
+        // case the old `audio_buffer.is_empty()` grace refused to wait for.
+        let (reply_tx, reply_rx) = mpsc::channel();
+        worker.cmd_tx.send(Cmd::Stop(reply_tx)).expect("send Stop");
+        std::thread::sleep(Duration::from_millis(150));
+        worker.feed(&[0.25; 320]);
+
+        let captured = reply_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("Stop must answer");
+        assert_eq!(
+            captured.len(),
+            800,
+            "pre-roll (480) + the dictation that arrived during the grace window (320)"
+        );
+        assert!(
+            captured[..480].iter().all(|s| *s == 0.5),
+            "precondition: the pre-roll really was in the buffer at Stop, which is \
+             what made the old `audio_buffer.is_empty()` grace refuse to wait"
+        );
+        assert!(
+            captured[480..].iter().all(|s| *s == 0.25),
+            "the dictation arrived during the grace window and must be in the result"
+        );
+
+        worker.cmd_tx.send(Cmd::Shutdown).expect("send Shutdown");
+        worker.handle.join().expect("worker panicked");
+    }
+
+    #[test]
+    fn a_reported_stream_error_is_visible_to_the_next_start() {
         let capture = AudioCapture::new(16_000);
-        assert!(!capture.is_stream_open(), "never opened");
+        assert!(!capture.stream_failed(), "nothing has failed yet");
         capture.is_open.store(true, Ordering::SeqCst);
-        assert!(capture.is_stream_open());
+        assert!(
+            !capture.stream_failed(),
+            "an open stream with no error must not ask for a respawn"
+        );
         capture.stream_error.store(true, Ordering::SeqCst);
         assert!(
-            !capture.is_stream_open(),
-            "a failed stream must not look open, or the next PTT records silence"
+            capture.stream_failed(),
+            "a failed stream must be replaced, or the next PTT records silence"
         );
     }
 

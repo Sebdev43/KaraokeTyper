@@ -74,16 +74,23 @@ enigo = "0.6"
 # Keyboard event listening (cross-platform)
 rdev = "0.5"
 
-# Speech-to-text — unified multi-backend engine: Whisper via whisper-rs 0.16 and
-# ONNX engines (Parakeet; Canary/Cohere available) via ort. The Whisper GPU backend
-# is enabled by the `gpu-vulkan` / `gpu-metal` features below. Pinned: 0.3.x is
-# declared unstable upstream until 0.5.
+# Speech-to-text, two libraries with one job each.
+#
+# transcribe-cpp (GGUF/ggml) runs the Whisper family. Chosen over whisper-rs for the
+# decode knobs it exposes — temperature fallback above all, which neither
+# transcribe-rs nor whisper-rs surfaces, and whose absence shows up as replaced
+# words on long dictations. Its GPU backend follows the `gpu-*` features below.
+transcribe-cpp = { version = "0.3.1", default-features = false }
+#
+# transcribe-rs keeps the ONNX engines (Parakeet; Canary/Cohere available). Reduced
+# to `onnx`: linking two ggml builds (whisper-rs's and transcribe-cpp's) is not
+# possible. Pinned: 0.3.x is declared unstable upstream until 0.5.
 #
 # Voice Activity Detection (Silero VAD v4) uses ort directly (vad.rs). Only one ort
 # can be linked (`links = "onnxruntime"`), so its version is dictated by transcribe-rs
 # (0.3.11 requires exactly rc.12). `download-binaries` needs a TLS feature since
 # rc.11; rustls keeps OpenSSL out of the build.
-transcribe-rs = { version = "=0.3.11", default-features = false, features = ["whisper-cpp", "onnx"] }
+transcribe-rs = { version = "=0.3.11", default-features = false, features = ["onnx"] }
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
 
 # Audio playback for feedback sounds
@@ -121,6 +128,12 @@ tikv-jemallocator = "0.7"
 # tikv-jemallocator installs the allocator but exposes no control interface.
 tikv-jemalloc-sys = "0.7.1"
 
+# `significant_drop_in_scrutinee` is what catches a `MutexGuard` built inside a
+# `match` scrutinee: it lives until the end of the `match`, so an arm that takes
+# the same lock deadlocks against itself. Both lints are nursery, hence opt-in.
+[lints.clippy]
+significant_drop_in_scrutinee = "warn"
+
 [features]
 default = []
 # GPU acceleration for Whisper (requires the SDK at compile time). tauri.conf.json
@@ -128,7 +141,7 @@ default = []
 # `use_gpu` defaults accordingly (config.rs).
 # Linux/Windows: cargo build --features gpu-vulkan
 # macOS: cargo build --features gpu-metal
-gpu-vulkan = ["transcribe-rs/whisper-vulkan"]
-gpu-metal = ["transcribe-rs/whisper-metal"]
+gpu-vulkan = ["transcribe-cpp/vulkan"]
+gpu-metal = ["transcribe-cpp/metal"]
 # Ollama integration for post-transcription text correction
 ollama = ["dep:ollama-rs"]

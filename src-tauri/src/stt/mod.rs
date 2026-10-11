@@ -1,4 +1,5 @@
-// STT dispatcher — multi-backend abstraction over transcribe-rs.
+// STT dispatcher — one abstraction over transcribe-cpp (Whisper GGUF) and
+// transcribe-rs (ONNX engines).
 // Several helpers are intentionally kept ahead of their callers (MistralApi
 // variants, display_name, gpu_health recorder) so later lots can wire them
 // without touching the core module.

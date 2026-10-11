@@ -18,13 +18,13 @@
   <a href="https://github.com/Sebdev43/KaraokeTyper/releases/latest"><img src="https://img.shields.io/github/v/release/Sebdev43/KaraokeTyper?color=blue&label=version" alt="Version"></a>
   <img src="https://img.shields.io/badge/license-Polyform%20NC-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/platform-Linux%20|%20Windows%20|%20macOS-lightgrey.svg" alt="Platform">
-  <img src="https://img.shields.io/badge/rust-1.70+-orange.svg" alt="Rust">
-  <img src="https://img.shields.io/badge/tauri-2.0-blueviolet.svg" alt="Tauri">
+  <img src="https://img.shields.io/badge/rust-stable-orange.svg" alt="Rust">
+  <img src="https://img.shields.io/badge/tauri-2.11-blueviolet.svg" alt="Tauri">
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome">
-  <img src="https://img.shields.io/badge/STT-Whisper--rs-ff6b6b.svg" alt="STT Engine">
+  <img src="https://img.shields.io/badge/STT-Whisper%20GGUF%20%2B%20Parakeet-ff6b6b.svg" alt="STT Engine">
 </p>
 
 ---
@@ -33,7 +33,7 @@
 
 ## Overview
 
-**KaraokeTyper** is a privacy-first, cross-platform voice dictation application. All speech recognition happens **100% offline** using native Whisper-rs - no cloud, no telemetry, no data leaving your machine.
+**KaraokeTyper** is a privacy-first, cross-platform voice dictation application. All speech recognition happens **100% offline** — Whisper, or NVIDIA Parakeet when you want speed. No cloud, no telemetry, no data leaving your machine.
 
 Press `Ctrl+Space` (or Mouse5), speak, release - your words appear instantly in any application.
 
@@ -46,13 +46,23 @@ Press `Ctrl+Space` (or Mouse5), speak, release - your words appear instantly in 
 | **Cross-Platform** | Native support for Linux, Windows, and macOS |
 | **Privacy-First** | Zero telemetry, zero cloud, zero data collection |
 | **On-Demand Mic** | Microphone only active during recording (no system tray mic icon) |
-| **Fast Transcription** | Native Whisper-rs delivers high-accuracy results in seconds |
+| **Fast Transcription** | Native ggml inference delivers high-accuracy results in seconds |
 | **Auto-Type** | Text automatically injected into focused application |
 | **Multi-Language** | Support for French, English, German, Spanish, and 95+ languages |
 | **Multiple Models** | Whisper Tiny/Base/Small/Medium/Large-v3 for quality/speed trade-offs |
 | **Gaming Mouse Support** | Configure Mouse4, Mouse5, or any mouse button as hotkey |
 | **Modern UI** | Clean dark theme with real-time status indicators |
 | **System Tray** | Runs quietly in the background |
+
+## Upgrading to 1.9.0
+
+Whisper models moved to the GGUF format, and the file installed by an earlier
+version can no longer be read. Open **Settings → Models** and download yours
+again — it is two to three times smaller than before. The old file is left
+untouched on disk; the application tells you where it is and how big it is, so
+you can remove it yourself.
+
+Nothing else to do: settings, shortcuts and custom words are kept.
 
 ## Installation
 
@@ -151,7 +161,7 @@ rm -rf ~/Library/Preferences/com.karaoketyper.app.plist
 #### Prerequisites
 
 - **Node.js** 18+ and npm
-- **Rust** 1.70+
+- **Rust** stable (the CI builds with the current stable toolchain)
 - **Linux, GPU build only** (`--features gpu-vulkan`): the Whisper engine builds
   ggml's Vulkan backend from source, which needs the Vulkan loader, the shader
   compiler and the SPIR-V headers:
@@ -210,11 +220,16 @@ npm run tauri dev
 
 | Model | Size | Speed | Accuracy | Best For |
 |-------|------|-------|----------|----------|
-| **Whisper Tiny** | ~75MB | Fastest | Good | Quick notes, low-resource devices |
-| **Whisper Base** | ~150MB | Fast | Better | Daily dictation (recommended) |
-| **Whisper Small** | ~500MB | Medium | Very Good | Professional use |
-| **Whisper Medium** | ~1.5GB | Slower | Excellent | High accuracy needs |
-| **Whisper Large-v3** | ~3GB | Slowest | Best | Maximum accuracy |
+| **Whisper Tiny** | 46 MB | Fastest | Good | Quick notes, low-resource devices |
+| **Whisper Base** | 85 MB | Fast | Better | Light dictation |
+| **Whisper Small** | 270 MB | Medium | Very Good | Daily dictation (recommended) |
+| **Whisper Medium** | 832 MB | Slower | Excellent | High accuracy needs |
+| **Whisper Large v3 Turbo** | 886 MB | Fast | Excellent | Nearly Large v3, far quicker |
+| **Whisper Large-v3** | 1.16 GB | Slowest | Best | Maximum accuracy |
+| **Parakeet TDT 0.6B v3** | 640 MB | Fastest | Very Good | 25 European languages, auto-detected |
+
+Models ship as GGUF. Sizes are the actual download, already quantised — Large v3
+was 3.1 GB before version 1.9.0.
 
 ## Building
 
@@ -254,7 +269,7 @@ This project is licensed under the **Polyform Noncommercial License 1.0.0** - se
 
 ## Présentation
 
-**KaraokeTyper** est une application de dictée vocale multi-plateforme axée sur la confidentialité. Toute la reconnaissance vocale se fait **100% hors-ligne** avec Whisper-rs natif - pas de cloud, pas de télémétrie, aucune donnée ne quitte votre machine.
+**KaraokeTyper** est une application de dictée vocale multi-plateforme axée sur la confidentialité. Toute la reconnaissance vocale se fait **100% hors-ligne** — Whisper, ou NVIDIA Parakeet quand vous voulez de la vitesse. Pas de cloud, pas de télémétrie, aucune donnée ne quitte votre machine.
 
 Appuyez sur `Ctrl+Espace` (ou Mouse5), parlez, relâchez - vos mots apparaissent instantanément dans n'importe quelle application.
 
@@ -267,13 +282,23 @@ Appuyez sur `Ctrl+Espace` (ou Mouse5), parlez, relâchez - vos mots apparaissent
 | **Multi-plateforme** | Support natif pour Linux, Windows et macOS |
 | **Confidentialité** | Zéro télémétrie, zéro cloud, zéro collecte de données |
 | **Micro à la demande** | Microphone actif uniquement pendant l'enregistrement (pas d'icône micro dans la barre système) |
-| **Transcription rapide** | Whisper-rs natif offre des résultats de haute précision en quelques secondes |
+| **Transcription rapide** | L'inférence ggml native offre des résultats de haute précision en quelques secondes |
 | **Frappe automatique** | Le texte est automatiquement injecté dans l'application active |
 | **Multi-langue** | Support du français, anglais, allemand, espagnol et 95+ langues |
 | **Plusieurs modèles** | Whisper Tiny/Base/Small/Medium/Large-v3 pour différents compromis qualité/vitesse |
 | **Support souris gaming** | Configurez Mouse4, Mouse5 ou n'importe quel bouton comme raccourci |
 | **Interface moderne** | Thème sombre avec indicateurs de statut en temps réel |
 | **Barre système** | Fonctionne discrètement en arrière-plan |
+
+## Mise à jour vers la 1.9.0
+
+Les modèles Whisper sont passés au format GGUF, et le fichier installé par une
+version précédente n'est plus lisible. Ouvrez **Paramètres → Modèles** et
+retéléchargez le vôtre : il est deux à trois fois plus léger qu'avant. L'ancien
+fichier reste intact sur votre disque ; l'application vous indique où il est et
+ce qu'il pèse, à vous de le supprimer.
+
+Rien d'autre à faire : réglages, raccourcis et mots personnalisés sont conservés.
 
 ## Installation
 
@@ -372,7 +397,7 @@ rm -rf ~/Library/Preferences/com.karaoketyper.app.plist
 #### Prérequis
 
 - **Node.js** 18+ et npm
-- **Rust** 1.70+
+- **Rust** stable (la CI compile avec la *stable* du moment)
 
 ```bash
 # Cloner le dépôt
@@ -422,11 +447,16 @@ npm run tauri dev
 
 | Modèle | Taille | Vitesse | Précision | Idéal pour |
 |--------|--------|---------|-----------|------------|
-| **Whisper Tiny** | ~75Mo | Plus rapide | Bonne | Notes rapides, appareils peu puissants |
-| **Whisper Base** | ~150Mo | Rapide | Meilleure | Dictée quotidienne (recommandé) |
-| **Whisper Small** | ~500Mo | Moyenne | Très bonne | Usage professionnel |
-| **Whisper Medium** | ~1.5Go | Lente | Excellente | Haute précision |
-| **Whisper Large-v3** | ~3Go | Plus lente | Meilleure | Précision maximale |
+| **Whisper Tiny** | 46 Mo | Plus rapide | Bonne | Notes rapides, appareils peu puissants |
+| **Whisper Base** | 85 Mo | Rapide | Meilleure | Dictée légère |
+| **Whisper Small** | 270 Mo | Moyenne | Très bonne | Dictée quotidienne (recommandé) |
+| **Whisper Medium** | 832 Mo | Lente | Excellente | Haute précision |
+| **Whisper Large v3 Turbo** | 886 Mo | Rapide | Excellente | Presque Large v3, bien plus vite |
+| **Whisper Large-v3** | 1,16 Go | Plus lente | Meilleure | Précision maximale |
+| **Parakeet TDT 0.6B v3** | 640 Mo | Plus rapide | Très bonne | 25 langues européennes, détectées seules |
+
+Les modèles sont au format GGUF. Les tailles sont celles du téléchargement réel,
+déjà quantifié — Large v3 pesait 3,1 Go avant la version 1.9.0.
 
 ## Compilation
 
@@ -472,11 +502,13 @@ KaraokeTyper/
 │   └── bindings.ts         # Tauri TypeScript bindings
 ├── src-tauri/              # Backend Rust
 │   ├── src/
-│   │   ├── lib.rs          # Tauri commands & setup
-│   │   ├── audio.rs            # Audio capture (CPAL cross-platform)
-│   │   ├── stt_whisper.rs  # Native Whisper-rs STT engine
+│   │   ├── lib.rs               # Tauri commands & setup
+│   │   ├── audio.rs             # Audio capture (CPAL cross-platform)
+│   │   ├── vad.rs               # Silero voice activity detection
+│   │   ├── stt/                 # Engine dispatch, hybrid routing, runtime
+│   │   ├── catalog/             # Versioned, hash-pinned model catalogue
 │   │   ├── model_downloader.rs  # Model download manager
-│   │   ├── output.rs       # Text injection (enigo/uinput)
+│   │   ├── output.rs            # Text injection (enigo/uinput)
 │   │   ├── evdev_listener.rs    # Linux input events
 │   │   └── keyboard_listener.rs # Push-to-talk handler
 │   └── Cargo.toml
@@ -487,9 +519,10 @@ KaraokeTyper/
 
 | Layer | Technology |
 |-------|------------|
-| **Frontend** | React 18, TypeScript, Tailwind CSS, shadcn/ui, Zustand |
-| **Backend** | Rust, Tauri 2.0 |
-| **STT Engine** | Whisper-rs (native Rust bindings to whisper.cpp) |
+| **Frontend** | React 19, TypeScript, Tailwind CSS 4, shadcn/ui, Zustand 5, Vite 8 |
+| **Backend** | Rust, Tauri 2.11 |
+| **STT Engine** | transcribe-cpp (Whisper, GGUF/ggml) and transcribe-rs (Parakeet, ONNX) |
+| **Voice Activity** | Silero VAD v4 via ONNX Runtime |
 | **Audio** | CPAL (ALSA on Linux, WASAPI on Windows, CoreAudio on macOS) |
 | **Keyboard** | rdev (Windows/macOS), evdev (Linux) |
 | **Text Output** | enigo, arboard, uinput |
@@ -514,9 +547,11 @@ We welcome contributions! / Les contributions sont les bienvenues !
 
 ## Credits / Crédits
 
-- [whisper-rs](https://github.com/tazz4843/whisper-rs) - Rust bindings for whisper.cpp
-- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) - High-performance C++ inference
+- [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) - ggml inference for the Whisper family
+- [transcribe-rs](https://github.com/cjpais/transcribe-rs) - ONNX engines, Parakeet included
 - [OpenAI Whisper](https://github.com/openai/whisper) - Speech recognition models
+- [NVIDIA Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) - Fast multilingual ASR
+- [Silero VAD](https://github.com/snakers4/silero-vad) - Voice activity detection
 - [Tauri](https://tauri.app) - Cross-platform app framework
 - [shadcn/ui](https://ui.shadcn.com) - Beautiful UI components
 - [rdev](https://github.com/Narsil/rdev) - Cross-platform input events

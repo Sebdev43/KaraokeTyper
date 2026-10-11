@@ -45,12 +45,13 @@ jobs:
       # Same list as release.yml's build-linux job, which is known to work — Tauri links
       # webkit2gtk, so even `cargo test` needs it — plus Vulkan.
       #
-      # whisper-rs-sys builds whisper.cpp through CMake, which looks for Vulkan and
-      # aborts when it is absent: `Could NOT find Vulkan (missing: Vulkan_LIBRARY
-      # Vulkan_INCLUDE_DIR glslc)`. release.yml pulls the full LunarG SDK, but that
-      # repository targets jammy and now breaks on the noble runner
-      # ("held broken packages"). Ubuntu's own libvulkan-dev + glslc provide exactly
-      # the three things CMake asks for, with no third-party repository.
+      # The Vulkan packages are for `--features gpu-vulkan` only, checked at the
+      # end of this job: transcribe-cpp is taken with `default-features = false`,
+      # so the plain `cargo test` below builds no GPU backend at all. ggml's Vulkan
+      # backend needs the loader, the shader compiler *and* the SPIR-V headers;
+      # release.yml pulls the full LunarG SDK, which bundles all three, but that
+      # repository targets jammy and breaks on the noble runner ("held broken
+      # packages"). Ubuntu's own packages cover it with no third-party repository.
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -68,7 +69,8 @@ jobs:
             libgtk-3-dev \
             libunwind-dev \
             libvulkan-dev \
-            glslc
+            glslc \
+            spirv-headers
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -92,6 +94,13 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test
+
+      # The feature every published build ships. Compiling it here is what keeps a
+      # missing system package or a broken native build from being discovered at
+      # tag time, when the release workflow is the first thing to try it.
+      - name: cargo check --features gpu-vulkan
+        working-directory: src-tauri
+        run: cargo check --all-targets --features gpu-vulkan
 
   frontend:
     name: Frontend — build and lint

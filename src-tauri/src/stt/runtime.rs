@@ -105,9 +105,25 @@ fn primary_model_path(config: &AppConfig) -> Result<PathBuf, String> {
         })
         .map(PathBuf::from)
         .or_else(|| model_downloader::get_model_path(&config.model).map(PathBuf::from))
-        .ok_or_else(|| {
-            "No model downloaded. Download a model from Settings → STT Models.".to_string()
-        })
+        .ok_or_else(
+            || match model_downloader::legacy_ggml_leftover(&config.model) {
+                // The move to GGUF left the old file unreadable. Saying only "no model
+                // downloaded" would hide both why a working install stopped working
+                // and the gigabytes still sitting there.
+                Some((path, size_mb)) => format!(
+                    "{} is the previous format (GGML) and can no longer be read. \
+                 Download {} again from Settings → STT Models — the new file is \
+                 smaller. The old one ({} MB) stays at {} until you remove it.",
+                    config.model,
+                    config.model,
+                    size_mb,
+                    path.display()
+                ),
+                None => {
+                    "No model downloaded. Download a model from Settings → STT Models.".to_string()
+                }
+            },
+        )
 }
 
 fn load_engine(
@@ -122,7 +138,9 @@ fn load_engine(
     if engine_type == EngineType::Whisper {
         let counts_for_gpu_health = !matches!(
             result,
-            Err(stt::SttError::ModelNotFound(_) | stt::SttError::BackendUnavailable(_))
+            Err(stt::SttError::ModelNotFound(_)
+                | stt::SttError::BackendUnavailable(_)
+                | stt::SttError::UnsupportedFormat(_))
         );
         if counts_for_gpu_health {
             stt::gpu_health::note_engine_load(gpu.use_gpu, result.is_ok());
@@ -138,6 +156,35 @@ pub type EngineSlot = Arc<Mutex<Option<SttEngine>>>;
 /// model. The fast-lane warm-up takes it too, so it never loads next to an
 /// inference that is about to put its engine back.
 static INFERENCE_GUARD: Mutex<()> = Mutex::new(());
+
+/// What a reconciliation pass has to do, given the state it reads when it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FastLaneAction {
+    /// Hybrid mode is off and Parakeet is resident: hand the memory back.
+    Release,
+    /// Hybrid mode is on and the slot is empty: load Parakeet.
+    Load,
+    /// Already in the requested state.
+    Nothing,
+}
+
+/// The decision, kept separate from the work so it can be read and tested on its
+/// own. Both inputs must be read *inside* the pass: deciding from a snapshot taken
+/// when the pass was requested is how a toggle flipped meanwhile ends up paying for
+/// a load that is then thrown away.
+#[must_use]
+pub fn fast_lane_action(active_now: bool, slot_filled: bool) -> FastLaneAction {
+    match (active_now, slot_filled) {
+        (false, true) => FastLaneAction::Release,
+        (true, false) => FastLaneAction::Load,
+        _ => FastLaneAction::Nothing,
+    }
+}
+
+/// Serialises fast-lane reconciliation passes. Two passes may be requested at
+/// once (a settings save racing a finished download); holding this makes the
+/// second wait rather than interleave its load with the first one's release.
+static FAST_LANE_RECONCILE: Mutex<()> = Mutex::new(());
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
@@ -215,13 +262,18 @@ impl EngineSlots {
         lane
     }
 
-    /// Bring the fast lane in line with the config: release Parakeet when hybrid
-    /// mode is inactive, warm it up off-thread when it is active and the slot is
-    /// empty. Best effort — a Parakeet that cannot load is logged, never surfaced;
-    /// the lane falls back to the primary engine at dictation time anyway.
+    /// Ask for the fast lane to be brought in line with the config: Parakeet
+    /// released when hybrid mode is inactive, loaded when it is active.
+    ///
+    /// The request carries no state. The pass reads the live config when it runs,
+    /// so a toggle flipped while a load was queued is honoured instead of being
+    /// discovered after paying for the load. Passes are serialised, so several
+    /// requests in a row settle on the last one rather than interleaving.
     pub fn sync_fast_lane(&self, config: &Arc<Mutex<AppConfig>>) {
-        let snapshot = lock(config).clone();
-        if !snapshot.hybrid_policy().is_active() {
+        // The release side is cheap and must be immediate: the memory is handed
+        // back as soon as the user turns the mode off, not whenever a task is
+        // scheduled. The pass below re-checks anyway.
+        if !lock(config).hybrid_policy().is_active() {
             if lock(&self.fast).take().is_some() {
                 crate::dev_log!("[STT] Hybrid fast lane released (mode inactive)");
             }
@@ -229,32 +281,58 @@ impl EngineSlots {
         }
         let slots = self.clone();
         let config = Arc::clone(config);
-        tokio::task::spawn_blocking(move || slots.warm_up_fast_lane(&config, &snapshot));
+        tokio::task::spawn_blocking(move || slots.reconcile_fast_lane(&config));
     }
 
-    fn warm_up_fast_lane(&self, config: &Mutex<AppConfig>, snapshot: &AppConfig) {
+    /// Apply the config as it stands right now. Blocking (loads a model): call
+    /// from `spawn_blocking`.
+    fn reconcile_fast_lane(&self, config: &Mutex<AppConfig>) {
+        let _pass = lock(&FAST_LANE_RECONCILE);
+
+        // Read once, at the start of the pass, and decide from that. The previous
+        // version carried a snapshot taken when the request was made, which could
+        // already be stale by the time the task ran.
+        let wanted = lock(config).clone();
+        // Both reads land in locals first: a `MutexGuard` built inside a `match`
+        // scrutinee lives until the end of the `match`, so taking the same lock in
+        // an arm would deadlock against itself.
+        let active_now = wanted.hybrid_policy().is_active();
+        let slot_filled = lock(&self.fast).is_some();
+        match fast_lane_action(active_now, slot_filled) {
+            FastLaneAction::Nothing => return,
+            FastLaneAction::Release => {
+                lock(&self.fast).take();
+                crate::dev_log!("[STT] Hybrid fast lane released (mode inactive)");
+                return;
+            }
+            FastLaneAction::Load => {}
+        }
+
         // An inference in flight has taken its engine out of the slot and will put
         // it back when it finishes; loading now would only duplicate it.
         let Ok(_inference) = INFERENCE_GUARD.try_lock() else {
             crate::dev_log!("[STT] Hybrid warm-up skipped: inference in flight");
             return;
         };
-        let mut guard = lock(&self.fast);
-        if guard.is_some() {
-            return;
-        }
-        match SttEngine::for_lane(SttLane::FastParakeet, snapshot) {
-            // The toggle may have flipped during the load: keep the engine only if
-            // the mode is still active, or the memory would never be given back.
-            Ok(engine) if lock(config).hybrid_policy().is_active() => {
-                *guard = Some(engine);
-                crate::dev_log!(
-                    "[STT] ✅ Hybrid fast lane ready ({})",
-                    EngineType::Parakeet.as_str()
-                );
-            }
-            Ok(_) => {
-                crate::dev_log!("[STT] Hybrid fast lane dropped: mode deactivated during warm-up")
+        match SttEngine::for_lane(SttLane::FastParakeet, &wanted) {
+            Ok(engine) => {
+                // Checked and installed under one hold of the slot, in the slot →
+                // config order `take_or_load` already uses. Releasing in between
+                // lets the "mode off" path run on a still-empty slot and find
+                // nothing to free, after which this installs an engine nobody
+                // will ever hand back.
+                let mut slot = lock(&self.fast);
+                if lock(config).hybrid_policy().is_active() {
+                    *slot = Some(engine);
+                    crate::dev_log!(
+                        "[STT] ✅ Hybrid fast lane ready ({})",
+                        EngineType::Parakeet.as_str()
+                    );
+                } else {
+                    crate::dev_log!(
+                        "[STT] Hybrid fast lane dropped: mode deactivated during warm-up"
+                    );
+                }
             }
             Err(e) => crate::dev_log!("[STT] Hybrid fast lane not warmed up: {}", e),
         }
@@ -346,5 +424,54 @@ impl EngineSlots {
         if guard.is_none() {
             *guard = Some(engine);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs the real pass under the real locks. It only covers the branch that
+    /// needs no model on disk — the machine's own catalogue decides the others, so
+    /// asserting on them here would be a test of this laptop. The release branch,
+    /// the one that used to deadlock against itself by reading the slot inside the
+    /// `match` scrutinee, is guarded by `clippy::significant_drop_in_scrutinee`
+    /// (enabled in Cargo.toml) rather than by a test.
+    #[test]
+    fn a_pass_with_hybrid_off_settles_and_frees_its_locks() {
+        let slots = EngineSlots::default();
+        let config = Mutex::new(AppConfig {
+            hybrid_engine_enabled: false,
+            ..AppConfig::default()
+        });
+
+        slots.reconcile_fast_lane(&config);
+        assert!(
+            lock(&slots.fast).is_none(),
+            "nothing to load, nothing loaded"
+        );
+
+        // Every lock the pass took must be free for the next one.
+        slots.reconcile_fast_lane(&config);
+        assert!(lock(&slots.fast).is_none());
+        assert!(
+            FAST_LANE_RECONCILE.try_lock().is_ok(),
+            "the pass must not keep the reconciliation lock"
+        );
+        assert!(
+            INFERENCE_GUARD.try_lock().is_ok(),
+            "the pass must not keep the inference guard"
+        );
+    }
+
+    #[test]
+    fn the_pass_decides_from_the_state_it_reads() {
+        // Hybrid on, nothing resident: the only case that pays for a load.
+        assert_eq!(fast_lane_action(true, false), FastLaneAction::Load);
+        // Hybrid off with Parakeet resident: hand the memory back.
+        assert_eq!(fast_lane_action(false, true), FastLaneAction::Release);
+        // Already settled, either way.
+        assert_eq!(fast_lane_action(true, true), FastLaneAction::Nothing);
+        assert_eq!(fast_lane_action(false, false), FastLaneAction::Nothing);
     }
 }

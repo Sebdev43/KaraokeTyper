@@ -5,6 +5,38 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] - 2026-10-11
+
+**Une action vous est demandée : retéléchargez votre modèle Whisper.** Le moteur lit désormais des fichiers au format GGUF, et celui installé par une version précédente n'est plus lisible. Ouvrez Paramètres → Modèles, relancez le téléchargement : le nouveau fichier est deux à trois fois plus léger. L'ancien reste sur votre disque — l'application vous dit où il se trouve et sa taille, à vous de décider.
+
+### Ajouté
+
+- **Whisper Large v3 Turbo** (886 Mo) : presque la précision de Large v3, nettement plus rapide
+- **Repli de température** sur la transcription Whisper. Jusqu'ici, une portion de phrase dont le modèle n'était pas sûr était retranscrite telle quelle, et les mots incertains ressortaient confiants et faux. Elle est maintenant redécodée jusqu'à passer les seuils de confiance. C'est le réglage que l'ancienne bibliothèque n'exposait pas
+
+### Modifié
+
+- **Moteur Whisper** : passage à transcribe-cpp 0.3.1 (GGUF). Parakeet continue de tourner sur transcribe-rs
+- **Modèles plus légers** : Large v3 passe de 3,10 Go à **1,16 Go**, Medium de 1,5 Go à 832 Mo, Small de 466 à 270 Mo. Même famille de modèles, quantification plus fine
+- **Recommandation GPU** recalée sur ces tailles : une carte de 4 Go se voit proposer Large v3, là où elle s'arrêtait à Medium
+
+### Corrigé
+
+- **Le début d'une dictée pouvait disparaître.** Trois causes distinctes : le détecteur de voix gardait son état d'une dictée à l'autre et pouvait rater l'attaque de la suivante ; un second démarrage, déclenché par un à-coup du pilote audio, détruisait la capture en cours ; et sur un microphone qui venait de se réveiller, seule la demi-seconde précédant l'appui était renvoyée
+- **Changer de microphone** pendant une dictée détruisait celle-ci sans rien dire. Le changement est désormais appliqué à la dictée suivante
+- **Transcription interrompue** : quand le décodage s'arrête en cours de route, le texte déjà obtenu est conservé au lieu d'être perdu avec le reste
+- **Erreur de modèle illisible** : le message indique quoi faire, et ne désactive plus l'accélération GPU par erreur
+
+### Pour qui compile depuis les sources
+
+Le build GPU sous Linux demande un paquet de plus, `spirv-headers`, requis par le backend Vulkan du nouveau moteur :
+
+```bash
+sudo apt install libvulkan-dev glslc spirv-headers
+```
+
+Rien ne change pour qui installe un binaire publié.
+
 ## [1.8.0] - 2026-09-16
 
 ### Modifié

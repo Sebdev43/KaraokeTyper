@@ -1,6 +1,6 @@
 //! Multi-backend model registry + downloader.
 //!
-//! Models are served by transcribe-rs (Whisper GGML + optional ONNX engines).
+//! Models are served by transcribe-cpp (Whisper GGUF) and transcribe-rs (ONNX).
 //! The registry is engine-aware; already-downloaded files in
 //! `~/.local/share/karaoketyper/models/` are preserved across upgrades via
 //! `is_model_installed()` which only checks on-disk size.
@@ -511,8 +511,38 @@ pub fn get_models_dir() -> PathBuf {
         .join("models")
 }
 
-pub fn get_model_file_path(model_name: &str) -> PathBuf {
-    get_models_dir().join(format!("{}.bin", model_name))
+/// Where a single-file model lands. The extension follows the catalogue URL:
+/// Whisper ships GGUF now, and the engine refuses anything else, so a file saved
+/// as `.bin` would download fine and then fail to load.
+pub fn model_file_path(model_name: &str, url: &str) -> PathBuf {
+    get_models_dir().join(format!("{model_name}.{}", file_extension(url)))
+}
+
+/// Extension of the file a URL points at, lower-cased.
+///
+/// Only the two the catalogue can hold are accepted; anything else (a query
+/// string glued to the name, a redirect-style URL) falls back to `bin` rather
+/// than inventing a name — and the catalogue test keeps such a URL out anyway.
+fn file_extension(url: &str) -> String {
+    url.rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.'))
+        .map(|(_, ext)| ext.to_ascii_lowercase())
+        .filter(|ext| ext == "gguf" || ext == "bin")
+        .unwrap_or_else(|| "bin".to_string())
+}
+
+/// The GGML file a previous version downloaded for this model, if it is still
+/// there, with its size in MB.
+///
+/// Whisper reads GGUF now, so that file is dead weight — often gigabytes of it.
+/// Nothing deletes it behind the user's back; this is what lets the app say where
+/// it is instead of reporting a bare "no model downloaded".
+#[must_use]
+pub fn legacy_ggml_leftover(model_name: &str) -> Option<(PathBuf, u64)> {
+    let legacy = get_models_dir().join(format!("{model_name}.bin"));
+    let size = std::fs::metadata(&legacy).ok()?.len();
+    Some((legacy, size / 1_000_000))
 }
 
 /// Every installable model, from the versioned catalogue.
@@ -532,7 +562,7 @@ fn is_model_installed(model: &ModelInfo) -> bool {
         let dir = get_models_dir().join(&model.name);
         return dir.is_dir();
     }
-    let model_path = get_model_file_path(&model.name);
+    let model_path = model_file_path(&model.name, &model.url);
     if model_path.exists() {
         if let Ok(metadata) = std::fs::metadata(&model_path) {
             let expected_bytes = model.size_mb as u64 * 1024 * 1024;
@@ -557,7 +587,7 @@ fn model_path_of(model: &ModelInfo) -> PathBuf {
     if model.is_directory {
         get_models_dir().join(&model.name)
     } else {
-        get_model_file_path(&model.name)
+        model_file_path(&model.name, &model.url)
     }
 }
 
@@ -634,8 +664,12 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
         .await
         .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
-    let model_path = get_model_file_path(&model_name);
-    let temp_path = model_path.with_extension("bin.tmp");
+    let model_path = model_file_path(&model_name, &model_info.url);
+    // `{file}.tmp`, not `with_extension("tmp")`: the latter gives the same
+    // `whisper-large-v3.tmp` for the GGML and the GGUF generation, so an
+    // abandoned GGML part would be resumed as if it were GGUF — a full download
+    // thrown away on a checksum mismatch.
+    let temp_path = PathBuf::from(format!("{}.tmp", model_path.display()));
 
     let client = build_download_client()?;
 
@@ -1301,7 +1335,22 @@ async fn download_and_extract_archive(
 
 #[allow(dead_code)]
 pub async fn delete_model(model_name: &str) -> Result<(), String> {
-    let model_path = get_model_file_path(model_name);
+    // The catalogue carries the extension; fall back to the legacy `.bin` so a
+    // model downloaded by an older build can still be removed.
+    let model_path = crate::catalog::models()
+        .iter()
+        .find(|m| m.name == model_name)
+        .map_or_else(
+            || get_models_dir().join(format!("{model_name}.bin")),
+            |m| model_file_path(model_name, &m.url),
+        );
+    // The GGML file the same model used to be stored as, if the move to GGUF left
+    // one behind: deleting a model must not leave gigabytes of it on disk.
+    if let Some((legacy, _)) = legacy_ggml_leftover(model_name) {
+        if legacy != model_path {
+            tokio::fs::remove_file(&legacy).await.ok();
+        }
+    }
     if model_path.exists() {
         tokio::fs::remove_file(&model_path)
             .await
@@ -1350,9 +1399,32 @@ mod tests {
     }
 
     #[test]
-    fn test_model_file_path() {
-        let path = get_model_file_path("ggml-base");
-        assert!(path.to_string_lossy().ends_with("ggml-base.bin"));
+    fn model_files_take_the_extension_of_their_url() {
+        let gguf = model_file_path("whisper-base", "https://host/path/whisper-base-Q8_0.gguf");
+        assert!(gguf.to_string_lossy().ends_with("whisper-base.gguf"));
+        // Case is not meaningful in a URL path; the engine compares lower-cased.
+        let shouty = model_file_path("whisper-base", "https://host/WHISPER-BASE.GGUF");
+        assert!(shouty.to_string_lossy().ends_with("whisper-base.gguf"));
+        // A legacy catalogue entry.
+        let legacy = model_file_path("ggml-base", "https://host/ggml-base.bin");
+        assert!(legacy.to_string_lossy().ends_with("ggml-base.bin"));
+        // Anything the catalogue should never contain falls back rather than
+        // producing `x.gguf?download=true`.
+        for odd in [
+            "https://host/download?id=7",
+            "https://host/x.gguf?download=true",
+            "https://host/path/",
+        ] {
+            assert!(
+                model_file_path("x", odd)
+                    .to_string_lossy()
+                    .ends_with("x.bin"),
+                "{odd}"
+            );
+        }
+        // A model name with a dot keeps all of it.
+        let dotted = model_file_path("whisper-small.en", "https://host/a.gguf");
+        assert!(dotted.to_string_lossy().ends_with("whisper-small.en.gguf"));
     }
 
     #[test]
@@ -1360,7 +1432,7 @@ mod tests {
         let models = get_available_models();
         assert!(models
             .iter()
-            .any(|m| m.name == "ggml-small" && m.engine_type == EngineType::Whisper));
+            .any(|m| m.name == "whisper-small" && m.engine_type == EngineType::Whisper));
         assert!(models
             .iter()
             .any(|m| m.engine_type == EngineType::SenseVoice));
@@ -1379,9 +1451,9 @@ mod tests {
         assert!(model_path_of(parakeet).ends_with(&parakeet.name));
         let small = models
             .iter()
-            .find(|m| m.name == "ggml-small")
-            .expect("ggml-small should be registered");
-        assert!(model_path_of(small).ends_with("ggml-small.bin"));
+            .find(|m| m.name == "whisper-small")
+            .expect("whisper-small should be registered");
+        assert!(model_path_of(small).ends_with("whisper-small.gguf"));
     }
 
     #[test]

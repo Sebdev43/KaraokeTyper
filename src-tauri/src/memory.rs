@@ -13,7 +13,7 @@
 //!   serves every Rust allocation: the audio buffers, the transcript, everything the
 //!   pipeline touches.
 //! - **glibc malloc** still serves the C/C++ dependencies, which never go through
-//!   Rust's `GlobalAlloc`: whisper.cpp via `transcribe-rs` and ONNX Runtime via `ort`.
+//!   Rust's `GlobalAlloc`: ggml via `transcribe-cpp` and ONNX Runtime via `ort`.
 //!   These are the largest transient allocators of the two.
 //!
 //! Handing back only one of them looks like a fix and reclaims half the memory, so

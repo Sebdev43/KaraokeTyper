@@ -152,6 +152,15 @@ rm -rf ~/Library/Preferences/com.karaoketyper.app.plist
 
 - **Node.js** 18+ and npm
 - **Rust** 1.70+
+- **Linux, GPU build only** (`--features gpu-vulkan`): the Whisper engine builds
+  ggml's Vulkan backend from source, which needs the Vulkan loader, the shader
+  compiler and the SPIR-V headers:
+
+  ```bash
+  sudo apt install libvulkan-dev glslc spirv-headers
+  ```
+
+  A plain `cargo build` is CPU-only and needs none of them.
 
 ```bash
 # Clone the repository

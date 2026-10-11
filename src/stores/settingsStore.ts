@@ -113,7 +113,7 @@ const initialState = {
   selectedDevice: 0,
   selectedDeviceName: "",
   sttBackend: "whisper" as EngineType,
-  model: "ggml-small",
+  model: "whisper-small",
   language: "fr",
   hybridEngineEnabled: false,
   hybridThresholdSecs: 20,

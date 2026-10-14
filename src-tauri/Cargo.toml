@@ -54,7 +54,7 @@ dirs = "6"
 hound = "3.5"
 
 # Zip archive for GNOME extension packaging
-zip = "8"
+zip = "9"
 
 # SHA-256 for verifying model bundle integrity during download.
 sha2 = "0.11"

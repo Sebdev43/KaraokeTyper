@@ -32,11 +32,18 @@ ASSETS_JSON="$TMP/assets.json"
 gh release view "$TAG" --repo "$REPO" --json assets,body > "$ASSETS_JSON"
 
 # Helper: find the first asset whose name matches a regex and print the pair
-# "<api_url> <browser_download_url>" separated by a tab. Empty if no match.
+# "<api url> <download url>" separated by a tab. Empty if no match.
+#
+# `apiUrl` and `url`, not `url` and `browser_download_url`: those last two are the
+# REST API's field names, and `gh release view --json assets` does not use them.
+# Reading the absent `browser_download_url` yielded an empty download URL for every
+# asset, so add_platform() below skipped all of them and every release from 1.8.0
+# onwards shipped a latest.json with an empty `platforms` object — an updater that
+# silently told everyone they were up to date.
 find_asset() {
     local pattern="$1"
     jq -r --arg p "$pattern" \
-        '.assets[] | select(.name | test($p)) | "\(.url)\t\(.browser_download_url)"' \
+        '.assets[] | select(.name | test($p)) | "\(.apiUrl)\t\(.url)"' \
         "$ASSETS_JSON" | head -n1
 }
 

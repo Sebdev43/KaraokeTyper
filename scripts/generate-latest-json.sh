@@ -89,10 +89,15 @@ add_platform() {
 
 add_platform "linux-x86_64"   "$LINUX_SIG"  "$LINUX_URL"
 add_platform "windows-x86_64" "$WIN_SIG"    "$WIN_URL"
-# Reuse darwin bundle for both arches — if you ship separate arm/intel
-# bundles, duplicate add_platform with the correct patterns.
+# Apple Silicon only, and deliberately not `darwin-x86_64`.
+#
+# The release workflow builds macOS on an arm64 runner and publishes a single
+# aarch64 bundle; the Intel job was dropped when the macos-13 runner went away.
+# Announcing that bundle under `darwin-x86_64` — which this script used to do —
+# hands an Intel Mac an update it cannot run. Offering nothing leaves such a
+# user on the version they already have, which is the honest outcome until an
+# Intel bundle exists again.
 add_platform "darwin-aarch64" "$DARWIN_SIG" "$DARWIN_URL"
-add_platform "darwin-x86_64"  "$DARWIN_SIG" "$DARWIN_URL"
 
 jq -n --arg ver "$VERSION" --arg notes "$NOTES" --arg pub "$PUB_DATE" \
     --argjson plats "$PLATFORMS" \

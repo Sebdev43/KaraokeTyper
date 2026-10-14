@@ -27,6 +27,10 @@
   <img src="https://img.shields.io/badge/STT-Whisper%20GGUF%20%2B%20Parakeet-ff6b6b.svg" alt="STT Engine">
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/en-interface.png" alt="KaraokeTyper settings window: interface language, audio input and keyboard shortcut" width="760">
+</p>
+
 ---
 
 # English
@@ -102,6 +106,19 @@ you can remove it yourself.
 
 Nothing else to do: settings, shortcuts and custom words are kept.
 
+## Screenshots
+
+Everything is a setting you can read: which engine is loaded, which model is
+installed, how much VRAM it wants, what the GPU is actually doing. No screen
+promises a result it cannot show.
+
+| Speech recognition and GPU | Model management |
+|---|---|
+| <img src="docs/screenshots/en-stt.png" alt="Recognition and performance settings" width="400"> | <img src="docs/screenshots/en-models.png" alt="Model download list with sizes and languages" width="400"> |
+
+A recording overlay — a small dark pill with a level meter — appears near the
+cursor while you hold the shortcut, and fades out when the text is typed.
+
 ## Installation
 
 ### Download
@@ -147,7 +164,7 @@ msiexec /i karaoketyper_*_x64_en-US.msi
 
 ### Install on macOS
 
-1. Open `karaoketyper_*_aarch64.dmg` (Apple Silicon) or `karaoketyper_*_x64.dmg` (Intel)
+1. Open `karaoketyper_*_aarch64.dmg` — **Apple Silicon only**, macOS 11 or later. No Intel build is published.
 2. Drag **KaraokeTyper** to the **Applications** folder
 3. On first launch: Right-click → Open (to bypass Gatekeeper)
 
@@ -301,6 +318,10 @@ This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) 
 **You CAN**: Use, modify, and share for personal/non-commercial purposes.
 **You CANNOT**: Use commercially or sell without explicit permission.
 
+<p align="center">
+  <img src="docs/screenshots/fr-interface.png" alt="Fenêtre Paramètres de KaraokeTyper : langue de l'interface, entrée audio et raccourci clavier" width="760">
+</p>
+
 ---
 
 # Français
@@ -376,6 +397,20 @@ ce qu'il pèse, à vous de le supprimer.
 
 Rien d'autre à faire : réglages, raccourcis et mots personnalisés sont conservés.
 
+## Captures
+
+Tout ce qui est à l'écran est un réglage qu'on peut lire : quel moteur est
+chargé, quel modèle est installé, la VRAM qu'il réclame, ce que fait réellement
+le GPU. Aucun écran ne promet un résultat qu'il ne sait pas montrer.
+
+| Reconnaissance vocale et GPU | Gestion des modèles |
+|---|---|
+| <img src="docs/screenshots/en-stt.png" alt="Réglages de reconnaissance et de performance" width="400"> | <img src="docs/screenshots/en-models.png" alt="Liste des modèles à télécharger, avec tailles et langues" width="400"> |
+
+Pendant que le raccourci est maintenu, un overlay d'enregistrement — une petite
+pastille sombre avec un indicateur de niveau — apparaît près du curseur, puis
+s'efface une fois le texte tapé.
+
 ## Installation
 
 ### Téléchargement
@@ -421,7 +456,7 @@ msiexec /i karaoketyper_*_x64_en-US.msi
 
 ### Installer sur macOS
 
-1. Ouvrez `karaoketyper_*_aarch64.dmg` (Apple Silicon) ou `karaoketyper_*_x64.dmg` (Intel)
+1. Ouvrez `karaoketyper_*_aarch64.dmg` — **Apple Silicon uniquement**, macOS 11 ou plus récent. Aucune version Intel n'est publiée.
 2. Glissez **KaraokeTyper** vers le dossier **Applications**
 3. Au premier lancement : Clic droit → Ouvrir (pour contourner Gatekeeper)
 

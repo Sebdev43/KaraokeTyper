@@ -384,7 +384,17 @@ shortcut_activation?: ShortcutActivation;
  * Hold-or-toggle only: a press held at least this long is push-to-talk, anything
  * shorter is a tap that locks recording on.
  */
-hold_threshold_ms?: number }
+hold_threshold_ms?: number; 
+/**
+ * Language of the interface — the windows, the tray and the messages the
+ * backend writes. Independent of `language`, which is what the speech
+ * engine transcribes: dictating in French from an English interface is a
+ * normal combination, not a mistake to prevent.
+ * 
+ * Absent from an older settings file, so the `Default` (the system locale)
+ * decides on first run after the upgrade.
+ */
+ui_language?: UiLanguage }
 export type AppDataInfo = { items: AppDataItem[]; total_size_mb: number }
 export type AppDataItem = { name: string; path: string; exists: boolean; size_mb: number }
 export type AudioDevice = { name: string; raw_name: string; index: number }
@@ -495,6 +505,11 @@ name: string; display_name: string; size_mb: number;
  */
 url: string; installed: boolean; description: string; 
 /**
+ * The same blurb in English. The frontend picks between the two by the
+ * interface language; nothing in the backend reads either.
+ */
+description_en?: string; 
+/**
  * Engine that consumes this model.
  */
 engine_type?: EngineType; 
@@ -593,6 +608,13 @@ export type ShortcutActivation =
  * System information
  */
 export type SystemInfo = { os: string; arch: string; display_server: string; desktop_environment: string }
+/**
+ * The languages the interface is translated into.
+ * 
+ * Adding one means adding its arm to every function below; the compiler lists
+ * them all, which is the point of an enum here rather than a string.
+ */
+export type UiLanguage = "Fr" | "En"
 export type UpdateInfo = { current_version: string; latest_version: string; release_notes: string; release_url: string; install_kind: InstallKind; 
 /**
  * Whether we can trigger a fully-automatic install (plugin or pkexec).

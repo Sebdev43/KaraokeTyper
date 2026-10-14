@@ -1,5 +1,6 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useEffect, useLayoutEffect, useState } from "react";
+import { initUiLanguage, useT } from "@/i18n";
 
 type OverlayState = "idle" | "recording" | "processing";
 
@@ -9,6 +10,7 @@ type OverlayState = "idle" | "recording" | "processing";
 const FADE_OUT_MS = 300;
 
 function RecordingOverlay() {
+  const t = useT();
   const [isVisible, setIsVisible] = useState(false);
   const [state, setState] = useState<OverlayState>("recording");
   // The overlay lives in a webview that is never destroyed, so anything rendered here
@@ -16,6 +18,21 @@ function RecordingOverlay() {
   // an `infinite` keyframe. Rendering the content only while it can actually be seen
   // is what stops those animations from burning CPU in the background from boot.
   const [showContent, setShowContent] = useState(false);
+
+  // The overlay is its own webview: it has to read the interface language and
+  // follow later changes on its own.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    void initUiLanguage().then((unlisten) => {
+      if (cancelled) unlisten();
+      else stop = unlisten;
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
 
   useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
@@ -82,7 +99,7 @@ function RecordingOverlay() {
           {state === "idle" && (
             <>
               <div className="dot dot-green" />
-              <span className="overlay-text">Prêt</span>
+              <span className="overlay-text">{t.overlay.ready}</span>
             </>
           )}
 
@@ -109,7 +126,7 @@ function RecordingOverlay() {
                   style={{ animationDelay: "0.36s" }}
                 />
               </div>
-              <span className="overlay-text text-red">Écoute...</span>
+              <span className="overlay-text text-red">{t.overlay.listening}</span>
             </>
           )}
 
@@ -123,7 +140,7 @@ function RecordingOverlay() {
                 stroke="currentColor"
                 strokeWidth="2"
                 role="img"
-                aria-label="Traitement"
+                aria-label={t.overlay.processing}
               >
                 <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
               </svg>
@@ -140,7 +157,7 @@ function RecordingOverlay() {
                 />
                 <div className="bar bar-amber overlay-shimmer" style={{ animationDelay: "0.6s" }} />
               </div>
-              <span className="overlay-text text-amber">IA...</span>
+              <span className="overlay-text text-amber">{t.overlay.ai}</span>
             </>
           )}
         </>

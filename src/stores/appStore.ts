@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { translations } from "@/i18n";
 
 export type AppStatus = "idle" | "recording" | "processing" | "error";
 
@@ -25,17 +26,19 @@ interface AppState {
   reset: () => void;
 }
 
-const initialState = {
+// A function, not a constant: the message depends on the interface language,
+// which is not known yet when this module is first evaluated.
+const initialState = () => ({
   status: "idle" as AppStatus,
-  message: "Appuyez sur Ctrl+Espace pour dicter",
+  message: translations().main.pressToDictate,
   transcription: "",
   isRecording: false,
   isInitialized: false,
-  initError: null,
-};
+  initError: null as string | null,
+});
 
 export const useAppStore = create<AppState>()((set) => ({
-  ...initialState,
+  ...initialState(),
 
   setStatus: (status) => set({ status }),
 
@@ -53,15 +56,15 @@ export const useAppStore = create<AppState>()((set) => ({
     set({
       status: "recording",
       isRecording: true,
-      message: "Écoute en cours...",
+      message: translations().main.listening,
     }),
 
   stopRecording: () =>
     set({
       status: "processing",
       isRecording: false,
-      message: "Transcription...",
+      message: translations().main.transcribing,
     }),
 
-  reset: () => set(initialState),
+  reset: () => set(initialState()),
 }));

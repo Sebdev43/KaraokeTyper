@@ -62,6 +62,11 @@ repository.
 against **`dev`**. Releases are tagged on `master` as `vX.Y.Z`, which is what
 triggers the Linux, Windows and macOS builds.
 
+Both branches are protected: a pull request, green checks and no force push.
+Maintainers apply those rules with `bash scripts/protect-branches.sh`, which
+has to be re-run after any workflow job is renamed — the required checks are
+matched by job name.
+
 ## Commits
 
 One coherent change per commit. The message explains **why**, not what the diff

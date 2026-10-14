@@ -207,7 +207,12 @@ jobs:
           }
           Write-Host "Vulkan SDK $version"
 
-          $installerUrl = "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanSDK-$version-Installer.exe"
+          # `vulkan_sdk.exe` rather than the installer's real file name. LunarG
+          # renamed it from VulkanSDK-<version>-Installer.exe to
+          # vulkansdk-windows-X64-<version>.exe, which broke this step a second
+          # time; this alias sits under the same versioned path, so the version
+          # stays pinned while the naming is theirs to change.
+          $installerUrl = "https://sdk.lunarg.com/sdk/download/$version/windows/vulkan_sdk.exe"
           $installerPath = "$env:TEMP\VulkanSDK-$version-Installer.exe"
           Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
           if ((Get-Item $installerPath).Length -lt 1MB) {
@@ -314,6 +319,19 @@ jobs:
           # runs on that hardware, so a lower target describes a machine that
           # could never install the result.
           MACOSX_DEPLOYMENT_TARGET: '11.0'
+          # The deployment target above governs the link and the bundle, but it
+          # does not reach ggml's compile: cc-rs puts `-mmacosx-version-min=10.13`
+          # on the CMake flags whatever this variable says — measured twice, in the
+          # 1.9.0 builds, where 11.0 appeared nowhere in the configure line. libc++
+          # then refuses std::filesystem as unavailable before 10.15 and the build
+          # stops.
+          #
+          # _LIBCPP_DISABLE_AVAILABILITY is libc++'s own switch for this, and it is
+          # sound rather than a silencer: the published bundle is Apple Silicon
+          # only, so the oldest machine that can install it runs macOS 11, where
+          # std::filesystem has existed since the previous release. The check is
+          # what is wrong here, not the code it rejects.
+          CXXFLAGS: '-D_LIBCPP_DISABLE_AVAILABILITY'
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: --config src-tauri/tauri.macos.conf.json --features gpu-metal

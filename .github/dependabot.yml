@@ -1,10 +1,16 @@
 # Keep the three dependency trees of this project current without letting the
 # noise drown the repository: one grouped pull request per ecosystem per month,
 # security advisories excepted — those arrive on their own, immediately.
+#
+# Every pull request targets `dev`, not the default branch: CONTRIBUTING makes
+# `dev` where work lands and `master` where releases are tagged, and a bump
+# landing straight on `master` would both skip that path and leave `dev`
+# behind.
 version: 2
 updates:
   - package-ecosystem: cargo
     directory: /src-tauri
+    target-branch: dev
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
@@ -17,6 +23,7 @@ updates:
 
   - package-ecosystem: npm
     directory: /
+    target-branch: dev
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
@@ -29,6 +36,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: monthly
     open-pull-requests-limit: 2

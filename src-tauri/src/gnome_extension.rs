@@ -12,6 +12,47 @@ pub struct GnomeExtensionStatus {
     pub needs_restart: bool,
 }
 
+/// Write the two-file archive that `gnome-extensions install` expects.
+///
+/// Split out of `install_focused_window_extension` so it can be tested: the
+/// surrounding command shells out to `gnome-extensions` and needs a GNOME
+/// session, while this part is pure file writing and is the only thing in the
+/// project that uses the `zip` crate — a silent change in how it stores entries
+/// would leave an archive GNOME rejects, with no test to catch it.
+///
+/// Entries are stored uncompressed: the payload is two small text files, and
+/// GNOME reads the archive once at install time.
+#[cfg(target_os = "linux")]
+fn write_extension_zip(
+    zip_path: &std::path::Path,
+    extension_js: &str,
+    metadata_json: &str,
+) -> Result<(), String> {
+    use std::io::Write;
+
+    let zip_file =
+        std::fs::File::create(zip_path).map_err(|e| format!("Failed to create zip: {}", e))?;
+    let mut zip = zip::ZipWriter::new(zip_file);
+
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+    for (name, contents) in [
+        ("extension.js", extension_js),
+        ("metadata.json", metadata_json),
+    ] {
+        zip.start_file(name, options)
+            .map_err(|e| format!("Failed to add {} to zip: {}", name, e))?;
+        zip.write_all(contents.as_bytes())
+            .map_err(|e| format!("Failed to write {}: {}", name, e))?;
+    }
+
+    zip.finish()
+        .map_err(|e| format!("Failed to finish zip: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn get_gnome_extension_path() -> std::path::PathBuf {
     dirs::data_dir()
@@ -88,7 +129,6 @@ pub async fn install_focused_window_extension(app_handle: AppHandle) -> Result<S
     #[cfg(target_os = "linux")]
     {
         use std::fs;
-        use std::io::Write;
 
         let resource_path = app_handle
             .path()
@@ -121,25 +161,7 @@ pub async fn install_focused_window_extension(app_handle: AppHandle) -> Result<S
             let temp_dir = std::env::temp_dir();
             let zip_path = temp_dir.join("focused-window-dbus@karaoketyper.zip");
 
-            let zip_file =
-                fs::File::create(&zip_path).map_err(|e| format!("Failed to create zip: {}", e))?;
-            let mut zip = zip::ZipWriter::new(zip_file);
-
-            let options = zip::write::SimpleFileOptions::default()
-                .compression_method(zip::CompressionMethod::Stored);
-
-            zip.start_file("extension.js", options)
-                .map_err(|e| format!("Failed to add extension.js to zip: {}", e))?;
-            zip.write_all(extension_js.as_bytes())
-                .map_err(|e| format!("Failed to write extension.js: {}", e))?;
-
-            zip.start_file("metadata.json", options)
-                .map_err(|e| format!("Failed to add metadata.json to zip: {}", e))?;
-            zip.write_all(metadata_json.as_bytes())
-                .map_err(|e| format!("Failed to write metadata.json: {}", e))?;
-
-            zip.finish()
-                .map_err(|e| format!("Failed to finish zip: {}", e))?;
+            write_extension_zip(&zip_path, &extension_js, &metadata_json)?;
 
             crate::dev_log!("[GNOME EXT] Created zip at: {}", zip_path.display());
 
@@ -266,5 +288,66 @@ pub async fn remove_focused_window_extension() -> Result<String, String> {
     #[cfg(not(target_os = "linux"))]
     {
         Err("GNOME extensions are only available on Linux".to_string())
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::write_extension_zip;
+    use std::io::Read;
+
+    /// The archive GNOME receives must hold both files, under exactly these
+    /// names and byte for byte. Remove either `start_file` call and this fails.
+    #[test]
+    fn the_archive_holds_both_files_unchanged() {
+        let dir = std::env::temp_dir().join(format!("karaoketyper-ziptest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let zip_path = dir.join("extension.zip");
+
+        let js = "// accents: é à ü, and a brace }\nlet x = 1;\n";
+        let meta = r#"{"uuid":"focused-window-dbus@karaoketyper","name":"Focused Window"}"#;
+
+        write_extension_zip(&zip_path, js, meta).expect("writing the archive");
+
+        let file = std::fs::File::open(&zip_path).expect("reopening the archive");
+        let mut archive = zip::ZipArchive::new(file).expect("the archive is readable");
+
+        // zip 9 returns each entry name as `Result<Cow<str>, ZipError>` — a
+        // name that is not valid UTF-8 is an error rather than a lossy string.
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| {
+                archive
+                    .by_index(i)
+                    .expect("entry is readable")
+                    .name()
+                    .expect("entry name is valid UTF-8")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(names.len(), 2, "exactly two entries, got {:?}", names);
+        assert!(names.contains(&"extension.js".to_string()), "{:?}", names);
+        assert!(names.contains(&"metadata.json".to_string()), "{:?}", names);
+
+        for (name, expected) in [("extension.js", js), ("metadata.json", meta)] {
+            let mut entry = archive.by_name(name).expect(name);
+            let mut got = String::new();
+            entry.read_to_string(&mut got).expect("reading the entry");
+            assert_eq!(got, expected, "{} came back altered", name);
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A path that cannot be created has to surface as an error rather than
+    /// leaving the caller to install an archive that was never written.
+    #[test]
+    fn an_unwritable_path_is_reported() {
+        let err = write_extension_zip(
+            std::path::Path::new("/proc/self/definitely-not-writable/x.zip"),
+            "js",
+            "{}",
+        )
+        .expect_err("writing under /proc must fail");
+        assert!(err.contains("Failed to create zip"), "{}", err);
     }
 }

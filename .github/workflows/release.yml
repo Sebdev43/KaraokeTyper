@@ -188,21 +188,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # The version is resolved at build time instead of being pinned, because a
+      # pin does not survive on this channel: LunarG deletes the installer of an
+      # older SDK from sdk.lunarg.com, and the 1.3.290.0 this step used to name
+      # started returning 404 between the 1.8.0 and 1.9.0 releases, failing the
+      # job on a URL that had worked for months. The SDK only supplies the
+      # headers, the loader and glslc for building ggml's Vulkan backend, and a
+      # newer SDK builds an older application, so following the current version
+      # is the behaviour that keeps working. The download is checked rather than
+      # assumed: a 404 would otherwise hand a few bytes of HTML to the installer.
       - name: Install Vulkan SDK
         shell: pwsh
         run: |
-          $version = "1.3.290.0"
+          $ErrorActionPreference = "Stop"
+          $version = (Invoke-WebRequest -Uri "https://vulkan.lunarg.com/sdk/latest/windows.txt" -UseBasicParsing).Content.Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+\.\d+$') {
+            throw "Unexpected Vulkan SDK version from LunarG: '$version'"
+          }
+          Write-Host "Vulkan SDK $version"
+
           $installerUrl = "https://sdk.lunarg.com/sdk/download/$version/windows/VulkanSDK-$version-Installer.exe"
           $installerPath = "$env:TEMP\VulkanSDK-$version-Installer.exe"
-
-          Write-Host "Downloading Vulkan SDK $version..."
           Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+          if ((Get-Item $installerPath).Length -lt 1MB) {
+            throw "Vulkan SDK installer is too small to be real: $installerUrl"
+          }
 
-          Write-Host "Installing Vulkan SDK..."
-          Start-Process -FilePath $installerPath -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait -NoNewWindow
+          Write-Host "Installing..."
+          $p = Start-Process -FilePath $installerPath -ArgumentList "--accept-licenses --default-answer --confirm-command install" -Wait -NoNewWindow -PassThru
+          if ($p.ExitCode -ne 0) { throw "Vulkan SDK installer exited with $($p.ExitCode)" }
 
-          # Set environment variables
           $sdkPath = "C:\VulkanSDK\$version"
+          if (-not (Test-Path $sdkPath)) { throw "Vulkan SDK is not at $sdkPath after install" }
           echo "VULKAN_SDK=$sdkPath" >> $env:GITHUB_ENV
           echo "$sdkPath\Bin" >> $env:GITHUB_PATH
 
@@ -281,10 +298,22 @@ jobs:
           # the custom icon positions, not the installer.
           # tauri-apps/tauri-action#1003, #1091
           TAURI_BUNDLER_DMG_IGNORE_CI: false
-          MACOSX_DEPLOYMENT_TARGET: '10.15'
-          CMAKE_OSX_DEPLOYMENT_TARGET: '10.15'
-          CFLAGS: '-mmacosx-version-min=10.15'
-          CXXFLAGS: '-mmacosx-version-min=10.15'
+          # 11.0, and set in one place only.
+          #
+          # ggml reaches for std::filesystem, which libc++ marks unavailable
+          # below macOS 10.15, and the first 1.9.0 build failed on exactly that.
+          # The cause was not the number but the number of places: CFLAGS and
+          # CXXFLAGS appended `-mmacosx-version-min` after cc-rs had already put
+          # its own default on the command line, leaving two contradictory values
+          # per compile and the lower one in effect. MACOSX_DEPLOYMENT_TARGET is
+          # the single variable cc-rs, cmake and clang all read, so it is the
+          # only one set here.
+          #
+          # 11.0 rather than 10.15 because this job builds for Apple Silicon only
+          # (the Intel runner was dropped above): 11.0 is the first macOS that
+          # runs on that hardware, so a lower target describes a machine that
+          # could never install the result.
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: --config src-tauri/tauri.macos.conf.json --features gpu-metal
@@ -308,8 +337,13 @@ jobs:
           cat latest.json
           gh release upload "v${VERSION}" latest.json --clobber --repo "$GITHUB_REPOSITORY"
 
+  # Every platform, not any of them. The 1.9.0 tag published itself with Linux
+  # binaries alone because this condition accepted a single success: the two other
+  # jobs had failed, and the release went out anyway — with a latest.json offering
+  # Windows and macOS users an update that did not exist. A partial release is a
+  # deliberate act, not a default, so a failed platform now leaves the release in
+  # the draft the previous job created, ready to be published by hand or rebuilt.
   publish-release:
-    if: always() && needs.create-release.result == 'success' && (needs.build-linux.result == 'success' || needs.build-windows.result == 'success' || needs.build-macos.result == 'success')
     needs: [create-release, build-linux, build-windows, build-macos, generate-updater-manifest]
     runs-on: ubuntu-latest
     steps:

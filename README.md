@@ -147,7 +147,7 @@ msiexec /i karaoketyper_*_x64_en-US.msi
 
 ### Install on macOS
 
-1. Open `karaoketyper_*_aarch64.dmg` (Apple Silicon) or `karaoketyper_*_x64.dmg` (Intel)
+1. Open `karaoketyper_*_aarch64.dmg` — **Apple Silicon only**, macOS 11 or later. No Intel build is published.
 2. Drag **KaraokeTyper** to the **Applications** folder
 3. On first launch: Right-click → Open (to bypass Gatekeeper)
 
@@ -421,7 +421,7 @@ msiexec /i karaoketyper_*_x64_en-US.msi
 
 ### Installer sur macOS
 
-1. Ouvrez `karaoketyper_*_aarch64.dmg` (Apple Silicon) ou `karaoketyper_*_x64.dmg` (Intel)
+1. Ouvrez `karaoketyper_*_aarch64.dmg` — **Apple Silicon uniquement**, macOS 11 ou plus récent. Aucune version Intel n'est publiée.
 2. Glissez **KaraokeTyper** vers le dossier **Applications**
 3. Au premier lancement : Clic droit → Ouvrir (pour contourner Gatekeeper)
 

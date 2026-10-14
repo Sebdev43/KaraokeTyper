@@ -12,8 +12,12 @@ on:
   # branch protection could never be satisfied.
   pull_request:
     branches: [master, main, dev]
+  # Not `dev` here. Both branches are protected, so the only thing that reaches
+  # them is a merge of a pull request whose checks have just run — adding `dev`
+  # to this list ran every job twice for each change, once on the merge into
+  # `dev` and once on the pull request from `dev` to `master`.
   push:
-    branches: [master, main, dev]
+    branches: [master, main]
   # Weekly, so upstream drift in the model catalogue is noticed even during a quiet
   # period — nobody opens a pull request to discover that HuggingFace re-uploaded a
   # model. Also catches dependency rot in the Rust job for free.

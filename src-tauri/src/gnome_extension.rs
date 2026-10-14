@@ -312,7 +312,18 @@ mod tests {
         let file = std::fs::File::open(&zip_path).expect("reopening the archive");
         let mut archive = zip::ZipArchive::new(file).expect("the archive is readable");
 
-        let names: Vec<String> = archive.file_names().map(str::to_string).collect();
+        // zip 9 returns each entry name as `Result<Cow<str>, ZipError>` — a
+        // name that is not valid UTF-8 is an error rather than a lossy string.
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| {
+                archive
+                    .by_index(i)
+                    .expect("entry is readable")
+                    .name()
+                    .expect("entry name is valid UTF-8")
+                    .to_string()
+            })
+            .collect();
         assert_eq!(names.len(), 2, "exactly two entries, got {:?}", names);
         assert!(names.contains(&"extension.js".to_string()), "{:?}", names);
         assert!(names.contains(&"metadata.json".to_string()), "{:?}", names);

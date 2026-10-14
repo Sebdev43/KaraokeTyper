@@ -27,28 +27,30 @@ if [[ "$visibility" != "PUBLIC" ]]; then
     exit 1
 fi
 
+# The payload is built by jq and sent as a JSON body. `gh api -f` sends every
+# value as a string, and this endpoint rejects `"true"` where it wants `true`
+# and `""` where it wants `null`, with a 422 that names neither the field nor
+# the branch.
 protect() {
     local branch="$1"
     echo "→ $branch"
 
-    local args=(-X PUT "repos/$REPO/branches/$branch/protection"
-        -H "Accept: application/vnd.github+json"
-        -f "required_status_checks[strict]=true"
-        -f "enforce_admins=true"
-        -F "required_pull_request_reviews[required_approving_review_count]=0"
-        -F "required_pull_request_reviews[dismiss_stale_reviews]=true"
-        -f "restrictions=" # null: no actor allowlist
-        -F "allow_force_pushes=false"
-        -F "allow_deletions=false"
-        -F "required_conversation_resolution=true"
-        -F "required_linear_history=false")
-
-    local check
-    for check in "${CHECKS[@]}"; do
-        args+=(-f "required_status_checks[contexts][]=$check")
-    done
-
-    gh api "${args[@]}" >/dev/null
+    jq -n --argjson contexts "$(printf '%s\n' "${CHECKS[@]}" | jq -R . | jq -s .)" \
+        '{
+            required_status_checks: { strict: true, contexts: $contexts },
+            enforce_admins: true,
+            required_pull_request_reviews: {
+                required_approving_review_count: 0,
+                dismiss_stale_reviews: true
+            },
+            restrictions: null,
+            allow_force_pushes: false,
+            allow_deletions: false,
+            required_conversation_resolution: true,
+            required_linear_history: false
+        }' |
+        gh api -X PUT "repos/$REPO/branches/$branch/protection" \
+            -H "Accept: application/vnd.github+json" --input - >/dev/null
 }
 
 # `master` and `dev` get the same rules: a pull request, green checks, no force

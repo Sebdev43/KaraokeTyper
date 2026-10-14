@@ -6,10 +6,14 @@ name: CI
 # but only on a tag, which is far too late to learn that a test broke.
 
 on:
+  # `dev` as much as `master`: CONTRIBUTING asks contributors to open their pull
+  # request against `dev`, and both branches require these checks to pass. Left
+  # to `master` alone, a pull request against `dev` reported no check at all and
+  # branch protection could never be satisfied.
   pull_request:
-    branches: [master, main]
+    branches: [master, main, dev]
   push:
-    branches: [master, main]
+    branches: [master, main, dev]
   # Weekly, so upstream drift in the model catalogue is noticed even during a quiet
   # period — nobody opens a pull request to discover that HuggingFace re-uploaded a
   # model. Also catches dependency rot in the Rust job for free.

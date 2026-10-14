@@ -106,7 +106,7 @@ rtrb = "0.4"
 # Anti-aliased sample-rate conversion for devices that can't give us 16kHz directly.
 # Kept on 0.16 for its FftFixedIn API: 1.0 renamed it to Fft + FixedSync::Input and
 # moved buffers to audioadapter (resampler.rs rewrite, planned with the cpal 0.18 lot).
-rubato = "0.16"
+rubato = "5.0"
 
 # Optional: Ollama LLM client for text correction. `rustls` instead of its
 # default native-tls, so the `ollama` feature does not pull OpenSSL into the binary.

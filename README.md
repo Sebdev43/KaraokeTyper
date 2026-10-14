@@ -54,6 +54,27 @@ Press `Ctrl+Space` (or Mouse5), speak, release - your words appear instantly in 
 | **Modern UI** | Clean dark theme with real-time status indicators |
 | **System Tray** | Runs quietly in the background |
 
+## Platform support
+
+All three desktop targets are built and published, and dictation works on each
+of them. They are not equal, though, and you should know which half you get.
+**Linux is where KaraokeTyper is designed and used daily**; the rest gets the
+portable features.
+
+| | Linux | Windows | macOS |
+|---|---|---|---|
+| Capture, transcription, models | yes | yes | yes |
+| GPU acceleration | Vulkan | Vulkan | Metal |
+| Keyboard push-to-talk | yes (evdev) | yes | yes |
+| **Mouse-button push-to-talk** | **yes** | no | no |
+| Typing into the focused app | xdotool / wtype / uinput | enigo | enigo |
+| Terminal detection (GNOME extension) | yes | — | — |
+| Packages | `.deb`, `.rpm`, `.AppImage` | `.msi`, `.exe` | `.dmg` (Apple Silicon) |
+
+The one difference you will actually notice: a shortcut bound to a mouse button
+only fires on Linux, where the app reads input events directly. Everywhere else,
+use a keyboard shortcut.
+
 ## Upgrading to 1.9.0
 
 Whisper models moved to the GGUF format, and the file installed by an earlier
@@ -289,6 +310,27 @@ Appuyez sur `Ctrl+Espace` (ou Mouse5), parlez, relâchez - vos mots apparaissent
 | **Support souris gaming** | Configurez Mouse4, Mouse5 ou n'importe quel bouton comme raccourci |
 | **Interface moderne** | Thème sombre avec indicateurs de statut en temps réel |
 | **Barre système** | Fonctionne discrètement en arrière-plan |
+
+## Prise en charge des plateformes
+
+Les trois systèmes sont construits et publiés, et la dictée fonctionne sur
+chacun. Ils ne sont pas équivalents pour autant, et autant que vous le sachiez
+avant d'installer. **Linux est l'environnement de conception et d'usage
+quotidien** ; les deux autres reçoivent les fonctions portables.
+
+| | Linux | Windows | macOS |
+|---|---|---|---|
+| Capture, transcription, modèles | oui | oui | oui |
+| Accélération GPU | Vulkan | Vulkan | Metal |
+| Push-to-talk clavier | oui (evdev) | oui | oui |
+| **Push-to-talk bouton de souris** | **oui** | non | non |
+| Frappe dans l'application active | xdotool / wtype / uinput | enigo | enigo |
+| Détection des terminaux (extension GNOME) | oui | — | — |
+| Paquets | `.deb`, `.rpm`, `.AppImage` | `.msi`, `.exe` | `.dmg` (Apple Silicon) |
+
+La seule différence que vous rencontrerez vraiment : un raccourci assigné à un
+bouton de souris ne déclenche que sous Linux, où l'application lit directement
+les événements d'entrée. Ailleurs, utilisez un raccourci clavier.
 
 ## Mise à jour vers la 1.9.0
 

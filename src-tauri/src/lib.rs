@@ -1,3 +1,28 @@
+//! KaraokeTyper — offline push-to-talk dictation.
+//!
+//! # Platform support
+//!
+//! The three desktop targets are built and published, but they are not equal
+//! and pretending otherwise would mislead whoever reads this next. Linux is
+//! where the product is designed and tested daily; Windows and macOS get the
+//! portable half of every feature, and the table says which half.
+//!
+//! | | Linux | Windows | macOS |
+//! |---|---|---|---|
+//! | Capture, transcription, models | yes | yes | yes |
+//! | GPU acceleration | Vulkan | Vulkan | Metal |
+//! | Keyboard push-to-talk | evdev (works with any window focused) | rdev | rdev |
+//! | **Mouse-button** push-to-talk | yes (evdev reads `BTN_*`) | **no** | **no** |
+//! | Typing into the focused app | xdotool / wtype / uinput | enigo | enigo |
+//! | Terminal detection (GNOME extension) | yes | — | — |
+//! | Published artefacts | .deb, .rpm, .AppImage | .msi, .exe | .dmg (Apple Silicon) |
+//!
+//! Mouse push-to-talk is the one asymmetry a user actually runs into: `rdev`
+//! only reports keys here, so a `Mouse5` shortcut silently never fires off
+//! Linux. Anything else platform-specific lives behind `cfg(target_os = ...)`
+//! and falls back rather than failing — see `keyboard_listener`, `output`,
+//! `audio_devices` and `gnome_extension`.
+
 #[macro_use]
 mod logging;
 

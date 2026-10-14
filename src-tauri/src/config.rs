@@ -3,6 +3,7 @@ use specta::Type;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::i18n::UiLanguage;
 use crate::stt::{EngineType, HybridPolicy};
 
 /// How the shortcut's press and release drive a recording.
@@ -130,6 +131,15 @@ pub struct AppConfig {
     /// shorter is a tap that locks recording on.
     #[serde(default = "default_hold_threshold_ms")]
     pub hold_threshold_ms: u32,
+    /// Language of the interface — the windows, the tray and the messages the
+    /// backend writes. Independent of `language`, which is what the speech
+    /// engine transcribes: dictating in French from an English interface is a
+    /// normal combination, not a mistake to prevent.
+    ///
+    /// Absent from an older settings file, so the `Default` (the system locale)
+    /// decides on first run after the upgrade.
+    #[serde(default)]
+    pub ui_language: UiLanguage,
 }
 
 /// Handy's value: comfortably longer than a tap, shorter than the shortest dictation.
@@ -218,6 +228,7 @@ impl Default for AppConfig {
             hybrid_threshold_secs: DEFAULT_HYBRID_THRESHOLD_SECS,
             shortcut_activation: ShortcutActivation::default(),
             hold_threshold_ms: default_hold_threshold_ms(),
+            ui_language: UiLanguage::default(),
         }
     }
 }
@@ -481,6 +492,7 @@ mod tests {
             hybrid_threshold_secs: 45,
             shortcut_activation: ShortcutActivation::default(),
             hold_threshold_ms: default_hold_threshold_ms(),
+            ui_language: UiLanguage::En,
         };
 
         let json = serde_json::to_string(&config).unwrap();

@@ -121,8 +121,8 @@ pub async fn install_focused_window_extension(app_handle: AppHandle) -> Result<S
             let temp_dir = std::env::temp_dir();
             let zip_path = temp_dir.join("focused-window-dbus@karaoketyper.zip");
 
-            let zip_file = fs::File::create(&zip_path)
-                .map_err(|e| format!("Failed to create zip: {}", e))?;
+            let zip_file =
+                fs::File::create(&zip_path).map_err(|e| format!("Failed to create zip: {}", e))?;
             let mut zip = zip::ZipWriter::new(zip_file);
 
             let options = zip::write::SimpleFileOptions::default()
@@ -138,7 +138,8 @@ pub async fn install_focused_window_extension(app_handle: AppHandle) -> Result<S
             zip.write_all(metadata_json.as_bytes())
                 .map_err(|e| format!("Failed to write metadata.json: {}", e))?;
 
-            zip.finish().map_err(|e| format!("Failed to finish zip: {}", e))?;
+            zip.finish()
+                .map_err(|e| format!("Failed to finish zip: {}", e))?;
 
             crate::dev_log!("[GNOME EXT] Created zip at: {}", zip_path.display());
 
@@ -206,14 +207,14 @@ pub async fn install_focused_window_extension(app_handle: AppHandle) -> Result<S
                     .spawn();
 
                 match logout_result {
-                    Ok(_) => Ok("Extension installée et activée !\n\nDéconnexion en cours...".to_string()),
+                    Ok(_) => Ok(crate::i18n::msg::gnome_installed_logging_out().to_string()),
                     Err(e) => {
                         crate::dev_log!("[GNOME EXT] Logout failed: {}", e);
-                        Ok("Extension installée et activée !\n\nVeuillez vous déconnecter manuellement pour activer l'extension.".to_string())
+                        Ok(crate::i18n::msg::gnome_installed_log_out_manually().to_string())
                     }
                 }
             } else {
-                Ok("Extension installée !\n\nDéconnectez-vous et reconnectez-vous pour l'activer.".to_string())
+                Ok(crate::i18n::msg::gnome_installed_relogin().to_string())
             }
         })
         .await

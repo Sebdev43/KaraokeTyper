@@ -55,7 +55,11 @@ struct Catalog {
 struct CatalogModel {
     name: String,
     display_name: String,
+    /// French and English blurbs. Both are required: the UI shows one or the
+    /// other with no fallback, so a missing one would render as an empty line
+    /// rather than as something a reader can act on.
     description: String,
+    description_en: String,
     engine_type: EngineType,
     is_directory: bool,
     size_mb: u32,
@@ -229,6 +233,7 @@ fn parse(json: &str) -> Result<Vec<ModelInfo>, String> {
             url: m.url,
             installed: false,
             description: m.description,
+            description_en: m.description_en,
             engine_type: m.engine_type,
             is_directory: m.is_directory,
             supported_languages,
@@ -410,7 +415,7 @@ mod tests {
         assert!(err.contains("no models"), "{err}");
     }
 
-    /// Every model carries its French description and its scores, because the UI sorts
+    /// Every model carries both descriptions and its scores, because the UI sorts
     /// and labels from them — an extraction that dropped them would look fine in tests
     /// that only check hashes.
     #[test]
@@ -418,6 +423,11 @@ mod tests {
         for m in parse(CATALOG_JSON).unwrap() {
             assert!(!m.display_name.is_empty(), "{} has no display name", m.name);
             assert!(!m.description.is_empty(), "{} has no description", m.name);
+            assert!(
+                !m.description_en.is_empty(),
+                "{} has no English description",
+                m.name
+            );
             assert!(m.size_mb > 0, "{} has no size", m.name);
         }
     }
@@ -434,7 +444,7 @@ mod tests {
 
     fn single(extra: &str) -> String {
         minimal(&format!(
-            r#"{{"name":"m","display_name":"M","description":"d","engine_type":"whisper",
+            r#"{{"name":"m","display_name":"M","description":"d","description_en":"d en","engine_type":"whisper",
                  "is_directory":false,"size_mb":1,"languages":null,"is_recommended":false,
                  "accuracy_score":0.5,"speed_score":0.5,"coming_soon":false,
                  "url":"https://huggingface.co/a/b/resolve/c/f.bin",
@@ -444,7 +454,7 @@ mod tests {
 
     fn bundle(files: &str) -> String {
         minimal(&format!(
-            r#"{{"name":"m","display_name":"M","description":"d","engine_type":"parakeet",
+            r#"{{"name":"m","display_name":"M","description":"d","description_en":"d en","engine_type":"parakeet",
                  "is_directory":true,"size_mb":1,"languages":null,"is_recommended":false,
                  "accuracy_score":0.5,"speed_score":0.5,"coming_soon":false,"files":[{files}]}}"#
         ))

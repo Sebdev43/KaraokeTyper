@@ -49,10 +49,7 @@ fn claim_download_slot(name: &str) -> Result<(), String> {
         .map_err(|e| format!("IN_PROGRESS lock poisoned: {}", e))?;
     let set = guard.get_or_insert_with(HashSet::new);
     if !set.insert(name.to_string()) {
-        return Err(format!(
-            "Téléchargement déjà en cours pour '{}' — patientez.",
-            name
-        ));
+        return Err(crate::i18n::msg::download_already_running(name));
     }
     Ok(())
 }
@@ -450,6 +447,10 @@ pub struct ModelInfo {
     pub url: String,
     pub installed: bool,
     pub description: String,
+    /// The same blurb in English. The frontend picks between the two by the
+    /// interface language; nothing in the backend reads either.
+    #[serde(default)]
+    pub description_en: String,
     /// Engine that consumes this model.
     #[serde(default)]
     pub engine_type: EngineType,
@@ -856,7 +857,7 @@ pub async fn download_model(app_handle: AppHandle, model_name: String) -> Result
                 status: "cancelled".to_string(),
             },
         );
-        return Err(format!("Téléchargement de '{}' annulé.", model_name));
+        return Err(crate::i18n::msg::download_cancelled(&model_name));
     }
 
     if !completed {
@@ -1015,7 +1016,7 @@ async fn download_and_verify_files(
         loop {
             if cancel.is_cancelled() {
                 let _ = tokio::fs::remove_dir_all(&staging_dir).await;
-                return Err(format!("Téléchargement de '{}' annulé.", model_name));
+                return Err(crate::i18n::msg::download_cancelled(&model_name));
             }
             let chunk = match next_chunk_or_stall(&mut stream, &mf.filename).await {
                 Ok(Some(c)) => c,
@@ -1061,9 +1062,10 @@ async fn download_and_verify_files(
 
         let actual_sha256 = hex::encode(hasher.finalize());
         if !actual_sha256.eq_ignore_ascii_case(&mf.sha256) {
-            return Err(format!(
-                "Intégrité: SHA-256 de {} ne correspond pas. Attendu {}, obtenu {}. Installation refusée.",
-                mf.filename, mf.sha256, actual_sha256
+            return Err(crate::i18n::msg::integrity_mismatch(
+                &mf.filename,
+                &mf.sha256,
+                &actual_sha256,
             ));
         }
         crate::dev_log!("[MODEL] ✔ SHA-256 OK for {}", mf.filename);
@@ -1427,16 +1429,14 @@ pub fn list_orphaned_models() -> Vec<OrphanedModel> {
 #[specta::specta]
 pub async fn delete_orphaned_model(name: String) -> Result<(), String> {
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(format!("nom de fichier refusé : {name}"));
+        return Err(crate::i18n::msg::filename_refused(&name));
     }
     if claimed_entry_names().contains(&name) {
-        return Err(format!(
-            "{name} est un modèle du catalogue, pas un fichier orphelin"
-        ));
+        return Err(crate::i18n::msg::not_an_orphan(&name));
     }
     let path = get_models_dir().join(&name);
     if !path.exists() {
-        return Err(format!("{name} n'existe plus"));
+        return Err(crate::i18n::msg::file_gone(&name));
     }
     let removed = if path.is_dir() {
         tokio::fs::remove_dir_all(&path).await

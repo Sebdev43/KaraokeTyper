@@ -36,6 +36,7 @@ mod config;
 mod glibc_compat;
 mod gnome_extension;
 mod gpu;
+mod i18n;
 mod keyboard_listener;
 mod memory;
 mod model_downloader;
@@ -179,6 +180,13 @@ impl AppState {
         .await
         .map_err(|e| format!("Transcription task panicked: {}", e))?
     }
+}
+
+/// The two tray entries, kept so their text can follow the interface language
+/// without rebuilding the tray.
+struct TrayMenuItems {
+    open_settings: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
 }
 
 impl Default for AppState {
@@ -1123,6 +1131,7 @@ async fn save_settings(
         old_model_path,
         old_use_gpu,
         old_backend,
+        old_ui_language,
     ) = {
         let config = state.config.lock().unwrap();
         (
@@ -1133,6 +1142,7 @@ async fn save_settings(
             config.model_path.clone(),
             config.use_gpu,
             config.stt_backend,
+            config.ui_language,
         )
     };
 
@@ -1141,6 +1151,19 @@ async fn save_settings(
     {
         let mut config = state.config.lock().unwrap();
         *config = new_config.clone();
+    }
+
+    // The interface language drives three things that each hold their own copy of
+    // it: the backend's own messages, the tray (built once at startup), and the
+    // windows, which are told rather than polled so an open Settings window and
+    // the overlay switch together.
+    if old_ui_language != new_config.ui_language {
+        i18n::set_current(new_config.ui_language);
+        if let Some(tray) = app_handle.try_state::<TrayMenuItems>() {
+            let _ = tray.open_settings.set_text(i18n::msg::tray_settings());
+            let _ = tray.quit.set_text(i18n::msg::tray_quit());
+        }
+        let _ = app_handle.emit("ui-language-changed", new_config.ui_language.code());
     }
 
     if old_shortcut != new_config.shortcut {
@@ -1829,6 +1852,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .setup(|app| {
+            // Before anything builds a label or reports an error: the backend's own
+            // strings are picked from a process-wide language, and the stored
+            // setting has to replace the compiled-in default first.
+            i18n::set_current(app.state::<AppState>().config.lock().unwrap().ui_language);
+
             // Create overlay window programmatically (like Handy)
             // Not in tauri.conf.json — gives full control over window properties
             create_overlay_window(app.handle());
@@ -1847,10 +1875,25 @@ pub fn run() {
                 }
             });
 
-            let open_settings = MenuItem::with_id(app, "open_settings", "Settings", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let open_settings = MenuItem::with_id(
+                app,
+                "open_settings",
+                i18n::msg::tray_settings(),
+                true,
+                None::<&str>,
+            )?;
+            let quit_item =
+                MenuItem::with_id(app, "quit", i18n::msg::tray_quit(), true, None::<&str>)?;
 
             let menu = Menu::with_items(app, &[&open_settings, &quit_item])?;
+
+            // Kept so switching language in Settings relabels the tray immediately:
+            // the menu is built once at startup and never rebuilt, so without these
+            // handles the tray would stay in the language of the last restart.
+            app.manage(TrayMenuItems {
+                open_settings: open_settings.clone(),
+                quit: quit_item.clone(),
+            });
 
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(Image::from_bytes(include_bytes!("../icons/icon.png"))?)

@@ -337,12 +337,15 @@ jobs:
           cat latest.json
           gh release upload "v${VERSION}" latest.json --clobber --repo "$GITHUB_REPOSITORY"
 
-  # Every platform, not any of them. The 1.9.0 tag published itself with Linux
-  # binaries alone because this condition accepted a single success: the two other
-  # jobs had failed, and the release went out anyway — with a latest.json offering
-  # Windows and macOS users an update that did not exist. A partial release is a
-  # deliberate act, not a default, so a failed platform now leaves the release in
-  # the draft the previous job created, ready to be published by hand or rebuilt.
+  # Every platform, not any of them. The first 1.9.0 tag published itself with
+  # Linux binaries alone: this job's condition accepted a single success, so the
+  # Windows and macOS failures did not stop it. What went out was a release
+  # announcing a version that two thirds of its users could not install — the
+  # manifest itself was honest, since generate-latest-json.sh only lists a
+  # platform whose bundle and signature both exist. A partial release is a
+  # deliberate act, not the default when a build breaks, so a failed platform now
+  # leaves the release as the draft create-release made, to publish by hand or
+  # rebuild from a new tag.
   publish-release:
     needs: [create-release, build-linux, build-windows, build-macos, generate-updater-manifest]
     runs-on: ubuntu-latest

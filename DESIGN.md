@@ -138,7 +138,7 @@ components:
 
 KaraokeTyper se règle comme une console d'ingénieur du son : des surfaces mates et sombres, un seul voyant d'accent, et chaque réglage étiqueté pour être lu d'un coup d'œil pendant qu'on fait autre chose. L'interface existe pour choisir un micro, un raccourci, un moteur, puis disparaître ; l'overlay d'enregistrement est le seul élément que l'utilisateur voit au quotidien, et il doit informer sans réclamer d'attention. La densité est celle d'un outil de pro : compacte mais respirée, jamais tassée.
 
-Le système rejette explicitement l'« app IA » tape-à-l'œil (dégradés violets, verre décoratif, badges ✨, copy marketing), le panneau de configuration brut sans hiérarchie ni aide, et la navigation arc-en-ciel qui colore chaque section différemment sans porter d'information. Le thème est sombre uniquement, en français.
+Le système rejette explicitement l'« app IA » tape-à-l'œil (dégradés violets, verre décoratif, badges ✨, copy marketing), le panneau de configuration brut sans hiérarchie ni aide, et la navigation arc-en-ciel qui colore chaque section différemment sans porter d'information. Le thème est sombre uniquement. L'interface existe en français et en anglais : le même système, deux catalogues de libellés.
 
 **Key Characteristics:**
 - Fond quasi noir tonal (#121212 → #1a1a1a → #242424), pas de dégradé, pas de texture.
@@ -260,7 +260,7 @@ La pilule d'overlay : fond glass black, bord glass edge, 14 px de rayon, 10 × 1
 - **Do** tenir la hiérarchie à trois tailles (12 / 14 / 18 px) et deux graisses (400 / 500-600).
 - **Do** rendre chaque état visible **et** lisible : un badge « Installé » vert n'existe pas, un badge indigo « Installé » oui ; une alerte rouge porte toujours un texte qui dit quoi faire.
 - **Do** garder les contrôles à 36 px de haut, 6 px de rayon, anneau de focus de 3 px ; tout se règle au clavier (Tab, flèches, Home/End).
-- **Do** écrire les libellés en français clair, avec une phrase de *pourquoi* ; les termes techniques (evdev, uinput, GGML, ONNX) ne sont jamais seuls.
+- **Do** écrire les libellés en langue claire — français et anglais, les deux catalogues écrits ensemble — avec une phrase de *pourquoi* ; les termes techniques (evdev, uinput, GGUF, ONNX) ne sont jamais seuls.
 - **Do** respecter `prefers-reduced-motion` : les pulsations de l'overlay et les transitions deviennent statiques.
 
 ### Don't:

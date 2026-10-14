@@ -49,10 +49,27 @@ Press `Ctrl+Space` (or Mouse5), speak, release - your words appear instantly in 
 | **Fast Transcription** | Native ggml inference delivers high-accuracy results in seconds |
 | **Auto-Type** | Text automatically injected into focused application |
 | **Multi-Language** | Support for French, English, German, Spanish, and 95+ languages |
+| **Bilingual Interface** | The app itself reads in English or French, switched live in Settings → Interface |
 | **Multiple Models** | Whisper Tiny/Base/Small/Medium/Large-v3 for quality/speed trade-offs |
 | **Gaming Mouse Support** | Configure Mouse4, Mouse5, or any mouse button as hotkey |
 | **Modern UI** | Clean dark theme with real-time status indicators |
 | **System Tray** | Runs quietly in the background |
+
+## Interface language
+
+The interface ships in **English and French**. Pick one under **Settings →
+Interface**: the three windows, the tray menu and the messages the backend
+writes (downloads, updates, permissions) all switch immediately, with no
+restart. On a first launch the app follows the system locale (`LANG`), and the
+stored setting decides from then on.
+
+This is a separate setting from the **dictation language** under *Speech
+recognition*, which is what the model transcribes — dictating in French from an
+English interface is a normal combination, not a mistake.
+
+Adding a third language is two files: a catalogue under `src/i18n/` typed
+against `fr.ts` (TypeScript refuses a missing key), and one arm per message in
+`src-tauri/src/i18n.rs`.
 
 ## Platform support
 
@@ -306,10 +323,27 @@ Appuyez sur `Ctrl+Espace` (ou Mouse5), parlez, relâchez - vos mots apparaissent
 | **Transcription rapide** | L'inférence ggml native offre des résultats de haute précision en quelques secondes |
 | **Frappe automatique** | Le texte est automatiquement injecté dans l'application active |
 | **Multi-langue** | Support du français, anglais, allemand, espagnol et 95+ langues |
+| **Interface bilingue** | L'application elle-même s'affiche en français ou en anglais, changée à chaud dans Paramètres → Interface |
 | **Plusieurs modèles** | Whisper Tiny/Base/Small/Medium/Large-v3 pour différents compromis qualité/vitesse |
 | **Support souris gaming** | Configurez Mouse4, Mouse5 ou n'importe quel bouton comme raccourci |
 | **Interface moderne** | Thème sombre avec indicateurs de statut en temps réel |
 | **Barre système** | Fonctionne discrètement en arrière-plan |
+
+## Langue de l'interface
+
+L'interface existe en **français et en anglais**. Le choix se fait dans
+**Paramètres → Interface** : les trois fenêtres, le menu de la barre système et
+les messages écrits par le moteur (téléchargements, mises à jour, permissions)
+basculent immédiatement, sans redémarrage. Au premier lancement, l'application
+suit la langue du système (`LANG`) ; ensuite, c'est le réglage qui décide.
+
+C'est un réglage distinct de la **langue dictée**, sous *Reconnaissance
+vocale*, qui est celle que le modèle transcrit — dicter en français depuis une
+interface anglaise est une combinaison normale, pas une erreur.
+
+Ajouter une troisième langue tient en deux fichiers : un catalogue dans
+`src/i18n/` typé d'après `fr.ts` (TypeScript refuse une clé manquante), et une
+branche par message dans `src-tauri/src/i18n.rs`.
 
 ## Prise en charge des plateformes
 

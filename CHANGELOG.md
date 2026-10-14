@@ -5,12 +5,14 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.9.0] - 2026-10-11
+## [1.9.0] - 2026-10-14
 
 **Une action vous est demandée : retéléchargez votre modèle Whisper.** Le moteur lit désormais des fichiers au format GGUF, et celui installé par une version précédente n'est plus lisible. Ouvrez Paramètres → Modèles, relancez le téléchargement : le nouveau fichier est deux à trois fois plus léger. L'ancien reste sur votre disque — l'application vous dit où il se trouve et sa taille, à vous de décider.
 
 ### Ajouté
 
+- **Interface en anglais, et un sélecteur de langue.** Paramètres → Interface choisit entre français et anglais ; le changement est visible immédiatement, sans redémarrage, et s'applique aux trois fenêtres, au menu de la barre système et aux messages écrits par le moteur (téléchargements, mises à jour, permissions). Au premier lancement la langue suit celle du système (`LANG`), ensuite c'est le réglage qui décide. La langue dictée reste un réglage distinct, sous « Reconnaissance vocale » : dicter en français depuis une interface anglaise est une combinaison normale
+- **Fichiers de modèle devenus inutiles** : l'écran Modèles liste ce qui traîne dans le dossier (format précédent, téléchargement interrompu) avec l'espace récupérable, et le supprime sur demande. Rien n'est effacé automatiquement
 - **Whisper Large v3 Turbo** (886 Mo) : presque la précision de Large v3, nettement plus rapide
 - **Repli de température** sur la transcription Whisper. Jusqu'ici, une portion de phrase dont le modèle n'était pas sûr était retranscrite telle quelle, et les mots incertains ressortaient confiants et faux. Elle est maintenant redécodée jusqu'à passer les seuils de confiance. C'est le réglage que l'ancienne bibliothèque n'exposait pas
 

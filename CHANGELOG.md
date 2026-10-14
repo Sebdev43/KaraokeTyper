@@ -75,6 +75,19 @@ Rien ne change pour qui installe un binaire publié.
 - **Micro** : le flux de capture est rebâti après une perte de périphérique (débranchement, dropout) au lieu d'enregistrer du silence jusqu'au redémarrage
 - **Wayland/GNOME** : `wtype` n'est plus tenté sous Mutter (qui ne l'implémente pas), évitant un échec systématique par dictée
 
+## [1.6.0] - 2026-08-07
+
+### Added
+
+- **Catalogue de modèles versionné** (`scripts/catalog.py`) : les empreintes SHA-256 et les URL des modèles sont consignées dans un fichier de données vérifiable, et la CI compare le catalogue à l'amont
+- Portage de plusieurs correctifs du projet [Handy](https://github.com/cjpais/Handy)
+
+### Fixed
+
+- **CI Linux** : `libvulkan-dev` + `glslc` des dépôts de la distribution au lieu du SDK LunarG, dont les anciennes versions disparaissent
+- **Bundling DMG macOS** débloqué
+- Le test de reprise de téléchargement ne dépend plus du temps de réponse TCP
+
 ## [1.5.2] - 2026-06-17
 
 ### Changed
@@ -166,7 +179,7 @@ Rien ne change pour qui installe un binaire publié.
 
 - **Reconfiguration hotkey evdev à chaud**: `reconfigure()` couvre désormais les transitions de classe de device (clavier → souris), ce qui corrige le raccourci qui ne se mettait pas à jour au save_settings quand on passait d'un type d'input à un autre
 
-## [1.3.0] - 2026-03-31
+## [1.3.0] - 2026-04-01
 
 ### Added
 
@@ -190,7 +203,23 @@ Rien ne change pour qui installe un binaire publié.
 - **Overlay focus — paste vers mauvaise fenêtre**: L'overlay est caché immédiatement (pas d'animation 300ms) avant le paste pour que le focus revienne à l'app cible
 - **Terminal detection timing**: La détection terminal se fait APRÈS le clipboard set + délai focus (pas avant), pour détecter la vraie fenêtre cible au lieu de KaraokeTyper
 
-## [1.2.0] - 2026-03-11
+## [1.2.2] - 2026-03-31
+
+### Changed
+
+- **Presse-papier** : `arboard` remplacé par `tauri-plugin-clipboard-manager`, qui s'appuie sur la fenêtre existante au lieu d'ouvrir sa propre connexion au serveur d'affichage
+
+## [1.2.1] - 2026-03-30
+
+### Fixed
+
+- **Claviers AZERTY** : la frappe directe sous X11 passe uniquement par `xdotool`, les autres outils brouillaient les caractères accentués
+- **Modificateurs latchés** : l'overlay est masqué avant le collage, pour rendre le focus à la fenêtre cible
+- **Bureaux distants** : RustDesk et AnyDesk sont reconnus comme sessions distantes et basculent sur la frappe directe, le collage n'y aboutissant pas
+- **Détection de terminal** effectuée après la mise en presse-papier, avec un délai de focus
+- **Overlay** : plus de rémanence pendant la transition
+
+## [1.2.0] - 2026-03-05
 
 ### Changed
 
@@ -204,7 +233,7 @@ Rien ne change pour qui installe un binaire publié.
 - **Bluetooth auto-close**: Le timer BT met correctement `is_open=false` avant d'envoyer Shutdown, évitant un état incohérent
 - **Worker Shutdown bloqué**: `recv_timeout(500ms)` au lieu de `recv()` bloquant — les commandes Shutdown sont traitées même si le device audio ne produit plus de samples
 
-## [1.1.0] - 2026-03-07
+## [1.1.0] - 2026-03-08
 
 ### Added
 
@@ -258,7 +287,7 @@ Rien ne change pour qui installe un binaire publié.
 
 - **Build CI**: Correction du build TypeScript strict (`noUnusedLocals`) pour les bindings auto-générés
 
-## [1.0.7] - 2026-02-28
+## [1.0.7] - 2026-02-20
 
 ### Fixed
 
@@ -267,7 +296,7 @@ Rien ne change pour qui installe un binaire publié.
 - **Ordre des locks**: Séparation des scopes dans save_settings pour éviter les deadlocks
 - **Rechargement à chaud**: Application des changements modèle/langue dans save_settings sans redémarrage
 
-## [1.0.6] - 2026-02-20
+## [1.0.6] - 2026-02-18
 
 ### Fixed
 
@@ -276,7 +305,7 @@ Rien ne change pour qui installe un binaire publié.
 - **UInput singleton**: Prévention de l'accumulation de `/dev/input/eventN`
 - **PTT instantané**: Les périphériques non-BT (ALSA, USB) gardent le stream ouvert (en pause) pour un PTT sans délai
 
-## [1.0.5] - 2026-02-15
+## [1.0.5] - 2026-02-18
 
 ### Fixed
 
@@ -285,13 +314,13 @@ Rien ne change pour qui installe un binaire publié.
 - **Paste terminal VS Code**: Détection du terminal VS Code via `${focusedView}` dans le titre de fenêtre
 - **wl-copy non bloquant**: Utilisation de spawn non-bloquant pour éviter le freeze
 
-## [1.0.4] - 2025-02-11
+## [1.0.4] - 2026-02-11
 
 ### Fixed
 
 - **Select dropdown black rectangle**: Removed Radix UI Portal from Select component to fix WebKitGTK rendering issue on Linux (opaque black box instead of dropdown)
 
-## [1.0.3] - 2025-02-11
+## [1.0.3] - 2026-02-11
 
 ### Fixed
 
@@ -300,7 +329,7 @@ Rien ne change pour qui installe un binaire publié.
 - **Ghostty terminal paste**: Reverse-domain WM_CLASS support (com.mitchellh.ghostty → ghostty)
 - **Terminal detection reliability**: Moved window classification to Rust side (no stale GNOME extension JS cache)
 
-## [1.0.2] - 2025-02-11
+## [1.0.2] - 2026-02-11
 
 ### Changed
 
@@ -320,14 +349,14 @@ Rien ne change pour qui installe un binaire publié.
 - Unused shell scripts (download-model.sh, install-deps.sh)
 - Legacy audio_cli.rs (CLI-based audio capture)
 
-## [1.0.1] - 2025-01-08
+## [1.0.1] - 2026-01-08
 
 ### Fixed
 
 - **Audio Clipping at Start**: Added 200ms silence padding at beginning of audio to prevent first words from being cut off (e.g., "c'est l'" no longer missing)
 - Audio pipeline startup delay (~106ms) compensated with start padding
 
-## [1.0.0] - 2024-12-30
+## [1.0.0] - 2025-12-30
 
 ### Changed
 
@@ -342,7 +371,7 @@ Rien ne change pour qui installe un binaire publié.
 - Cross-platform audio capture via CPAL (ALSA, CoreAudio, WASAPI)
 - 500ms end padding to prevent Whisper from truncating last words
 
-## [0.1.0] - 2024-12-27
+## [0.1.0] - 2026-01-08
 
 ### Added
 
@@ -384,3 +413,30 @@ Rien ne change pour qui installe un binaire publié.
 - No internet connection required for core functionality
 - Audio is processed in memory and never saved to disk
 - Open source - audit the code yourself
+
+[1.9.0]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.8.0...v1.9.0
+[1.8.0]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.7.0...v1.8.0
+[1.7.0]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.5.2...v1.6.0
+[1.5.2]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.5.1...v1.5.2
+[1.5.1]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.3.2...v1.4.0
+[1.3.2]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.3.1...v1.3.2
+[1.3.1]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.2.2...v1.3.0
+[1.2.2]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.2.1...v1.2.2
+[1.2.1]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.0.9...v1.1.0
+[1.0.9]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.0.8...v1.0.9
+[1.0.8]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.0.7...v1.0.8
+[1.0.7]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.0.6...v1.0.7
+[1.0.6]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.0.5...v1.0.6
+[1.0.5]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.0.4...v1.0.5
+[1.0.4]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.0.3...v1.0.4
+[1.0.3]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.0.2...v1.0.3
+[1.0.2]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/Sebdev43/KaraokeTyper/compare/v1.0.0...v1.0.1
+[1.0.0]: https://github.com/Sebdev43/KaraokeTyper/compare/v0.1.0...v1.0.0
+[0.1.0]: https://github.com/Sebdev43/KaraokeTyper/releases/tag/v0.1.0

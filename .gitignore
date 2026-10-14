@@ -35,9 +35,11 @@ reference-nerd-dictation/
 # Models (downloaded at runtime)
 src-tauri/models/
 __pycache__/
+.mypy_cache/
 
 # Claude Code
 CLAUDE.md
 .claude/
 .agents/
+.impeccable/
 skills-lock.json

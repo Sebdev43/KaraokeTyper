@@ -95,7 +95,7 @@ transcribe-rs = { version = "=0.3.11", default-features = false, features = ["on
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
 
 # Audio playback for feedback sounds
-rodio = "0.20"
+rodio = "0.22"
 
 # Audio capture (cross-platform: ALSA on Linux via pipewire-alsa, CoreAudio on macOS, WASAPI on Windows)
 cpal = "0.15"

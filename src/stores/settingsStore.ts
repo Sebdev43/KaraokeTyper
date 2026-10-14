@@ -10,6 +10,7 @@ import type {
   OllamaStatus,
   PasteMethod,
   ShortcutActivation,
+  UiLanguage,
 } from "@/bindings";
 
 interface SettingsState {
@@ -68,9 +69,15 @@ interface SettingsState {
   ollamaModel: string;
   ollamaStatus: OllamaStatus | null;
 
+  // Interface language ("Fr" / "En", as the backend spells it)
+  uiLanguage: UiLanguage;
+
   // UI states
   isRefreshing: boolean;
   saveStatus: string;
+  // Whether `saveStatus` reports a failure. A boolean rather than a prefix test
+  // on the text, which only worked while every message was French.
+  saveStatusIsError: boolean;
 
   // Actions
   setAudioDevices: (devices: AudioDevice[]) => void;
@@ -103,8 +110,9 @@ interface SettingsState {
   setOllamaUrl: (url: string) => void;
   setOllamaModel: (model: string) => void;
   setOllamaStatus: (status: OllamaStatus | null) => void;
+  setUiLanguage: (language: UiLanguage) => void;
   setIsRefreshing: (refreshing: boolean) => void;
-  setSaveStatus: (status: string) => void;
+  setSaveStatus: (status: string, isError?: boolean) => void;
   reset: () => void;
 }
 
@@ -113,7 +121,7 @@ const initialState = {
   selectedDevice: 0,
   selectedDeviceName: "",
   sttBackend: "whisper" as EngineType,
-  model: "ggml-small",
+  model: "whisper-small",
   language: "fr",
   hybridEngineEnabled: false,
   hybridThresholdSecs: 20,
@@ -140,8 +148,10 @@ const initialState = {
   ollamaUrl: "http://localhost:11434",
   ollamaModel: "mistral",
   ollamaStatus: null,
+  uiLanguage: "En" as UiLanguage,
   isRefreshing: false,
   saveStatus: "",
+  saveStatusIsError: false,
 };
 
 export const useSettingsStore = create<SettingsState>()(
@@ -202,7 +212,10 @@ export const useSettingsStore = create<SettingsState>()(
 
       setIsRefreshing: (refreshing) => set({ isRefreshing: refreshing }),
 
-      setSaveStatus: (status) => set({ saveStatus: status }),
+      setUiLanguage: (language) => set({ uiLanguage: language }),
+
+      setSaveStatus: (status, isError = false) =>
+        set({ saveStatus: status, saveStatusIsError: isError }),
 
       reset: () => set(initialState),
     }),
@@ -229,6 +242,7 @@ export const useSettingsStore = create<SettingsState>()(
         ollamaEnabled: state.ollamaEnabled,
         ollamaUrl: state.ollamaUrl,
         ollamaModel: state.ollamaModel,
+        uiLanguage: state.uiLanguage,
       }),
     },
   ),

@@ -2,6 +2,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useCallback, useState } from "react";
 import { commands } from "@/bindings";
 import { Button } from "@/components/ui/button";
+import { useT } from "@/i18n";
 
 type CheckStatus =
   | { kind: "idle" }
@@ -26,6 +27,7 @@ type CheckStatus =
  * Anything else → "Open release page" fallback in the browser.
  */
 export function UpdateChecker() {
+  const t = useT();
   const [status, setStatus] = useState<CheckStatus>({ kind: "idle" });
 
   const checkUpdates = useCallback(async () => {
@@ -86,10 +88,8 @@ export function UpdateChecker() {
     <div className="flex flex-col gap-3 rounded-lg border p-4">
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-sm font-semibold">Mises à jour</h3>
-          <p className="text-xs text-muted-foreground">
-            Rechercher une nouvelle version sur GitHub
-          </p>
+          <h3 className="text-sm font-semibold">{t.updates.title}</h3>
+          <p className="text-xs text-muted-foreground">{t.updates.subtitle}</p>
         </div>
         <Button
           size="sm"
@@ -97,28 +97,27 @@ export function UpdateChecker() {
           onClick={checkUpdates}
           disabled={status.kind === "checking" || status.kind === "installing"}
         >
-          {status.kind === "checking" ? "Vérification…" : "Rechercher"}
+          {status.kind === "checking" ? t.updates.checking : t.updates.check}
         </Button>
       </div>
 
       {status.kind === "up-to-date" && (
-        <p className="text-sm text-emerald-500">✓ Vous êtes à jour.</p>
+        <p className="text-sm text-emerald-500">{t.updates.upToDate}</p>
       )}
 
-      {status.kind === "error" && <p className="text-sm text-red-500">Erreur : {status.message}</p>}
+      {status.kind === "error" && (
+        <p className="text-sm text-red-500">{t.updates.error(status.message)}</p>
+      )}
 
       {status.kind === "installing" && (
-        <p className="text-sm text-muted-foreground">
-          Installation en cours… (un prompt de mot de passe peut apparaître pour les installations
-          .deb)
-        </p>
+        <p className="text-sm text-muted-foreground">{t.updates.installing}</p>
       )}
 
       {status.kind === "available" && (
         <div className="flex flex-col gap-2 border-t pt-3">
           <p className="text-sm">
-            <span className="font-semibold">v{status.latestVersion}</span> disponible (actuel : v
-            {status.currentVersion})
+            <span className="font-semibold">v{status.latestVersion}</span>
+            {t.updates.availableSuffix(status.currentVersion)}
           </p>
           {status.releaseNotes && (
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-muted p-2 text-xs">
@@ -128,11 +127,11 @@ export function UpdateChecker() {
           <div className="flex gap-2">
             {status.canAutoInstall && (
               <Button size="sm" onClick={installUpdate}>
-                Installer et redémarrer
+                {t.updates.installAndRestart}
               </Button>
             )}
             <Button size="sm" variant="outline" onClick={() => openReleasePage(status.releaseUrl)}>
-              Voir la page GitHub
+              {t.updates.openGithub}
             </Button>
           </div>
         </div>

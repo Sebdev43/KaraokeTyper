@@ -330,17 +330,18 @@ pub async fn install_update_cmd(app: tauri::AppHandle) -> Result<(), String> {
 ///   127 — authorization could not be obtained (e.g. PolicyKit down)
 #[cfg(target_os = "linux")]
 fn interpret_pkexec_failure(code: Option<i32>, stderr: &str) -> String {
+    use crate::i18n::msg;
     match code {
-        Some(126) => "Authentification annulée par l'utilisateur.".to_string(),
-        Some(127) => "Autorisation refusée (PolicyKit indisponible ?).".to_string(),
+        Some(126) => msg::update_auth_cancelled().to_string(),
+        Some(127) => msg::update_auth_denied().to_string(),
         Some(c) => {
             if stderr.trim().is_empty() {
-                format!("apt-get install a échoué (code {}).", c)
+                msg::update_apt_failed(c)
             } else {
-                format!("apt-get install a échoué (code {}): {}", c, stderr.trim())
+                msg::update_apt_failed_with_stderr(c, stderr.trim())
             }
         }
-        None => "apt-get install a été terminé par un signal.".to_string(),
+        None => msg::update_apt_signalled().to_string(),
     }
 }
 
@@ -462,18 +463,25 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn interpret_pkexec_failure_maps_known_codes() {
+        // Asserted against the i18n catalogue rather than a literal: the point of
+        // this test is the code -> message mapping, not the wording, and a literal
+        // here would break on every translation edit while catching nothing.
+        use crate::i18n::msg;
         assert_eq!(
             interpret_pkexec_failure(Some(126), ""),
-            "Authentification annulée par l'utilisateur."
+            msg::update_auth_cancelled()
         );
         assert_eq!(
             interpret_pkexec_failure(Some(127), ""),
-            "Autorisation refusée (PolicyKit indisponible ?)."
+            msg::update_auth_denied()
         );
         assert!(
             interpret_pkexec_failure(Some(1), "E: broken package").contains("E: broken package")
         );
-        assert!(interpret_pkexec_failure(None, "").contains("signal"));
+        assert_eq!(
+            interpret_pkexec_failure(None, ""),
+            msg::update_apt_signalled()
+        );
     }
 
     #[test]

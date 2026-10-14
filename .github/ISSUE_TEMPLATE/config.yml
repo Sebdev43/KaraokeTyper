@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Sebdev43/KaraokeTyper/security/advisories/new
+    about: Report it privately instead — see SECURITY.md

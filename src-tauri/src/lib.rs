@@ -1,3 +1,28 @@
+//! KaraokeTyper — offline push-to-talk dictation.
+//!
+//! # Platform support
+//!
+//! The three desktop targets are built and published, but they are not equal
+//! and pretending otherwise would mislead whoever reads this next. Linux is
+//! where the product is designed and tested daily; Windows and macOS get the
+//! portable half of every feature, and the table says which half.
+//!
+//! | | Linux | Windows | macOS |
+//! |---|---|---|---|
+//! | Capture, transcription, models | yes | yes | yes |
+//! | GPU acceleration | Vulkan | Vulkan | Metal |
+//! | Keyboard push-to-talk | evdev (works with any window focused) | rdev | rdev |
+//! | **Mouse-button** push-to-talk | yes (evdev reads `BTN_*`) | **no** | **no** |
+//! | Typing into the focused app | xdotool / wtype / uinput | enigo | enigo |
+//! | Terminal detection (GNOME extension) | yes | — | — |
+//! | Published artefacts | .deb, .rpm, .AppImage | .msi, .exe | .dmg (Apple Silicon) |
+//!
+//! Mouse push-to-talk is the one asymmetry a user actually runs into: `rdev`
+//! only reports keys here, so a `Mouse5` shortcut silently never fires off
+//! Linux. Anything else platform-specific lives behind `cfg(target_os = ...)`
+//! and falls back rather than failing — see `keyboard_listener`, `output`,
+//! `audio_devices` and `gnome_extension`.
+
 #[macro_use]
 mod logging;
 
@@ -11,6 +36,7 @@ mod config;
 mod glibc_compat;
 mod gnome_extension;
 mod gpu;
+mod i18n;
 mod keyboard_listener;
 mod memory;
 mod model_downloader;
@@ -156,6 +182,13 @@ impl AppState {
     }
 }
 
+/// The two tray entries, kept so their text can follow the interface language
+/// without rebuilding the tray.
+struct TrayMenuItems {
+    open_settings: MenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
+}
+
 impl Default for AppState {
     fn default() -> Self {
         Self {
@@ -282,7 +315,7 @@ async fn init_stt(app_handle: AppHandle, state: State<'_, AppState>) -> Result<(
         .ok();
 
     dev_log!(
-        "[STT] Loading whisper-rs model: {} (language: {})",
+        "[STT] Loading Whisper model: {} (language: {})",
         config.model,
         config.language
     );
@@ -452,16 +485,36 @@ pub(crate) async fn do_start_recording(
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
-        if !capture.is_stream_open() {
-            let device_name = {
-                let config = state.config.lock().unwrap();
-                config.audio_device_name.clone()
-            };
+        // Claimed before anything looks at the stream: the reopen path below tears
+        // the worker down, and doing that under a live dictation throws away
+        // everything captured so far. The window is real — a worker is alive but
+        // silent for the 1-2 s it spends enumerating the device — and the manual
+        // record button in the main window can start a session the shortcut state
+        // machine knows nothing about.
+        capture.try_begin_session()?;
+
+        let device_name = {
+            let config = state.config.lock().unwrap_or_else(|e| e.into_inner());
+            config.audio_device_name.clone()
+        };
+        // Safe only because of the claim above. Note the predicate is "cpal
+        // reported a failure", not "the stream is not up yet": the second is also
+        // true while a worker enumerates the device, and respawning then tears
+        // down the worker that already holds this dictation.
+        if audio::needs_reopen(
+            capture.worker_alive(),
+            capture.stream_failed(),
+            capture.opened_device().as_deref(),
+            device_name.as_deref(),
+        ) {
             dev_log!(
                 "[TIMING] T+{}ms: Spawning audio worker...",
                 t0.elapsed().as_millis()
             );
-            capture.open_stream(device_name.as_deref())?;
+            if let Err(e) = capture.open_stream(device_name.as_deref()) {
+                capture.end_session();
+                return Err(e);
+            }
             dev_log!(
                 "[TIMING] T+{}ms: Worker spawned (stream opening in background)",
                 t0.elapsed().as_millis()
@@ -474,12 +527,15 @@ pub(crate) async fn do_start_recording(
         }
 
         // Send Start command — queued in channel, processed after stream is ready
-        capture.start_recording()?;
+        if let Err(e) = capture.start_recording() {
+            capture.end_session();
+            return Err(e);
+        }
     }
 
     // Play start sound (non-blocking, in separate thread)
     {
-        let cfg = state.config.lock().unwrap();
+        let cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
         if cfg.audio_feedback_enabled {
             let vol = cfg.audio_feedback_volume;
             audio_feedback::play_start_sound(vol);
@@ -804,6 +860,12 @@ fn create_overlay_window(app_handle: &AppHandle) {
         .decorations(false)
         .always_on_top(true)
         .skip_taskbar(true)
+        // `focused(false)` is only the initial state: every `show()` can hand the
+        // window the focus again, and a compositor that does (GNOME Wayland) takes
+        // it away from whatever the user was dictating into — the paste then lands
+        // in the wrong place. `focusable(false)` makes it permanent. The overlay
+        // has no interactive content, so it never needs the focus.
+        .focusable(false)
         .focused(false)
         .visible(false);
 
@@ -1069,6 +1131,7 @@ async fn save_settings(
         old_model_path,
         old_use_gpu,
         old_backend,
+        old_ui_language,
     ) = {
         let config = state.config.lock().unwrap();
         (
@@ -1079,6 +1142,7 @@ async fn save_settings(
             config.model_path.clone(),
             config.use_gpu,
             config.stt_backend,
+            config.ui_language,
         )
     };
 
@@ -1087,6 +1151,19 @@ async fn save_settings(
     {
         let mut config = state.config.lock().unwrap();
         *config = new_config.clone();
+    }
+
+    // The interface language drives three things that each hold their own copy of
+    // it: the backend's own messages, the tray (built once at startup), and the
+    // windows, which are told rather than polled so an open Settings window and
+    // the overlay switch together.
+    if old_ui_language != new_config.ui_language {
+        i18n::set_current(new_config.ui_language);
+        if let Some(tray) = app_handle.try_state::<TrayMenuItems>() {
+            let _ = tray.open_settings.set_text(i18n::msg::tray_settings());
+            let _ = tray.quit.set_text(i18n::msg::tray_quit());
+        }
+        let _ = app_handle.emit("ui-language-changed", new_config.ui_language.code());
     }
 
     if old_shortcut != new_config.shortcut {
@@ -1104,17 +1181,27 @@ async fn save_settings(
             .audio_capture
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // close_stream() shuts down the old worker thread
-        capture.close_stream();
-        match capture.open_stream(device_name.as_deref()) {
-            Ok(()) => dev_log!(
-                "[AUDIO] ✅ Audio worker re-spawned on new device: {:?}",
+        // Not under a live dictation: closing the worker here would drop everything
+        // it has captured, with nothing to tell the user why their text came back
+        // truncated. The next dictation opens the new device (`needs_reopen`).
+        if capture.session_in_flight() {
+            dev_log!(
+                "[AUDIO] Device change to {:?} deferred: a dictation is in flight",
                 device_name
-            ),
-            Err(e) => dev_log!(
-                "[AUDIO] ⚠️ Worker re-spawn failed: {} — will retry on next PTT",
-                e
-            ),
+            );
+        } else {
+            // close_stream() shuts down the old worker thread
+            capture.close_stream();
+            match capture.open_stream(device_name.as_deref()) {
+                Ok(()) => dev_log!(
+                    "[AUDIO] ✅ Audio worker re-spawned on new device: {:?}",
+                    device_name
+                ),
+                Err(e) => dev_log!(
+                    "[AUDIO] ⚠️ Worker re-spawn failed: {} — will retry on next PTT",
+                    e
+                ),
+            }
         }
     }
 
@@ -1725,6 +1812,8 @@ pub fn run() {
             gnome_extension::remove_focused_window_extension,
             get_autostart_enabled,
             set_autostart_enabled,
+            model_downloader::list_orphaned_models,
+            model_downloader::delete_orphaned_model,
             app_data::get_app_data_info,
             app_data::cleanup_app_data,
             get_gpu_info,
@@ -1763,6 +1852,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .setup(|app| {
+            // Before anything builds a label or reports an error: the backend's own
+            // strings are picked from a process-wide language, and the stored
+            // setting has to replace the compiled-in default first.
+            i18n::set_current(app.state::<AppState>().config.lock().unwrap().ui_language);
+
             // Create overlay window programmatically (like Handy)
             // Not in tauri.conf.json — gives full control over window properties
             create_overlay_window(app.handle());
@@ -1781,10 +1875,25 @@ pub fn run() {
                 }
             });
 
-            let open_settings = MenuItem::with_id(app, "open_settings", "Settings", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let open_settings = MenuItem::with_id(
+                app,
+                "open_settings",
+                i18n::msg::tray_settings(),
+                true,
+                None::<&str>,
+            )?;
+            let quit_item =
+                MenuItem::with_id(app, "quit", i18n::msg::tray_quit(), true, None::<&str>)?;
 
             let menu = Menu::with_items(app, &[&open_settings, &quit_item])?;
+
+            // Kept so switching language in Settings relabels the tray immediately:
+            // the menu is built once at startup and never rebuilt, so without these
+            // handles the tray would stay in the language of the last restart.
+            app.manage(TrayMenuItems {
+                open_settings: open_settings.clone(),
+                quit: quit_item.clone(),
+            });
 
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(Image::from_bytes(include_bytes!("../icons/icon.png"))?)

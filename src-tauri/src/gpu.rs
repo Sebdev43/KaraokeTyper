@@ -30,21 +30,30 @@ pub fn detect_gpu() -> GpuDetectionResult {
     GPU_DETECTION_CACHE.get_or_init(detect_gpu_uncached).clone()
 }
 
-/// VRAM requirements per whisper model (approximate, in MB)
+/// Rough VRAM a Whisper model needs, in MB: the GGUF file plus room for the
+/// compute buffers, about half as much again.
+///
+/// The figures dropped when the catalogue moved to quantised GGUF — large-v3 is
+/// 1.2 GB on disk now, not 3.1 — so a card that used to be told it could only run
+/// medium runs large-v3 comfortably. Matching is on substrings because the caller
+/// passes whatever is in the settings, including names from older versions.
 #[allow(dead_code)]
 pub fn model_vram_mb(model_name: &str) -> u32 {
     let name = model_name.to_lowercase();
-    if name.contains("large") {
-        3000
+    // Before "large": the turbo build carries both words and is much smaller.
+    if name.contains("turbo") {
+        1400
+    } else if name.contains("large") {
+        1800
     } else if name.contains("medium") {
-        1500
+        1300
     } else if name.contains("small") {
-        700
+        450
     } else if name.contains("base") {
-        300
+        150
     } else {
         // tiny or unknown
-        150
+        100
     }
 }
 
@@ -52,16 +61,18 @@ pub fn model_vram_mb(model_name: &str) -> u32 {
 pub fn recommended_model_for_vram(vram_mb: u32) -> &'static str {
     // Keep 30% margin to avoid OOM
     let usable = (vram_mb as f64 * 0.7) as u32;
-    if usable >= 3000 {
-        "ggml-large-v3"
-    } else if usable >= 1500 {
-        "ggml-medium"
-    } else if usable >= 700 {
-        "ggml-small"
-    } else if usable >= 300 {
-        "ggml-base"
+    if usable >= model_vram_mb("whisper-large-v3") {
+        "whisper-large-v3"
+    } else if usable >= model_vram_mb("whisper-large-v3-turbo") {
+        "whisper-large-v3-turbo"
+    } else if usable >= model_vram_mb("whisper-medium") {
+        "whisper-medium"
+    } else if usable >= model_vram_mb("whisper-small") {
+        "whisper-small"
+    } else if usable >= model_vram_mb("whisper-base") {
+        "whisper-base"
     } else {
-        "ggml-tiny"
+        "whisper-tiny"
     }
 }
 
@@ -272,23 +283,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_model_vram_mb() {
-        assert_eq!(model_vram_mb("ggml-tiny"), 150);
-        assert_eq!(model_vram_mb("ggml-base"), 300);
-        assert_eq!(model_vram_mb("ggml-small"), 700);
-        assert_eq!(model_vram_mb("ggml-medium"), 1500);
-        assert_eq!(model_vram_mb("ggml-large-v3"), 3000);
-        assert_eq!(model_vram_mb("unknown-model"), 150);
+    fn vram_needs_follow_the_quantised_gguf_sizes() {
+        // Roughly the file plus its compute buffers; what matters is the order and
+        // that large-v3 is no longer sized for the 3.1 GB GGML it used to be.
+        assert_eq!(model_vram_mb("whisper-tiny"), 100);
+        assert_eq!(model_vram_mb("whisper-base"), 150);
+        assert_eq!(model_vram_mb("whisper-small"), 450);
+        assert_eq!(model_vram_mb("whisper-medium"), 1300);
+        assert_eq!(model_vram_mb("whisper-large-v3"), 1800);
+        // Both words are in the name; the turbo build is the smaller one.
+        assert_eq!(model_vram_mb("whisper-large-v3-turbo"), 1400);
+        // A name left over from an older version still resolves.
+        assert_eq!(model_vram_mb("ggml-large-v3"), 1800);
+        assert_eq!(model_vram_mb("unknown-model"), 100);
     }
 
     #[test]
-    fn test_recommended_model_for_vram() {
-        assert_eq!(recommended_model_for_vram(2048), "ggml-small");
-        assert_eq!(recommended_model_for_vram(4096), "ggml-medium");
-        assert_eq!(recommended_model_for_vram(8192), "ggml-large-v3");
-        assert_eq!(recommended_model_for_vram(1024), "ggml-small");
-        assert_eq!(recommended_model_for_vram(512), "ggml-base");
-        assert_eq!(recommended_model_for_vram(256), "ggml-tiny");
-        assert_eq!(recommended_model_for_vram(100), "ggml-tiny");
+    fn a_card_is_recommended_the_largest_model_that_fits() {
+        // 2 GB card: 1.4 GB usable — large-v3 (1.8) does not fit, turbo (1.4) does.
+        assert_eq!(recommended_model_for_vram(2048), "whisper-large-v3-turbo");
+        // 4 GB and 8 GB both clear large-v3; the old table stopped at medium for 4 GB.
+        assert_eq!(recommended_model_for_vram(4096), "whisper-large-v3");
+        assert_eq!(recommended_model_for_vram(8192), "whisper-large-v3");
+        // 1 GB card: 716 MB usable — medium is out of reach, small fits.
+        assert_eq!(recommended_model_for_vram(1024), "whisper-small");
+        assert_eq!(recommended_model_for_vram(256), "whisper-base");
+        assert_eq!(recommended_model_for_vram(100), "whisper-tiny");
+        // Every recommendation must be a model the catalogue actually ships.
+        for vram in [512, 1024, 2048, 4096, 8192, 24576] {
+            let name = recommended_model_for_vram(vram);
+            assert!(
+                crate::catalog::models().iter().any(|m| m.name == name),
+                "{name} is not in the catalogue"
+            );
+        }
     }
 }

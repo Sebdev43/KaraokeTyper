@@ -3,6 +3,7 @@ use specta::Type;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::i18n::UiLanguage;
 use crate::stt::{EngineType, HybridPolicy};
 
 /// How the shortcut's press and release drive a recording.
@@ -130,6 +131,15 @@ pub struct AppConfig {
     /// shorter is a tap that locks recording on.
     #[serde(default = "default_hold_threshold_ms")]
     pub hold_threshold_ms: u32,
+    /// Language of the interface — the windows, the tray and the messages the
+    /// backend writes. Independent of `language`, which is what the speech
+    /// engine transcribes: dictating in French from an English interface is a
+    /// normal combination, not a mistake to prevent.
+    ///
+    /// Absent from an older settings file, so the `Default` (the system locale)
+    /// decides on first run after the upgrade.
+    #[serde(default)]
+    pub ui_language: UiLanguage,
 }
 
 /// Handy's value: comfortably longer than a tap, shorter than the shortest dictation.
@@ -218,6 +228,7 @@ impl Default for AppConfig {
             hybrid_threshold_secs: DEFAULT_HYBRID_THRESHOLD_SECS,
             shortcut_activation: ShortcutActivation::default(),
             hold_threshold_ms: default_hold_threshold_ms(),
+            ui_language: UiLanguage::default(),
         }
     }
 }
@@ -291,11 +302,42 @@ fn salvage_config(stored: &serde_json::Value) -> AppConfig {
     })
 }
 
+/// Whisper catalogue names before the move to GGUF, and what they are called now.
+///
+/// The files themselves are not interchangeable — the GGML `.bin` a previous
+/// version downloaded cannot be read by the GGUF engine — so this only keeps the
+/// settings pointing at a model that still exists in the catalogue. The Models
+/// screen then shows it as not installed, and the engine says why if it is asked
+/// to load the old file.
+const RENAMED_WHISPER_MODELS: &[(&str, &str)] = &[
+    ("ggml-tiny", "whisper-tiny"),
+    ("ggml-base", "whisper-base"),
+    ("ggml-small", "whisper-small"),
+    ("ggml-medium", "whisper-medium"),
+    ("ggml-large-v3", "whisper-large-v3"),
+];
+
 /// One-time fix-ups applied on load. Returns true when the config changed and should
 /// be written back.
 #[must_use = "true means the config must be written back to disk"]
 fn apply_migrations(config: &mut AppConfig) -> bool {
     let mut changed = false;
+
+    if let Some((_, new_name)) = RENAMED_WHISPER_MODELS
+        .iter()
+        .find(|(old, _)| *old == config.model)
+    {
+        crate::dev_log!(
+            "[CONFIG] Migration: Whisper model {} is now {} (GGUF)",
+            config.model,
+            new_name
+        );
+        config.model = (*new_name).to_string();
+        // The stored path points at the old `.bin`; dropping it sends the loader
+        // back to the catalogue instead of failing on a file the engine refuses.
+        config.model_path = None;
+        changed = true;
+    }
 
     // Auto-enable GPU if this build has GPU support but the stored config predates it.
     // NOTE: this is pre-existing behaviour and it is NOT idempotent — `use_gpu` has a
@@ -450,6 +492,7 @@ mod tests {
             hybrid_threshold_secs: 45,
             shortcut_activation: ShortcutActivation::default(),
             hold_threshold_ms: default_hold_threshold_ms(),
+            ui_language: UiLanguage::En,
         };
 
         let json = serde_json::to_string(&config).unwrap();
@@ -507,6 +550,49 @@ mod tests {
             }
         );
         assert!(policy.is_active());
+    }
+
+    #[test]
+    fn a_stored_ggml_model_name_is_migrated_to_its_gguf_entry() {
+        let mut config = AppConfig {
+            model: "ggml-large-v3".to_string(),
+            model_path: Some("/home/u/.local/share/karaoketyper/models/ggml-large-v3.bin".into()),
+            ..AppConfig::default()
+        };
+        assert!(
+            apply_migrations(&mut config),
+            "the config must be rewritten"
+        );
+        assert_eq!(
+            config.model, "whisper-large-v3",
+            "the old name points at nothing in the catalogue"
+        );
+        assert_eq!(
+            config.model_path, None,
+            "the stored path is the GGML file the engine refuses; the loader must \
+             fall back to the catalogue"
+        );
+
+        // Every renamed entry must exist in the shipped catalogue, or the settings
+        // would point at a model the Models screen cannot show.
+        for (_, new_name) in RENAMED_WHISPER_MODELS {
+            assert!(
+                crate::catalog::models().iter().any(|m| m.name == *new_name),
+                "{new_name} is missing from the catalogue"
+            );
+        }
+    }
+
+    #[test]
+    fn a_model_name_the_catalogue_still_knows_is_left_alone() {
+        let mut config = AppConfig {
+            model: "whisper-large-v3".to_string(),
+            model_path: None,
+            ..AppConfig::default()
+        };
+        let before = config.model.clone();
+        let _ = apply_migrations(&mut config);
+        assert_eq!(config.model, before);
     }
 
     #[test]

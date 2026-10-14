@@ -5,6 +5,7 @@ import { commands } from "@/bindings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { initUiLanguage, translations, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import "@/styles/globals.css";
 
@@ -14,12 +15,31 @@ interface StatusEvent {
 }
 
 function App() {
+  const t = useT();
   const [status, setStatus] = useState<string>("idle");
-  const [message, setMessage] = useState<string>("Appuyez sur Ctrl+Espace pour commencer");
+  // Null until something has been said: rendering falls back to the catalogue,
+  // so the greeting follows a language change instead of freezing the words
+  // picked on mount.
+  const [message, setMessage] = useState<string | null>(null);
   const [transcription, setTranscription] = useState<string>("");
   const [isInitialized, setIsInitialized] = useState<boolean>(false);
   const [isRecording, setIsRecording] = useState<boolean>(false);
   const isRecordingRef = useRef<boolean>(false);
+
+  // This window is its own webview, so it reads and follows the interface
+  // language itself.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let cancelled = false;
+    void initUiLanguage().then((unlisten) => {
+      if (cancelled) unlisten();
+      else stop = unlisten;
+    });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
+  }, []);
 
   useEffect(() => {
     const initApp = async () => {
@@ -27,7 +47,7 @@ function App() {
         const result = await commands.initStt();
         if (result.status === "ok") {
           setIsInitialized(true);
-          setMessage("Prêt ! Appuyez sur Ctrl+Espace pour dicter");
+          setMessage(translations().main.ready);
         } else {
           setMessage(`Error: ${result.error}`);
           console.error("Failed to initialize STT:", result.error);
@@ -126,13 +146,13 @@ function App() {
   const getStatusLabel = () => {
     switch (status) {
       case "recording":
-        return "Enregistrement";
+        return t.main.statusRecording;
       case "processing":
-        return "Traitement";
+        return t.main.statusProcessing;
       case "idle":
-        return "Prêt";
+        return t.main.statusIdle;
       default:
-        return "Inconnu";
+        return t.main.statusUnknown;
     }
   };
 
@@ -153,7 +173,9 @@ function App() {
           </div>
 
           {/* Status Message */}
-          <p className="text-sm text-muted-foreground text-center">{message}</p>
+          <p className="text-sm text-muted-foreground text-center">
+            {message ?? t.main.pressToStart}
+          </p>
 
           {/* Record Button */}
           <Button
@@ -165,12 +187,12 @@ function App() {
             {isRecording ? (
               <>
                 <Square className="h-4 w-4 mr-2" />
-                Arrêter
+                {t.main.stop}
               </>
             ) : (
               <>
                 <Mic className="h-4 w-4 mr-2" />
-                Enregistrer
+                {t.main.record}
               </>
             )}
           </Button>
@@ -178,7 +200,7 @@ function App() {
           {/* Transcription */}
           {transcription && (
             <div className="p-3 bg-muted rounded-md">
-              <p className="text-xs text-muted-foreground mb-1">Dernière transcription :</p>
+              <p className="text-xs text-muted-foreground mb-1">{t.main.lastTranscription}</p>
               <p className="text-sm text-foreground">{transcription}</p>
             </div>
           )}

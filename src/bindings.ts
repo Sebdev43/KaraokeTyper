@@ -214,6 +214,27 @@ async setAutostartEnabled(enabled: boolean) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Unused files sitting in the models directory, largest first.
+ */
+async listOrphanedModels() : Promise<OrphanedModel[]> {
+    return await TAURI_INVOKE("list_orphaned_models");
+},
+/**
+ * Delete one entry the catalogue no longer claims.
+ * 
+ * `name` is an entry of the models directory, never a path: anything with a
+ * separator, or anything the catalogue still claims, is refused rather than
+ * resolved.
+ */
+async deleteOrphanedModel(name: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_orphaned_model", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getAppDataInfo() : Promise<Result<AppDataInfo, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_app_data_info") };
@@ -363,7 +384,17 @@ shortcut_activation?: ShortcutActivation;
  * Hold-or-toggle only: a press held at least this long is push-to-talk, anything
  * shorter is a tap that locks recording on.
  */
-hold_threshold_ms?: number }
+hold_threshold_ms?: number; 
+/**
+ * Language of the interface — the windows, the tray and the messages the
+ * backend writes. Independent of `language`, which is what the speech
+ * engine transcribes: dictating in French from an English interface is a
+ * normal combination, not a mistake to prevent.
+ * 
+ * Absent from an older settings file, so the `Default` (the system locale)
+ * decides on first run after the upgrade.
+ */
+ui_language?: UiLanguage }
 export type AppDataInfo = { items: AppDataItem[]; total_size_mb: number }
 export type AppDataItem = { name: string; path: string; exists: boolean; size_mb: number }
 export type AudioDevice = { name: string; raw_name: string; index: number }
@@ -474,6 +505,11 @@ name: string; display_name: string; size_mb: number;
  */
 url: string; installed: boolean; description: string; 
 /**
+ * The same blurb in English. The frontend picks between the two by the
+ * interface language; nothing in the backend reads either.
+ */
+description_en?: string; 
+/**
  * Engine that consumes this model.
  */
 engine_type?: EngineType; 
@@ -514,6 +550,16 @@ files?: ModelFile[];
 sha256?: string }
 export type ModelUnloadTimeout = "Never" | "Min5" | "Min15" | "Hour1"
 export type OllamaStatus = { available: boolean; model: string; url: string }
+/**
+ * A file or directory sitting in the models folder that no catalogue entry
+ * claims any more: a model left behind by a format change, a download
+ * interrupted before its final rename, a model dropped from the catalogue.
+ */
+export type OrphanedModel = { 
+/**
+ * Entry name inside the models directory, and the handle for deleting it.
+ */
+name: string; path: string; size_mb: number }
 /**
  * How text is pasted into the focused application.
  * Inspired by Handy's approach: user picks the method, no auto-detection.
@@ -562,6 +608,13 @@ export type ShortcutActivation =
  * System information
  */
 export type SystemInfo = { os: string; arch: string; display_server: string; desktop_environment: string }
+/**
+ * The languages the interface is translated into.
+ * 
+ * Adding one means adding its arm to every function below; the compiler lists
+ * them all, which is the point of an enum here rather than a string.
+ */
+export type UiLanguage = "Fr" | "En"
 export type UpdateInfo = { current_version: string; latest_version: string; release_notes: string; release_url: string; install_kind: InstallKind; 
 /**
  * Whether we can trigger a fully-automatic install (plugin or pkexec).

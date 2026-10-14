@@ -32,4 +32,4 @@ Sobre, précis, rapide. Voix directe et factuelle, en français, qui explique le
 
 ## Accessibility & Inclusion
 
-Bases solides, sans certification visée : contraste texte ≥ 4,5:1 sur le thème sombre, navigation clavier complète (Tab, flèches, Home/End sur les curseurs) avec focus visible, respect de `prefers-reduced-motion` (overlay et transitions), aucune information portée par la couleur seule (statut installé / erreur toujours doublé d'un texte ou d'une icône). Libellés en français clair ; termes techniques (evdev, uinput, GGML) accompagnés d'une phrase d'explication.
+Bases solides, sans certification visée : contraste texte ≥ 4,5:1 sur le thème sombre, navigation clavier complète (Tab, flèches, Home/End sur les curseurs) avec focus visible, respect de `prefers-reduced-motion` (overlay et transitions), aucune information portée par la couleur seule (statut installé / erreur toujours doublé d'un texte ou d'une icône). Libellés en langue claire, en français comme en anglais (Paramètres → Interface), avec `<html lang>` qui suit le choix ; termes techniques (evdev, uinput, GGUF) accompagnés d'une phrase d'explication.

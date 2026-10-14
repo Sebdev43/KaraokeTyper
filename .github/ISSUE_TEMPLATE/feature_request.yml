@@ -1,0 +1,26 @@
+name: Idea
+description: Something that would make dictation better
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is getting in your way
+      description: >
+        Describe the situation, not the solution. The problem is what makes a
+        feature worth building; the shape it takes can be discussed after.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What you had in mind
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Another tool, another setting, a workaround.

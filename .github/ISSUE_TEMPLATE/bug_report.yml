@@ -1,0 +1,71 @@
+name: Bug report
+description: Something does not work as it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Dictation touches the microphone, the GPU and the window manager all at
+        once, so the details below are what make a report reproducible rather
+        than a guess. English or French, as you prefer.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: And what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      placeholder: |
+        1. Hold the shortcut and say "…"
+        2. Release
+        3. The text comes out as "…"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: KaraokeTyper version
+      description: Settings → About, or the release you downloaded.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How did you install it
+      options: [.deb, .AppImage, .rpm, .msi / .exe, .dmg, built from source]
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: System
+      placeholder: Ubuntu 24.04, GNOME, Wayland — or Windows 11, macOS 15…
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model and engine
+      placeholder: Whisper Large v3 Turbo, GPU on — or Parakeet
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >
+        Run from a terminal to see them: `karaoketyper` (installed) or
+        `npm run tauri dev` (from source). The lines tagged `[STT]`, `[AUDIO]`
+        and `[TIMING]` around the failure are the useful ones.
+      render: text

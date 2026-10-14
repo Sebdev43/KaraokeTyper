@@ -11,6 +11,7 @@ import {
   Download,
   Info,
   Keyboard,
+  Languages,
   Maximize2,
   Mic,
   Minimize2,
@@ -23,7 +24,13 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type AppConfig, commands, type ShortcutActivation } from "@/bindings";
+import {
+  type AppConfig,
+  commands,
+  type OrphanedModel,
+  type ShortcutActivation,
+  type UiLanguage,
+} from "@/bindings";
 import { UpdateChecker } from "@/components/UpdateChecker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -42,6 +49,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
+import { type Dict, toLanguageCode, translations, useI18nStore, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useSettingsStore, useSystemStore } from "@/stores";
 
@@ -65,22 +73,16 @@ const clampHoldThreshold = (ms: number) =>
   Math.min(HOLD_THRESHOLD.max, Math.max(HOLD_THRESHOLD.min, Math.round(ms)));
 
 /** One entry per `ShortcutActivation` variant: TypeScript refuses a missing one. */
-const ACTIVATION_MODES: Record<ShortcutActivation, { label: string; help: string }> = {
-  Hold: {
-    label: "Maintenir",
-    help: "Enregistre tant que la touche est maintenue ; relâchez pour transcrire.",
-  },
-  Toggle: {
-    label: "Basculer",
-    help: "Un appui démarre l'enregistrement, le suivant l'arrête.",
-  },
-  HoldOrToggle: {
-    label: "Maintenir ou basculer",
-    help: "Appui long : enregistre tant que la touche est enfoncée. Appui bref : enregistre jusqu'au prochain appui.",
-  },
-};
+const activationModes = (t: Dict): Record<ShortcutActivation, { label: string; help: string }> => ({
+  Hold: { label: t.shortcut.hold, help: t.shortcut.holdHelp },
+  Toggle: { label: t.shortcut.toggle, help: t.shortcut.toggleHelp },
+  HoldOrToggle: { label: t.shortcut.holdOrToggle, help: t.shortcut.holdOrToggleHelp },
+});
 
 function SettingsWindow() {
+  const t = useT();
+  const modes = activationModes(t);
+
   // Settings store
   const {
     audioDevices,
@@ -144,7 +146,10 @@ function SettingsWindow() {
     isRefreshing,
     setIsRefreshing,
     saveStatus,
+    saveStatusIsError,
     setSaveStatus,
+    uiLanguage,
+    setUiLanguage,
   } = useSettingsStore();
 
   // System store
@@ -172,7 +177,7 @@ function SettingsWindow() {
   // Local UI state
   const [isCapturing, setIsCapturing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState("audio");
+  const [activeSection, setActiveSection] = useState("interface");
   const inputRef = useRef<HTMLInputElement>(null);
   // The shortcut in place before a capture started, restored on Escape or blur so a
   // stray click never replaces the user's hotkey with a default.
@@ -196,6 +201,14 @@ function SettingsWindow() {
   // saving a literal would silently overwrite whatever the backend holds, and fight the
   // migration in config.rs on every save. Default mirrors DEFAULT_KEY_DELAY_MS there.
   const keyDelayMsRef = useRef(60);
+
+  // One source of truth for what this window is written in: whatever the store
+  // holds, whether it came from the backend on load, from the select below, or
+  // from a Cancel that reloaded the saved value. Applied before saving on
+  // purpose — the choice has to be readable before it is committed.
+  useEffect(() => {
+    useI18nStore.getState().setLanguage(toLanguageCode(uiLanguage));
+  }, [uiLanguage]);
 
   // Detect platform on mount
   useEffect(() => {
@@ -254,6 +267,7 @@ function SettingsWindow() {
         setHoldThresholdMs(
           clampHoldThreshold(result.data.hold_threshold_ms ?? HOLD_THRESHOLD.default),
         );
+        setUiLanguage(result.data.ui_language ?? "En");
         // No control in this window for these four: without the round-trip, Save would
         // overwrite whatever the backend holds with the store defaults.
         setCustomWords(result.data.custom_words ?? []);
@@ -290,6 +304,7 @@ function SettingsWindow() {
     setPasteMethod,
     setShortcutActivation,
     setHoldThresholdMs,
+    setUiLanguage,
     setCustomWords,
     setCustomWordsThreshold,
     setFillerRemovalEnabled,
@@ -324,6 +339,30 @@ function SettingsWindow() {
       console.error("Failed to check uinput:", error);
     }
   }, [setUinputAvailable]);
+
+  // Files left in the models folder that no catalogue entry claims: a model from
+  // a previous format, an interrupted download. Shown so the space can be
+  // reclaimed on purpose — nothing here is ever deleted automatically.
+  const [orphanedModels, setOrphanedModels] = useState<OrphanedModel[]>([]);
+  const loadOrphanedModels = useCallback(async () => {
+    try {
+      setOrphanedModels(await commands.listOrphanedModels());
+    } catch (_error) {
+      setOrphanedModels([]);
+    }
+  }, []);
+
+  const removeOrphanedModel = useCallback(
+    async (name: string) => {
+      const result = await commands.deleteOrphanedModel(name);
+      if (result.status === "error") {
+        setSaveStatus(translations().models.deleteFailed(result.error), true);
+        return;
+      }
+      await loadOrphanedModels();
+    },
+    [loadOrphanedModels, setSaveStatus],
+  );
 
   const loadInstalledModels = useCallback(async () => {
     try {
@@ -397,7 +436,7 @@ function SettingsWindow() {
     try {
       const result = await commands.resetGpuFailureCount();
       if (result.status === "ok") {
-        await message(result.data, { title: "GPU Reset", kind: "info" });
+        await message(result.data, { title: t.performance.gpuResetTitle, kind: "info" });
         // Reload GPU info and status to reflect changes
         await loadGpuInfo();
         await loadGpuStatus();
@@ -417,15 +456,15 @@ function SettingsWindow() {
         setAutostart(enabled);
       } else {
         console.error("Failed to toggle autostart:", result.error);
-        await message(`Échec du changement d'autostart : ${result.error}`, {
-          title: "Erreur",
+        await message(t.system.autostartFailed(result.error), {
+          title: t.common.error,
           kind: "error",
         });
       }
     } catch (error) {
       console.error("Failed to toggle autostart:", error);
-      await message(`Échec du changement d'autostart : ${error}`, {
-        title: "Erreur",
+      await message(t.system.autostartFailed(String(error)), {
+        title: t.common.error,
         kind: "error",
       });
     } finally {
@@ -437,10 +476,10 @@ function SettingsWindow() {
     const modelInfo = installedModels.find((m) => m.name === modelName);
     if (!modelInfo) return;
 
-    const confirmed = await confirm(
-      `Télécharger le modèle ${modelName} (${modelInfo.size_mb} MB) ?\n\nCela peut prendre plusieurs minutes selon votre connexion.`,
-      { title: "Télécharger un modèle", kind: "info" },
-    );
+    const confirmed = await confirm(t.models.confirmBody(modelName, modelInfo.size_mb), {
+      title: t.models.confirmTitle,
+      kind: "info",
+    });
 
     if (!confirmed) return;
 
@@ -455,14 +494,14 @@ function SettingsWindow() {
         await new Promise((r) => setTimeout(r, 1500));
         await loadInstalledModels();
       } else {
-        await message(`Échec du téléchargement : ${result.error}`, {
-          title: "Erreur",
+        await message(t.models.downloadFailed(result.error), {
+          title: t.common.error,
           kind: "error",
         });
       }
     } catch (error) {
-      await message(`Échec du téléchargement : ${error}`, {
-        title: "Erreur",
+      await message(t.models.downloadFailed(String(error)), {
+        title: t.common.error,
         kind: "error",
       });
     } finally {
@@ -477,6 +516,7 @@ function SettingsWindow() {
     void checkPermissions();
     void checkUinput();
     void loadInstalledModels();
+    void loadOrphanedModels();
     void checkGnomeExtension();
     void loadAutostart();
     void loadGpuInfo();
@@ -487,6 +527,7 @@ function SettingsWindow() {
     checkPermissions,
     checkUinput,
     loadInstalledModels,
+    loadOrphanedModels,
     checkGnomeExtension,
     loadAutostart,
     loadGpuInfo,
@@ -646,11 +687,7 @@ function SettingsWindow() {
           loaded.sttBackend !== sttBackend ||
           loaded.useGpu !== useGpuAcceleration);
       const modelLabel = installedModels.find((m) => m.name === model)?.display_name ?? model;
-      setSaveStatus(
-        engineReload
-          ? `Enregistrement, puis chargement de ${modelLabel} (quelques secondes)…`
-          : "Enregistrement…",
-      );
+      setSaveStatus(engineReload ? t.save.savingAndLoading(modelLabel) : t.save.saving);
 
       const selectedDeviceName =
         audioDevices.find((d) => d.index === selectedDevice)?.raw_name || null;
@@ -684,6 +721,7 @@ function SettingsWindow() {
         hold_threshold_ms: holdThresholdMs,
         hybrid_engine_enabled: hybridEngineEnabled,
         hybrid_threshold_secs: hybridThresholdSecs,
+        ui_language: uiLanguage,
       };
 
       const result = await commands.saveSettings(config);
@@ -694,19 +732,17 @@ function SettingsWindow() {
           sttBackend,
           useGpu: useGpuAcceleration,
         };
-        setSaveStatus(
-          engineReload ? `Enregistré, ${modelLabel} chargé.` : "Paramètres enregistrés.",
-        );
+        setSaveStatus(engineReload ? t.save.savedAndLoaded(modelLabel) : t.save.saved);
         // Leave the confirmation on screen long enough to be read before the window goes.
         await new Promise((resolve) => setTimeout(resolve, 700));
         await getCurrentWindow().hide();
         setSaveStatus("");
       } else {
-        setSaveStatus(`Erreur : ${result.error}`);
+        setSaveStatus(t.save.failed(result.error), true);
         console.error("Failed to save settings:", result.error);
       }
     } catch (error) {
-      setSaveStatus(`Erreur : ${error}`);
+      setSaveStatus(t.save.failed(String(error)), true);
       console.error("Failed to save settings:", error);
     } finally {
       setIsSaving(false);
@@ -722,10 +758,10 @@ function SettingsWindow() {
   };
 
   const handleInstallSystem = async () => {
-    const confirmed = await confirm(
-      "Configurer les permissions système ?\n\nCela va :\n• Configurer evdev pour le push-to-talk\n• Installer xdotool (saisie de texte)\n• Installer xclip (clipboard pour RustDesk/Remmina)\n• Peut nécessiter le redémarrage de l'application",
-      { title: "Configuration KaraokeTyper", kind: "warning" },
-    );
+    const confirmed = await confirm(t.system.confirmInstallBody, {
+      title: t.system.confirmInstallTitle,
+      kind: "warning",
+    });
 
     if (!confirmed) return;
 
@@ -738,19 +774,19 @@ function SettingsWindow() {
         if (result.data.includes("restart")) {
           await relaunch();
         } else {
-          await message(result.data, { title: "Succès", kind: "info" });
+          await message(result.data, { title: t.common.success, kind: "info" });
           await checkPermissions();
           await checkUinput();
         }
       } else {
-        await message(`Échec de l'installation : ${result.error}`, {
-          title: "Erreur",
+        await message(t.system.installFailed(result.error), {
+          title: t.common.error,
           kind: "error",
         });
       }
     } catch (error) {
-      await message(`Échec de l'installation : ${error}`, {
-        title: "Erreur",
+      await message(t.system.installFailed(String(error)), {
+        title: t.common.error,
         kind: "error",
       });
     } finally {
@@ -759,10 +795,10 @@ function SettingsWindow() {
   };
 
   const handleInstallGnomeExtension = async () => {
-    const confirmed = await confirm(
-      "Installer l'extension GNOME pour la détection de terminal ?\n\nCela permet de coller automatiquement avec Ctrl+Shift+V dans les terminaux.\n\nNote: La session sera redémarrée automatiquement après l'installation.",
-      { title: "Extension Terminal", kind: "info" },
-    );
+    const confirmed = await confirm(t.gnome.confirmInstallBody, {
+      title: t.gnome.confirmInstallTitle,
+      kind: "info",
+    });
 
     if (!confirmed) return;
 
@@ -771,16 +807,16 @@ function SettingsWindow() {
     try {
       const result = await commands.installFocusedWindowExtension();
       if (result.status === "ok") {
-        await message(result.data, { title: "Succès", kind: "info" });
+        await message(result.data, { title: t.common.success, kind: "info" });
       } else {
-        await message(`Échec de l'installation : ${result.error}`, {
-          title: "Erreur",
+        await message(t.system.installFailed(result.error), {
+          title: t.common.error,
           kind: "error",
         });
       }
     } catch (error) {
-      await message(`Échec de l'installation : ${error}`, {
-        title: "Erreur",
+      await message(t.system.installFailed(String(error)), {
+        title: t.common.error,
         kind: "error",
       });
     } finally {
@@ -789,8 +825,8 @@ function SettingsWindow() {
   };
 
   const handleRemoveGnomeExtension = async () => {
-    const confirmed = await confirm("Supprimer l'extension de détection de terminal ?", {
-      title: "Supprimer Extension",
+    const confirmed = await confirm(t.gnome.confirmRemoveBody, {
+      title: t.gnome.confirmRemoveTitle,
       kind: "warning",
     });
 
@@ -801,17 +837,17 @@ function SettingsWindow() {
     try {
       const result = await commands.removeFocusedWindowExtension();
       if (result.status === "ok") {
-        await message(result.data, { title: "Succès", kind: "info" });
+        await message(result.data, { title: t.common.success, kind: "info" });
         await checkGnomeExtension();
       } else {
-        await message(`Échec de la suppression : ${result.error}`, {
-          title: "Erreur",
+        await message(t.system.removeFailed(result.error), {
+          title: t.common.error,
           kind: "error",
         });
       }
     } catch (error) {
-      await message(`Échec de la suppression : ${error}`, {
-        title: "Erreur",
+      await message(t.system.removeFailed(String(error)), {
+        title: t.common.error,
         kind: "error",
       });
     } finally {
@@ -872,7 +908,7 @@ function SettingsWindow() {
       >
         <div data-tauri-drag-region className="flex items-center gap-2">
           <Settings className="h-4 w-4 text-primary" />
-          <h1 className="text-sm font-medium">KaraokeTyper · Paramètres</h1>
+          <h1 className="text-sm font-medium">{t.window.title}</h1>
         </div>
         <div className="flex items-center gap-1">
           <Button
@@ -880,7 +916,7 @@ function SettingsWindow() {
             size="icon"
             className="h-7 w-7 hover:bg-muted"
             onClick={handleMinimize}
-            aria-label="Réduire la fenêtre"
+            aria-label={t.window.minimize}
           >
             <Minimize2 className="h-3.5 w-3.5" />
           </Button>
@@ -889,7 +925,7 @@ function SettingsWindow() {
             size="icon"
             className="h-7 w-7 hover:bg-muted"
             onClick={handleMaximize}
-            aria-label="Agrandir la fenêtre"
+            aria-label={t.window.maximize}
           >
             <Maximize2 className="h-3.5 w-3.5" />
           </Button>
@@ -898,7 +934,7 @@ function SettingsWindow() {
             size="icon"
             className="h-7 w-7 hover:bg-destructive hover:text-destructive-foreground"
             onClick={handleClose}
-            aria-label="Fermer sans enregistrer"
+            aria-label={t.window.closeWithoutSaving}
           >
             <X className="h-3.5 w-3.5" />
           </Button>
@@ -909,65 +945,22 @@ function SettingsWindow() {
       <div className="flex flex-1 min-h-0">
         {/* Sidebar Navigation */}
         <nav
-          aria-label="Sections des paramètres"
+          aria-label={t.window.sectionsNav}
           className="flex-none w-48 border-r border-border bg-muted/30 py-2 overflow-y-auto"
         >
           {[
-            { id: "audio", icon: Mic, label: "Audio" },
-            {
-              id: "shortcut",
-              icon: Keyboard,
-              label: "Raccourci",
-            },
-            {
-              id: "stt",
-              icon: Brain,
-              label: "Reconnaissance",
-            },
-            {
-              id: "performance",
-              icon: Cpu,
-              label: "Performance",
-            },
-            {
-              id: "models",
-              icon: Download,
-              label: "Modèles",
-            },
-            {
-              id: "system",
-              icon: Settings,
-              label: "Système",
-            },
-            ...(isGnomeWayland
-              ? [
-                  {
-                    id: "gnome",
-                    icon: Monitor,
-                    label: "Terminal",
-                  },
-                ]
-              : []),
-            {
-              id: "feedback",
-              icon: Volume2,
-              label: "Sons",
-            },
-            {
-              id: "unload",
-              icon: Clock,
-              label: "Déchargement",
-            },
-            {
-              id: "ollama",
-              icon: SpellCheck,
-              label: "Ollama",
-            },
-            {
-              id: "about",
-              icon: Info,
-              label: "À propos",
-            },
+            { id: "interface", icon: Languages, label: t.nav.interface },
+            { id: "audio", icon: Mic, label: t.nav.audio },
+            { id: "shortcut", icon: Keyboard, label: t.nav.shortcut },
+            { id: "stt", icon: Brain, label: t.nav.stt },
+            { id: "performance", icon: Cpu, label: t.nav.performance },
+            { id: "models", icon: Download, label: t.nav.models },
+            { id: "system", icon: Settings, label: t.nav.system },
+            ...(isGnomeWayland ? [{ id: "gnome", icon: Monitor, label: t.nav.terminal }] : []),
+            { id: "feedback", icon: Volume2, label: t.nav.sounds },
+            { id: "unload", icon: Clock, label: t.nav.unload },
+            { id: "ollama", icon: SpellCheck, label: t.nav.ollama },
+            { id: "about", icon: Info, label: t.nav.about },
           ].map(({ id, icon: Icon, label }) => (
             <button
               key={id}
@@ -1002,6 +995,38 @@ function SettingsWindow() {
         {/* Content */}
         <ScrollArea className="flex-1 min-h-0">
           <div className="p-6 space-y-6">
+            {/* Interface language */}
+            <Card
+              ref={(el) => {
+                sectionRefs.current.interface = el;
+              }}
+            >
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <Languages className="h-5 w-5 text-muted-foreground" />
+                  {t.uiLanguage.title}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <Label htmlFor="ui-language">{t.uiLanguage.label}</Label>
+                <Select
+                  value={uiLanguage}
+                  onValueChange={(value) => {
+                    setUiLanguage(value as UiLanguage);
+                  }}
+                >
+                  <SelectTrigger id="ui-language">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Fr">{t.uiLanguage.french}</SelectItem>
+                    <SelectItem value="En">{t.uiLanguage.english}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">{t.uiLanguage.help}</p>
+              </CardContent>
+            </Card>
+
             {/* Audio Input */}
             <Card
               ref={(el) => {
@@ -1011,19 +1036,19 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Mic className="h-5 w-5 text-muted-foreground" />
-                  Entrée audio
+                  {t.audio.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="microphone">Microphone</Label>
+                  <Label htmlFor="microphone">{t.audio.microphone}</Label>
                   <div className="flex gap-2">
                     <Select
                       value={String(selectedDevice)}
                       onValueChange={(value) => setSelectedDevice(Number(value))}
                     >
                       <SelectTrigger id="microphone" className="flex-1">
-                        <SelectValue placeholder="Sélectionner un micro" />
+                        <SelectValue placeholder={t.audio.placeholder} />
                       </SelectTrigger>
                       <SelectContent className="max-w-[calc(100vw-15rem)]">
                         {audioDevices.map((device) => (
@@ -1042,7 +1067,7 @@ function SettingsWindow() {
                       size="icon"
                       onClick={handleRefreshDevices}
                       disabled={isRefreshing}
-                      aria-label="Actualiser la liste des micros"
+                      aria-label={t.audio.refresh}
                     >
                       <RefreshCw
                         className={cn(
@@ -1065,12 +1090,12 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Keyboard className="h-5 w-5 text-muted-foreground" />
-                  Raccourci clavier
+                  {t.shortcut.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="shortcut">Touche d'enregistrement</Label>
+                  <Label htmlFor="shortcut">{t.shortcut.key}</Label>
                   <div className="flex gap-2">
                     <Input
                       ref={inputRef}
@@ -1084,9 +1109,7 @@ function SettingsWindow() {
                       onContextMenu={(e) => e.preventDefault()}
                       readOnly
                       aria-describedby="shortcut-hint"
-                      placeholder={
-                        isCapturing ? "Appuyez sur une touche ou un bouton souris…" : "Non défini"
-                      }
+                      placeholder={isCapturing ? t.shortcut.capturing : t.shortcut.unset}
                       className={cn(
                         "flex-1 cursor-pointer",
                         isCapturing && "ring-[3px] ring-ring/50 border-ring bg-primary/10",
@@ -1098,7 +1121,7 @@ function SettingsWindow() {
                       onClick={isCapturing ? cancelShortcutCapture : startShortcutCapture}
                       onMouseDown={handleMouseDown}
                     >
-                      {isCapturing ? "Annuler" : "Modifier"}
+                      {isCapturing ? t.common.cancel : t.shortcut.change}
                     </Button>
                   </div>
                   <p
@@ -1106,15 +1129,13 @@ function SettingsWindow() {
                     className="text-xs text-muted-foreground"
                     aria-live="polite"
                   >
-                    {isCapturing
-                      ? "En attente d'une touche ou d'un bouton souris (Mouse4, Mouse5…). Échap pour annuler."
-                      : "Cliquez sur Modifier, puis appuyez sur la combinaison voulue."}
+                    {isCapturing ? t.shortcut.hintCapturing : t.shortcut.hintIdle}
                   </p>
                 </div>
 
                 {/* Shortcut activation */}
                 <div className="space-y-2">
-                  <Label htmlFor="shortcut-activation">Mode d'activation</Label>
+                  <Label htmlFor="shortcut-activation">{t.shortcut.activationMode}</Label>
                   <Select
                     value={shortcutActivation}
                     onValueChange={(v) => setShortcutActivation(v as ShortcutActivation)}
@@ -1123,21 +1144,21 @@ function SettingsWindow() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {(Object.keys(ACTIVATION_MODES) as ShortcutActivation[]).map((mode) => (
+                      {(Object.keys(modes) as ShortcutActivation[]).map((mode) => (
                         <SelectItem key={mode} value={mode}>
-                          {ACTIVATION_MODES[mode].label}
+                          {modes[mode].label}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    {ACTIVATION_MODES[shortcutActivation].help}
-                  </p>
+                  <p className="text-xs text-muted-foreground">{modes[shortcutActivation].help}</p>
                 </div>
 
                 {shortcutActivation === "HoldOrToggle" && (
                   <div className="space-y-2">
-                    <Label htmlFor="hold-threshold">Seuil de maintien ({holdThresholdMs} ms)</Label>
+                    <Label htmlFor="hold-threshold">
+                      {t.shortcut.holdThreshold(holdThresholdMs)}
+                    </Label>
                     <Slider
                       id="hold-threshold"
                       min={HOLD_THRESHOLD.min}
@@ -1147,8 +1168,7 @@ function SettingsWindow() {
                       onValueChange={([v]) => setHoldThresholdMs(v)}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Relâché avant ce délai, l'appui est une bascule ; après, un maintien (
-                      {HOLD_THRESHOLD.default} ms par défaut).
+                      {t.shortcut.holdThresholdHelp(HOLD_THRESHOLD.default)}
                     </p>
                   </div>
                 )}
@@ -1164,12 +1184,12 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Brain className="h-5 w-5 text-muted-foreground" />
-                  Reconnaissance vocale
+                  {t.stt.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="stt-backend">Moteur STT (auto-hébergé)</Label>
+                  <Label htmlFor="stt-backend">{t.stt.backend}</Label>
                   <Select
                     value={sttBackend}
                     onValueChange={(value) => {
@@ -1185,26 +1205,21 @@ function SettingsWindow() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="whisper">Whisper · généraliste, 99 langues</SelectItem>
-                      <SelectItem value="parakeet">
-                        Parakeet V3 · FR + 24 langues UE, très précis (recommandé)
-                      </SelectItem>
+                      <SelectItem value="whisper">{t.stt.backendWhisper}</SelectItem>
+                      <SelectItem value="parakeet">{t.stt.backendParakeet}</SelectItem>
                       <SelectItem value="sense-voice" disabled>
-                        SenseVoice · multilingue (FR/EN/ES/DE), bientôt
+                        {t.stt.backendSenseVoice}
                       </SelectItem>
                       <SelectItem value="moonshine" disabled>
-                        Moonshine · ultra-léger (EN), bientôt
+                        {t.stt.backendMoonshine}
                       </SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    100 % local. Parakeet V3 auto-détecte la langue dans son set de 25. Whisper
-                    accepte une langue explicite.
-                  </p>
+                  <p className="text-xs text-muted-foreground">{t.stt.backendHelp}</p>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="model">Modèle actif</Label>
+                  <Label htmlFor="model">{t.stt.activeModel}</Label>
                   <Select value={model} onValueChange={setModel}>
                     <SelectTrigger id="model">
                       <SelectValue />
@@ -1219,16 +1234,26 @@ function SettingsWindow() {
                             disabled={!modelInfo.installed || modelInfo.coming_soon}
                           >
                             {modelInfo.display_name} - {modelInfo.size_mb} MB
-                            {modelInfo.coming_soon && " (bientôt)"}
-                            {!modelInfo.installed && !modelInfo.coming_soon && " (Non installé)"}
+                            {modelInfo.coming_soon && t.stt.comingSoonSuffix}
+                            {!modelInfo.installed &&
+                              !modelInfo.coming_soon &&
+                              t.stt.notInstalledSuffix}
                           </SelectItem>
                         ))}
                     </SelectContent>
                   </Select>
                   {model && !installedModels.find((m) => m.name === model)?.installed && (
-                    <p className="text-xs text-destructive">
-                      Le modèle "{model}" n'est pas installé. Téléchargez-le dans "Modèles"
-                      ci-dessous.
+                    <p className="text-xs text-destructive">{t.stt.modelMissing(model)}</p>
+                  )}
+                  {/* The 1.9.0 format change leaves the previous .bin behind, and it is big.
+                      Say so here, where the user discovers the model is missing, instead of
+                      only in the engine log nobody reads. */}
+                  {orphanedModels.length > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      {t.stt.orphansHint(
+                        orphanedModels.length,
+                        orphanedModels.reduce((sum, o) => sum + o.size_mb, 0),
+                      )}
                     </p>
                   )}
                 </div>
@@ -1237,11 +1262,8 @@ function SettingsWindow() {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label htmlFor="hybrid-engine">Parakeet pour les dictées courtes</Label>
-                      <p className="text-sm text-muted-foreground">
-                        Parakeet V3 est bien plus rapide que Whisper : il transcrit les dictées
-                        courtes, Whisper reprend la main au-delà du seuil.
-                      </p>
+                      <Label htmlFor="hybrid-engine">{t.stt.hybrid}</Label>
+                      <p className="text-sm text-muted-foreground">{t.stt.hybridHelp}</p>
                     </div>
                     <Switch
                       id="hybrid-engine"
@@ -1251,20 +1273,15 @@ function SettingsWindow() {
                     />
                   </div>
                   {!hybridAvailable && (
-                    <p className="text-xs text-muted-foreground">
-                      Disponible uniquement avec Whisper comme moteur principal.
-                    </p>
+                    <p className="text-xs text-muted-foreground">{t.stt.hybridWhisperOnly}</p>
                   )}
                   {hybridAvailable && hybridEngineEnabled && !parakeetInstalled && (
-                    <p className="text-xs text-destructive">
-                      Parakeet V3 n'est pas installé : toutes les dictées passent par Whisper
-                      jusqu'à son téléchargement dans "Modèles" ci-dessous.
-                    </p>
+                    <p className="text-xs text-destructive">{t.stt.hybridParakeetMissing}</p>
                   )}
                   {hybridAvailable && hybridEngineEnabled && (
                     <div className="space-y-2 pt-1">
                       <Label id="hybrid-threshold-label">
-                        Bascule vers Whisper au-delà de {hybridThresholdSecs} s
+                        {t.stt.hybridThreshold(hybridThresholdSecs)}
                       </Label>
                       <Slider
                         aria-labelledby="hybrid-threshold-label"
@@ -1279,7 +1296,7 @@ function SettingsWindow() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="language">Langue</Label>
+                  <Label htmlFor="language">{t.stt.spokenLanguage}</Label>
                   <Select value={language} onValueChange={setLanguage}>
                     <SelectTrigger id="language">
                       <SelectValue />
@@ -1299,6 +1316,7 @@ function SettingsWindow() {
                       <SelectItem value="ko">한국어 (Korean)</SelectItem>
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-muted-foreground">{t.stt.spokenLanguageHelp}</p>
                 </div>
               </CardContent>
             </Card>
@@ -1312,23 +1330,33 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Cpu className="h-5 w-5 text-muted-foreground" />
-                  Performance
+                  {t.performance.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 {/* GPU Info */}
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label>GPU détecté</Label>
+                    <Label>{t.performance.gpuDetected}</Label>
                     <p className="text-sm text-muted-foreground">
-                      {gpuInfo ? gpuInfo.device_name || "Aucun GPU détecté" : "Détection..."}
+                      {gpuInfo
+                        ? gpuInfo.device_name || t.performance.noGpu
+                        : t.performance.detecting}
                       {gpuInfo?.vram_mb
-                        ? ` (${gpuInfo.vram_mb >= 1024 ? `${(gpuInfo.vram_mb / 1024).toFixed(1)} GB` : `${gpuInfo.vram_mb} MB`} VRAM)`
+                        ? t.performance.vramSuffix(
+                            gpuInfo.vram_mb >= 1024
+                              ? `${(gpuInfo.vram_mb / 1024).toFixed(1)} GB`
+                              : `${gpuInfo.vram_mb} MB`,
+                          )
                         : ""}
                     </p>
                   </div>
                   <Badge variant={gpuInfo?.available ? "default" : "secondary"}>
-                    {gpuInfo ? (gpuInfo.available ? gpuInfo.backend : "CPU seul") : "..."}
+                    {gpuInfo
+                      ? gpuInfo.available
+                        ? gpuInfo.backend
+                        : t.performance.cpuOnly
+                      : "..."}
                   </Badge>
                 </div>
 
@@ -1336,18 +1364,22 @@ function SettingsWindow() {
                 {gpuInfo?.vram_mb && gpuInfo.recommended_model && (
                   <div className="p-2 rounded-md bg-muted/50 border border-border">
                     <p className="text-sm text-muted-foreground">
-                      Modèle max recommandé pour votre GPU :{" "}
+                      {t.performance.recommendedModel}{" "}
                       <span className="font-medium text-foreground">
                         {gpuInfo.recommended_model}
                       </span>
                     </p>
                     {(() => {
+                      // Mirrors model_vram_mb() in src-tauri/src/gpu.rs: the GGUF
+                      // file plus its compute buffers. Quantised models need far
+                      // less than the GGML ones this table used to describe.
                       const vramTable: Record<string, number> = {
-                        "ggml-tiny": 150,
-                        "ggml-base": 300,
-                        "ggml-small": 700,
-                        "ggml-medium": 1500,
-                        "ggml-large-v3": 3000,
+                        "whisper-tiny": 100,
+                        "whisper-base": 150,
+                        "whisper-small": 450,
+                        "whisper-medium": 1300,
+                        "whisper-large-v3-turbo": 1400,
+                        "whisper-large-v3": 1800,
                       };
                       const currentVram = vramTable[model] ?? 0;
                       const isTooLarge =
@@ -1355,8 +1387,7 @@ function SettingsWindow() {
                       if (useGpuAcceleration && isTooLarge) {
                         return (
                           <p className="text-xs text-destructive mt-1">
-                            Votre modèle actuel ({model}) risque de dépasser la capacité VRAM et
-                            provoquer des crashs. Essayez {gpuInfo.recommended_model}.
+                            {t.performance.vramWarning(model, gpuInfo.recommended_model)}
                           </p>
                         );
                       }
@@ -1369,13 +1400,13 @@ function SettingsWindow() {
                 {gpuStatus && (
                   <div className="flex items-center justify-between">
                     <div className="space-y-1">
-                      <Label>Mode actuel</Label>
+                      <Label>{t.performance.currentMode}</Label>
                       <p className="text-sm text-muted-foreground">
-                        {gpuStatus.fallback_reason || "Fonctionne normalement"}
+                        {gpuStatus.fallback_reason || t.performance.runningNormally}
                       </p>
                     </div>
                     <Badge variant={gpuStatus.mode === "gpu" ? "default" : "secondary"}>
-                      {gpuStatus.mode === "gpu" ? "GPU actif" : "Mode CPU"}
+                      {gpuStatus.mode === "gpu" ? t.performance.gpuActive : t.performance.cpuMode}
                     </Badge>
                   </div>
                 )}
@@ -1386,13 +1417,13 @@ function SettingsWindow() {
                     <div className="space-y-1">
                       <p className="text-sm text-destructive font-medium">
                         {gpuInfo.disabled_by_failures
-                          ? `GPU désactivé après ${gpuInfo.failure_count} échecs`
-                          : `${gpuInfo.failure_count} échec(s) GPU enregistré(s)`}
+                          ? t.performance.gpuDisabledAfter(gpuInfo.failure_count)
+                          : t.performance.gpuFailures(gpuInfo.failure_count)}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         {gpuInfo.disabled_by_failures
-                          ? "Le GPU ne sera pas utilisé tant que vous ne réinitialisez pas le compteur"
-                          : "Le GPU sera désactivé après 3 échecs consécutifs"}
+                          ? t.performance.gpuDisabledHelp
+                          : t.performance.gpuFailuresHelp}
                       </p>
                     </div>
                     <Button
@@ -1402,7 +1433,7 @@ function SettingsWindow() {
                       className="shrink-0"
                     >
                       <RefreshCw className="h-4 w-4 mr-1" />
-                      Réessayer
+                      {t.common.retry}
                     </Button>
                   </div>
                 )}
@@ -1412,11 +1443,9 @@ function SettingsWindow() {
                 {/* GPU Toggle */}
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label htmlFor="gpu-acceleration">Accélération GPU</Label>
+                    <Label htmlFor="gpu-acceleration">{t.performance.gpuToggle}</Label>
                     <p className="text-sm text-muted-foreground">
-                      {useGpuAcceleration
-                        ? "GPU utilisé pour la transcription"
-                        : "CPU utilisé (plus compatible)"}
+                      {useGpuAcceleration ? t.performance.gpuOn : t.performance.gpuOff}
                     </p>
                   </div>
                   <Switch
@@ -1428,10 +1457,7 @@ function SettingsWindow() {
                 </div>
 
                 {!gpuInfo?.available && (
-                  <p className="text-xs text-muted-foreground">
-                    Accélération GPU non disponible. Compilé sans support GPU ou aucun GPU
-                    compatible détecté.
-                  </p>
+                  <p className="text-xs text-muted-foreground">{t.performance.gpuUnavailable}</p>
                 )}
               </CardContent>
             </Card>
@@ -1445,13 +1471,42 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Download className="h-5 w-5 text-muted-foreground" />
-                  Gestion des modèles
+                  {t.models.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <p className="text-sm text-muted-foreground">
-                  Télécharger les modèles Whisper GGML pour la reconnaissance vocale
-                </p>
+                <p className="text-sm text-muted-foreground">{t.models.intro}</p>
+
+                {orphanedModels.length > 0 && (
+                  <div className="rounded-lg border border-border p-3 space-y-2">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <h3 className="text-sm font-medium">{t.models.orphansTitle}</h3>
+                      <span className="text-xs text-muted-foreground">
+                        {t.models.orphansReclaimable(
+                          orphanedModels.reduce((sum, o) => sum + o.size_mb, 0),
+                        )}
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">{t.models.orphansHelp}</p>
+                    {orphanedModels.map((orphan) => (
+                      <div key={orphan.name} className="flex items-center justify-between gap-3">
+                        <span className="min-w-0 truncate text-sm" title={orphan.path}>
+                          {orphan.name}
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            {t.models.sizeMb(orphan.size_mb)}
+                          </span>
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void removeOrphanedModel(orphan.name)}
+                        >
+                          {t.common.delete}
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {installedModels.map((modelInfo) => (
                   <div
@@ -1463,29 +1518,31 @@ function SettingsWindow() {
                         <span className="font-medium">{modelInfo.display_name}</span>
                         {modelInfo.installed && (
                           <Badge variant="default" className="text-xs">
-                            Installé
+                            {t.models.installed}
                           </Badge>
                         )}
                         {modelInfo.is_recommended && (
                           <Badge variant="secondary" className="text-xs">
-                            Recommandé
+                            {t.models.recommended}
                           </Badge>
                         )}
                         {modelInfo.coming_soon && (
                           <Badge variant="secondary" className="text-xs">
-                            Bientôt
+                            {t.models.comingSoon}
                           </Badge>
                         )}
                       </div>
                       <div className="text-sm text-muted-foreground mt-1">
-                        {modelInfo.description}
+                        {uiLanguage === "Fr"
+                          ? modelInfo.description
+                          : (modelInfo.description_en ?? modelInfo.description)}
                       </div>
 
                       {downloadingModel === modelInfo.name && (
                         <div className="mt-2 space-y-1">
                           <Progress value={downloadProgress} className="h-2" />
                           <p className="text-xs text-muted-foreground">
-                            Téléchargement… {downloadProgress.toFixed(1)}%
+                            {t.models.downloading(downloadProgress.toFixed(1))}
                           </p>
                         </div>
                       )}
@@ -1498,7 +1555,7 @@ function SettingsWindow() {
                         onClick={() => handleDownloadModel(modelInfo.name)}
                         disabled={downloadingModel !== null}
                       >
-                        Télécharger
+                        {t.models.download}
                       </Button>
                     )}
                   </div>
@@ -1515,32 +1572,30 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Settings className="h-5 w-5 text-muted-foreground" />
-                  Configuration système
+                  {t.system.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-6">
                 {/* System Dependencies (Linux-specific) */}
                 {currentPlatform === "linux" && (
                   <div className="space-y-3">
-                    <Label>Permissions système</Label>
+                    <Label>{t.system.permissions}</Label>
                     <p className="text-sm text-muted-foreground">
-                      {systemDepsInstalled
-                        ? "Permissions système configurées"
-                        : "Configurer les permissions evdev/uinput"}
+                      {systemDepsInstalled ? t.system.permissionsOk : t.system.permissionsMissing}
                     </p>
 
                     <div className="flex flex-col gap-2">
                       <div className="flex items-center gap-2">
                         <Badge variant={permissionsInstalled ? "default" : "secondary"}>
-                          {permissionsInstalled ? "Actif" : "Manquant"}
+                          {permissionsInstalled ? t.system.active : t.system.missing}
                         </Badge>
-                        <span className="text-sm">Appui pour parler (evdev)</span>
+                        <span className="text-sm">{t.system.pushToTalk}</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <Badge variant={uinputAvailable ? "default" : "secondary"}>
-                          {uinputAvailable ? "Actif" : "Manquant"}
+                          {uinputAvailable ? t.system.active : t.system.missing}
                         </Badge>
-                        <span className="text-sm">Saisie de texte (uinput)</span>
+                        <span className="text-sm">{t.system.typing}</span>
                       </div>
                     </div>
 
@@ -1551,10 +1606,10 @@ function SettingsWindow() {
                       size="sm"
                     >
                       {isInstallingSystem
-                        ? "Installation…"
+                        ? t.common.installing
                         : systemDepsInstalled
-                          ? "Configuré"
-                          : "Configurer les permissions"}
+                          ? t.system.configured
+                          : t.system.configurePermissions}
                     </Button>
                   </div>
                 )}
@@ -1563,10 +1618,8 @@ function SettingsWindow() {
 
                 {/* Paste Method */}
                 <div className="space-y-3">
-                  <Label htmlFor="paste-method">Méthode de collage</Label>
-                  <p className="text-sm text-muted-foreground">
-                    Comment le texte est injecté dans l'application active
-                  </p>
+                  <Label htmlFor="paste-method">{t.system.pasteMethod}</Label>
+                  <p className="text-sm text-muted-foreground">{t.system.pasteMethodHelp}</p>
                   <Select
                     value={pasteMethod}
                     onValueChange={(v) => setPasteMethod(v as import("@/bindings").PasteMethod)}
@@ -1575,15 +1628,11 @@ function SettingsWindow() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Direct">
-                        Direct (wtype/xdotool), recommandé sur Linux
-                      </SelectItem>
-                      <SelectItem value="CtrlV">Ctrl+V (clipboard)</SelectItem>
-                      <SelectItem value="CtrlShiftV">Ctrl+Shift+V (terminaux)</SelectItem>
-                      <SelectItem value="ShiftInsert">
-                        Shift+Insert (tmux, certains terminaux)
-                      </SelectItem>
-                      <SelectItem value="None">Désactivé</SelectItem>
+                      <SelectItem value="Direct">{t.system.pasteDirect}</SelectItem>
+                      <SelectItem value="CtrlV">{t.system.pasteCtrlV}</SelectItem>
+                      <SelectItem value="CtrlShiftV">{t.system.pasteCtrlShiftV}</SelectItem>
+                      <SelectItem value="ShiftInsert">{t.system.pasteShiftInsert}</SelectItem>
+                      <SelectItem value="None">{t.system.pasteNone}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1592,13 +1641,11 @@ function SettingsWindow() {
 
                 {/* Autostart */}
                 <div className="space-y-3">
-                  <Label htmlFor="autostart">Lancement au démarrage</Label>
-                  <p className="text-sm text-muted-foreground">
-                    Démarrer automatiquement KaraokeTyper à la connexion
-                  </p>
+                  <Label htmlFor="autostart">{t.system.autostart}</Label>
+                  <p className="text-sm text-muted-foreground">{t.system.autostartHelp}</p>
                   <div className="flex items-center justify-between">
                     <span className="text-sm">
-                      {autostart ? "Démarre à la connexion" : "Démarrage manuel"}
+                      {autostart ? t.system.autostartOn : t.system.autostartOff}
                     </span>
                     <Switch
                       id="autostart"
@@ -1621,14 +1668,11 @@ function SettingsWindow() {
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center gap-2 text-lg">
                     <Monitor className="h-5 w-5 text-muted-foreground" />
-                    Détection de terminal
+                    {t.gnome.title}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <p className="text-sm text-muted-foreground">
-                    Extension GNOME Shell pour la détection automatique des terminaux. Utilise
-                    Ctrl+Maj+V dans les terminaux et Ctrl+V ailleurs.
-                  </p>
+                  <p className="text-sm text-muted-foreground">{t.gnome.intro}</p>
 
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
@@ -1636,15 +1680,15 @@ function SettingsWindow() {
                         variant={gnomeExtInstalled && gnomeExtEnabled ? "default" : "secondary"}
                       >
                         {gnomeExtInstalled && gnomeExtEnabled
-                          ? "Active"
+                          ? t.gnome.active
                           : gnomeExtInstalled
-                            ? "Installée (désactivée)"
-                            : "Non installée"}
+                            ? t.gnome.installedDisabled
+                            : t.gnome.notInstalled}
                       </Badge>
                       <span className="text-sm">
                         {gnomeExtInstalled && gnomeExtEnabled
-                          ? "Détection automatique active"
-                          : "Détection de secours utilisée"}
+                          ? t.gnome.autoDetection
+                          : t.gnome.fallbackDetection}
                       </span>
                     </div>
 
@@ -1656,10 +1700,10 @@ function SettingsWindow() {
                         size="sm"
                       >
                         {isInstallingGnomeExt
-                          ? "Installation…"
+                          ? t.common.installing
                           : gnomeExtInstalled
-                            ? "Installée"
-                            : "Installer l'extension"}
+                            ? t.gnome.installed
+                            : t.gnome.installExtension}
                       </Button>
                       {gnomeExtInstalled && (
                         <Button
@@ -1668,17 +1712,14 @@ function SettingsWindow() {
                           variant="destructive"
                           size="sm"
                         >
-                          Supprimer
+                          {t.common.delete}
                         </Button>
                       )}
                     </div>
                   </div>
 
                   {gnomeExtInstalled && !gnomeExtEnabled && (
-                    <p className="text-sm text-destructive">
-                      Extension installée mais non activée. Activez-la dans l'application Extensions
-                      GNOME ou lancez : gnome-extensions enable focused-window-dbus@karaoketyper
-                    </p>
+                    <p className="text-sm text-destructive">{t.gnome.notEnabled}</p>
                   )}
                 </CardContent>
               </Card>
@@ -1693,16 +1734,14 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Volume2 className="h-5 w-5 text-muted-foreground" />
-                  Sons de l'application
+                  {t.sounds.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label htmlFor="audio-feedback">Notifications sonores</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Jouer un son au début et à la fin de l'enregistrement
-                    </p>
+                    <Label htmlFor="audio-feedback">{t.sounds.notifications}</Label>
+                    <p className="text-sm text-muted-foreground">{t.sounds.notificationsHelp}</p>
                   </div>
                   <Switch
                     id="audio-feedback"
@@ -1725,8 +1764,8 @@ function SettingsWindow() {
                           }
                         }}
                         className="rounded-md text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                        title={audioFeedbackVolume > 0 ? "Couper le son" : "Rétablir le son"}
-                        aria-label={audioFeedbackVolume > 0 ? "Couper le son" : "Rétablir le son"}
+                        title={audioFeedbackVolume > 0 ? t.sounds.mute : t.sounds.unmute}
+                        aria-label={audioFeedbackVolume > 0 ? t.sounds.mute : t.sounds.unmute}
                         aria-pressed={audioFeedbackVolume === 0}
                       >
                         {audioFeedbackVolume > 0 ? (
@@ -1736,7 +1775,7 @@ function SettingsWindow() {
                         )}
                       </button>
                       <Label id="audio-volume-label" className="flex-1">
-                        Volume ({Math.round(audioFeedbackVolume * 100)}%)
+                        {t.sounds.volume(Math.round(audioFeedbackVolume * 100))}
                       </Label>
                     </div>
                     <Slider
@@ -1761,16 +1800,13 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <Clock className="h-5 w-5 text-muted-foreground" />
-                  Déchargement du modèle
+                  {t.unload.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="model-unload">Décharger après inactivité</Label>
-                  <p className="text-sm text-muted-foreground">
-                    Libérer la mémoire en déchargeant le modèle STT après une période d'inactivité.
-                    Le modèle se recharge automatiquement.
-                  </p>
+                  <Label htmlFor="model-unload">{t.unload.label}</Label>
+                  <p className="text-sm text-muted-foreground">{t.unload.help}</p>
                   <Select
                     value={modelUnloadTimeout}
                     onValueChange={(value) =>
@@ -1781,10 +1817,10 @@ function SettingsWindow() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="Never">Jamais</SelectItem>
-                      <SelectItem value="Min5">Après 5 minutes</SelectItem>
-                      <SelectItem value="Min15">Après 15 minutes</SelectItem>
-                      <SelectItem value="Hour1">Après 1 heure</SelectItem>
+                      <SelectItem value="Never">{t.unload.never}</SelectItem>
+                      <SelectItem value="Min5">{t.unload.min5}</SelectItem>
+                      <SelectItem value="Min15">{t.unload.min15}</SelectItem>
+                      <SelectItem value="Hour1">{t.unload.hour1}</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1800,17 +1836,14 @@ function SettingsWindow() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
                   <SpellCheck className="h-5 w-5 text-muted-foreground" />
-                  Intégration Ollama
+                  {t.ollama.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <Label htmlFor="ollama-enabled">Correction de texte</Label>
-                    <p className="text-sm text-muted-foreground">
-                      Utiliser un LLM local pour corriger la grammaire et l'orthographe après la
-                      transcription
-                    </p>
+                    <Label htmlFor="ollama-enabled">{t.ollama.correction}</Label>
+                    <p className="text-sm text-muted-foreground">{t.ollama.correctionHelp}</p>
                   </div>
                   <Switch
                     id="ollama-enabled"
@@ -1825,7 +1858,7 @@ function SettingsWindow() {
                 {ollamaEnabled && (
                   <>
                     <div className="space-y-2">
-                      <Label>URL du serveur</Label>
+                      <Label>{t.ollama.serverUrl}</Label>
                       <Input
                         value={ollamaUrl}
                         onChange={(e) => setOllamaUrl(e.target.value)}
@@ -1834,7 +1867,7 @@ function SettingsWindow() {
                     </div>
 
                     <div className="space-y-2">
-                      <Label>Modèle</Label>
+                      <Label>{t.ollama.model}</Label>
                       <Input
                         value={ollamaModel}
                         onChange={(e) => setOllamaModel(e.target.value)}
@@ -1845,17 +1878,17 @@ function SettingsWindow() {
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Badge variant={ollamaStatus?.available ? "default" : "secondary"}>
-                          {ollamaStatus?.available ? "Connecté" : "Déconnecté"}
+                          {ollamaStatus?.available ? t.ollama.connected : t.ollama.disconnected}
                         </Badge>
                         <span className="text-sm text-muted-foreground">
                           {ollamaStatus?.available
-                            ? `${ollamaStatus.model} prêt`
-                            : "Ollama non joignable"}
+                            ? t.ollama.ready(ollamaStatus.model)
+                            : t.ollama.unreachable}
                         </span>
                       </div>
                       <Button variant="outline" size="sm" onClick={() => void checkOllama()}>
                         <RefreshCw className="h-4 w-4 mr-1" />
-                        Tester
+                        {t.common.test}
                       </Button>
                     </div>
                   </>
@@ -1871,7 +1904,8 @@ function SettingsWindow() {
             >
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center gap-2 text-lg">
-                  <Info className="h-5 w-5 text-muted-foreground" />À propos
+                  <Info className="h-5 w-5 text-muted-foreground" />
+                  {t.about.title}
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
@@ -1880,12 +1914,13 @@ function SettingsWindow() {
                     KaraokeTyper{appVersion ? ` v${appVersion}` : ""}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    Dictée vocale hors-ligne pour{" "}
-                    {currentPlatform === "macos"
-                      ? "macOS"
-                      : currentPlatform === "windows"
-                        ? "Windows"
-                        : "Linux"}
+                    {t.about.tagline(
+                      currentPlatform === "macos"
+                        ? "macOS"
+                        : currentPlatform === "windows"
+                          ? "Windows"
+                          : "Linux",
+                    )}
                   </p>
                 </div>
                 <UpdateChecker />
@@ -1902,17 +1937,17 @@ function SettingsWindow() {
             aria-live="polite"
             className={cn(
               "text-sm",
-              saveStatus.startsWith("Erreur") ? "text-destructive" : "text-muted-foreground",
+              saveStatusIsError ? "text-destructive" : "text-muted-foreground",
             )}
           >
             {saveStatus}
           </output>
         )}
         <Button variant="ghost" onClick={handleCancel} disabled={isSaving}>
-          Annuler
+          {t.common.cancel}
         </Button>
         <Button onClick={handleSave} disabled={isSaving}>
-          Enregistrer et fermer
+          {t.window.saveAndClose}
         </Button>
       </div>
     </div>

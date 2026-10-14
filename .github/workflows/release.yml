@@ -225,7 +225,19 @@ jobs:
 
           $sdkPath = "C:\VulkanSDK\$version"
           if (-not (Test-Path $sdkPath)) { throw "Vulkan SDK is not at $sdkPath after install" }
+
+          # VULKAN_SDK and Bin are not enough to link: ggml asks rustc for
+          # `vulkan-1.lib` without a search path, and the link failed on
+          # `LNK1181: cannot open input file 'vulkan-1.lib'` the first time this
+          # job got far enough to try. RUSTFLAGS adds the one directory that
+          # holds it, which is narrower than rewriting LIB — that variable also
+          # carries the MSVC and UCRT directories rustc relies on.
+          $libPath = "$sdkPath\Lib"
+          if (-not (Test-Path "$libPath\vulkan-1.lib")) {
+            throw "vulkan-1.lib is not in $libPath — the SDK layout changed"
+          }
           echo "VULKAN_SDK=$sdkPath" >> $env:GITHUB_ENV
+          echo "RUSTFLAGS=-L native=$libPath" >> $env:GITHUB_ENV
           echo "$sdkPath\Bin" >> $env:GITHUB_PATH
 
       - name: Setup Node.js

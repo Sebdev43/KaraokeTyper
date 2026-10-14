@@ -1257,6 +1257,19 @@ function SettingsWindow() {
                       ci-dessous.
                     </p>
                   )}
+                  {/* The 1.9.0 format change leaves the previous .bin behind, and it is big.
+                      Say so here, where the user discovers the model is missing, instead of
+                      only in the engine log nobody reads. */}
+                  {orphanedModels.length > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      {orphanedModels.length === 1
+                        ? "Un ancien fichier de modèle occupe encore"
+                        : `${orphanedModels.length} anciens fichiers de modèle occupent encore`}{" "}
+                      {orphanedModels.reduce((sum, o) => sum + o.size_mb, 0)} Mo : l'encart
+                      «&nbsp;Fichiers inutilisés&nbsp;» de la section «&nbsp;Modèles&nbsp;»
+                      ci-dessous permet de les supprimer.
+                    </p>
+                  )}
                 </div>
 
                 {/* Hybrid mode: Parakeet for short dictations, Whisper beyond the threshold */}

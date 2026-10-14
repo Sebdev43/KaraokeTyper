@@ -91,8 +91,8 @@ transcribe-cpp = { version = "0.3.1", default-features = false }
 # can be linked (`links = "onnxruntime"`), so its version is dictated by transcribe-rs
 # (0.3.11 requires exactly rc.12). `download-binaries` needs a TLS feature since
 # rc.11; rustls keeps OpenSSL out of the build.
-transcribe-rs = { version = "=0.3.11", default-features = false, features = ["onnx"] }
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
+transcribe-rs = { version = "=0.3.12", default-features = false, features = ["onnx"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
 
 # Audio playback for feedback sounds
 rodio = "0.20"

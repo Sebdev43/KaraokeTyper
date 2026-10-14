@@ -1764,6 +1764,8 @@ pub fn run() {
             gnome_extension::remove_focused_window_extension,
             get_autostart_enabled,
             set_autostart_enabled,
+            model_downloader::list_orphaned_models,
+            model_downloader::delete_orphaned_model,
             app_data::get_app_data_info,
             app_data::cleanup_app_data,
             get_gpu_info,

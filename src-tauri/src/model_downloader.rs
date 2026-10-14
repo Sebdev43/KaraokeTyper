@@ -545,6 +545,83 @@ pub fn legacy_ggml_leftover(model_name: &str) -> Option<(PathBuf, u64)> {
     Some((legacy, size / 1_000_000))
 }
 
+/// A file or directory sitting in the models folder that no catalogue entry
+/// claims any more: a model left behind by a format change, a download
+/// interrupted before its final rename, a model dropped from the catalogue.
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct OrphanedModel {
+    /// Entry name inside the models directory, and the handle for deleting it.
+    pub name: String,
+    pub path: String,
+    pub size_mb: u32,
+}
+
+/// Every name the catalogue expects to find in the models directory.
+fn claimed_entry_names() -> Vec<String> {
+    crate::catalog::models()
+        .iter()
+        .map(|m| {
+            if m.is_directory {
+                m.name.clone()
+            } else {
+                format!("{}.{}", m.name, file_extension(&m.url))
+            }
+        })
+        .collect()
+}
+
+/// What is in the models directory that the catalogue does not claim.
+///
+/// Reports, never deletes: these are gigabytes the user paid bandwidth for, and
+/// deciding for them is not this function's job.
+#[must_use]
+pub fn orphaned_models() -> Vec<OrphanedModel> {
+    let dir = get_models_dir();
+    let claimed = claimed_entry_names();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<OrphanedModel> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if claimed.contains(&name) {
+                return None;
+            }
+            let path = entry.path();
+            let size = if path.is_dir() {
+                dir_size(&path)
+            } else {
+                std::fs::metadata(&path).ok()?.len()
+            };
+            Some(OrphanedModel {
+                name,
+                path: path.to_string_lossy().to_string(),
+                size_mb: u32::try_from(size / 1_000_000).unwrap_or(u32::MAX),
+            })
+        })
+        .collect();
+    out.sort_by_key(|o| std::cmp::Reverse(o.size_mb));
+    out
+}
+
+fn dir_size(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| {
+            let p = e.path();
+            if p.is_dir() {
+                dir_size(&p)
+            } else {
+                std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0)
+            }
+        })
+        .sum()
+}
+
 /// Every installable model, from the versioned catalogue.
 ///
 /// Was ~230 lines of `ModelInfo` literals with hand-typed SHA-256 values; it is now
@@ -1333,6 +1410,44 @@ async fn download_and_extract_archive(
     Ok(())
 }
 
+/// Unused files sitting in the models directory, largest first.
+#[tauri::command]
+#[specta::specta]
+#[must_use]
+pub fn list_orphaned_models() -> Vec<OrphanedModel> {
+    orphaned_models()
+}
+
+/// Delete one entry the catalogue no longer claims.
+///
+/// `name` is an entry of the models directory, never a path: anything with a
+/// separator, or anything the catalogue still claims, is refused rather than
+/// resolved.
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_orphaned_model(name: String) -> Result<(), String> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(format!("nom de fichier refusé : {name}"));
+    }
+    if claimed_entry_names().contains(&name) {
+        return Err(format!(
+            "{name} est un modèle du catalogue, pas un fichier orphelin"
+        ));
+    }
+    let path = get_models_dir().join(&name);
+    if !path.exists() {
+        return Err(format!("{name} n'existe plus"));
+    }
+    let removed = if path.is_dir() {
+        tokio::fs::remove_dir_all(&path).await
+    } else {
+        tokio::fs::remove_file(&path).await
+    };
+    removed.map_err(|e| format!("suppression de {name} impossible : {e}"))?;
+    crate::dev_log!("[MODELS] Orphaned entry removed: {}", path.display());
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub async fn delete_model(model_name: &str) -> Result<(), String> {
     // The catalogue carries the extension; fall back to the legacy `.bin` so a
@@ -1396,6 +1511,40 @@ mod tests {
         let dir = get_models_dir();
         assert!(dir.to_string_lossy().contains("karaoketyper"));
         assert!(dir.to_string_lossy().contains("models"));
+    }
+
+    #[test]
+    fn the_catalogue_claims_the_files_it_installs() {
+        let claimed = claimed_entry_names();
+        // A single-file model is claimed under the extension of its URL, a bundle
+        // under its directory name. Get this wrong and a model in use is offered
+        // for deletion as if it were a leftover.
+        assert!(
+            claimed.contains(&"whisper-large-v3.gguf".to_string()),
+            "{claimed:?}"
+        );
+        assert!(
+            claimed.contains(&"parakeet-tdt-0.6b-v3-int8".to_string()),
+            "{claimed:?}"
+        );
+        // The previous format is no longer claimed: that is what makes the old
+        // file show up as reclaimable space.
+        assert!(!claimed.contains(&"ggml-large-v3.bin".to_string()));
+        assert_eq!(claimed.len(), crate::catalog::models().len());
+    }
+
+    #[tokio::test]
+    async fn deleting_an_orphan_refuses_paths_and_catalogue_models() {
+        for hostile in ["../settings.json", "a/b", "", ".."] {
+            assert!(
+                delete_orphaned_model(hostile.to_string()).await.is_err(),
+                "{hostile} must be refused"
+            );
+        }
+        // An installed model is not a leftover, whatever the caller claims.
+        assert!(delete_orphaned_model("whisper-large-v3.gguf".to_string())
+            .await
+            .is_err());
     }
 
     #[test]

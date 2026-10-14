@@ -23,7 +23,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type AppConfig, commands, type ShortcutActivation } from "@/bindings";
+import { type AppConfig, commands, type OrphanedModel, type ShortcutActivation } from "@/bindings";
 import { UpdateChecker } from "@/components/UpdateChecker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -325,6 +325,30 @@ function SettingsWindow() {
     }
   }, [setUinputAvailable]);
 
+  // Files left in the models folder that no catalogue entry claims: a model from
+  // a previous format, an interrupted download. Shown so the space can be
+  // reclaimed on purpose — nothing here is ever deleted automatically.
+  const [orphanedModels, setOrphanedModels] = useState<OrphanedModel[]>([]);
+  const loadOrphanedModels = useCallback(async () => {
+    try {
+      setOrphanedModels(await commands.listOrphanedModels());
+    } catch (_error) {
+      setOrphanedModels([]);
+    }
+  }, []);
+
+  const removeOrphanedModel = useCallback(
+    async (name: string) => {
+      const result = await commands.deleteOrphanedModel(name);
+      if (result.status === "error") {
+        setSaveStatus(`Suppression impossible : ${result.error}`);
+        return;
+      }
+      await loadOrphanedModels();
+    },
+    [loadOrphanedModels, setSaveStatus],
+  );
+
   const loadInstalledModels = useCallback(async () => {
     try {
       const result = await commands.getInstalledModels();
@@ -477,6 +501,7 @@ function SettingsWindow() {
     void checkPermissions();
     void checkUinput();
     void loadInstalledModels();
+    void loadOrphanedModels();
     void checkGnomeExtension();
     void loadAutostart();
     void loadGpuInfo();
@@ -487,6 +512,7 @@ function SettingsWindow() {
     checkPermissions,
     checkUinput,
     loadInstalledModels,
+    loadOrphanedModels,
     checkGnomeExtension,
     loadAutostart,
     loadGpuInfo,
@@ -1454,8 +1480,41 @@ function SettingsWindow() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <p className="text-sm text-muted-foreground">
-                  Télécharger les modèles Whisper GGML pour la reconnaissance vocale
+                  Télécharger les modèles de reconnaissance vocale. Whisper est au format GGUF
+                  depuis la 1.9.0 : un fichier installé avant n'est plus lisible.
                 </p>
+
+                {orphanedModels.length > 0 && (
+                  <div className="rounded-lg border border-border p-3 space-y-2">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <h3 className="text-sm font-medium">Fichiers inutilisés</h3>
+                      <span className="text-xs text-muted-foreground">
+                        {orphanedModels.reduce((sum, o) => sum + o.size_mb, 0)} Mo récupérables
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Plus aucun modèle du catalogue n'utilise ces fichiers : format précédent,
+                      téléchargement interrompu. Rien n'est supprimé sans votre geste.
+                    </p>
+                    {orphanedModels.map((orphan) => (
+                      <div key={orphan.name} className="flex items-center justify-between gap-3">
+                        <span className="min-w-0 truncate text-sm" title={orphan.path}>
+                          {orphan.name}
+                          <span className="ml-2 text-xs text-muted-foreground">
+                            {orphan.size_mb} Mo
+                          </span>
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void removeOrphanedModel(orphan.name)}
+                        >
+                          Supprimer
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {installedModels.map((modelInfo) => (
                   <div

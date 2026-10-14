@@ -214,6 +214,27 @@ async setAutostartEnabled(enabled: boolean) : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Unused files sitting in the models directory, largest first.
+ */
+async listOrphanedModels() : Promise<OrphanedModel[]> {
+    return await TAURI_INVOKE("list_orphaned_models");
+},
+/**
+ * Delete one entry the catalogue no longer claims.
+ * 
+ * `name` is an entry of the models directory, never a path: anything with a
+ * separator, or anything the catalogue still claims, is refused rather than
+ * resolved.
+ */
+async deleteOrphanedModel(name: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("delete_orphaned_model", { name }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getAppDataInfo() : Promise<Result<AppDataInfo, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_app_data_info") };
@@ -514,6 +535,16 @@ files?: ModelFile[];
 sha256?: string }
 export type ModelUnloadTimeout = "Never" | "Min5" | "Min15" | "Hour1"
 export type OllamaStatus = { available: boolean; model: string; url: string }
+/**
+ * A file or directory sitting in the models folder that no catalogue entry
+ * claims any more: a model left behind by a format change, a download
+ * interrupted before its final rename, a model dropped from the catalogue.
+ */
+export type OrphanedModel = { 
+/**
+ * Entry name inside the models directory, and the handle for deleting it.
+ */
+name: string; path: string; size_mb: number }
 /**
  * How text is pasted into the focused application.
  * Inspired by Handy's approach: user picks the method, no auto-detection.

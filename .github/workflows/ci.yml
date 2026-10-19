@@ -165,3 +165,26 @@ jobs:
           python-version: '3.12'
       - name: scripts/catalog.py check
         run: python3 scripts/catalog.py check
+
+  # Blocking, unlike the two informational jobs above: an advisory that is not
+  # already answered in `src-tauri/.cargo/audit.toml` is something a human has to
+  # look at before the change lands. That file carries one justification per
+  # advisory it passes over, so a red result here means a *new* one appeared.
+  #
+  # The weekly schedule matters as much as the pull-request run: advisories are
+  # published against versions already in the lockfile, so the danger arrives
+  # without anyone pushing anything.
+  audit:
+    name: Rust — security advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: cargo audit
+        working-directory: src-tauri
+        run: cargo audit --color never

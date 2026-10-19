@@ -17,7 +17,8 @@
 //! handled deliberately — `finish` to get the real audio out, `reset` to drop what is
 //! left. Neither is optional; see their doc comments for which failure each prevents.
 
-use rubato::{FftFixedIn, Resampler};
+use rubato::audioadapter_buffers::direct::{SequentialSlice, SequentialSliceOfVecs};
+use rubato::{Fft, FixedSync, Resampler};
 
 /// Input frames we hand rubato per call.
 ///
@@ -36,7 +37,7 @@ const FLUSH_CHUNKS: usize = 4;
 
 pub(crate) struct AudioResampler {
     /// `None` when the device already gives us the target rate.
-    resampler: Option<FftFixedIn<f32>>,
+    resampler: Option<Fft<f32>>,
     in_buf: Vec<f32>,
     /// Pre-allocated so the steady-state path really does not allocate: rubato's
     /// `process` returns a fresh `Vec<Vec<f32>>` on every call, `process_into_buffer`
@@ -57,15 +58,21 @@ impl AudioResampler {
             return Self::passthrough();
         }
 
-        match FftFixedIn::<f32>::new(
+        // rubato 5 renamed `FftFixedIn` to `Fft` with an explicit `FixedSync::Input`,
+        // and picks the number of FFT sub-chunks itself instead of taking it as an
+        // argument.
+        match Fft::<f32>::new(
             in_hz as usize,
             out_hz as usize,
             CHUNK_IN,
-            /* sub_chunks */ 1,
             /* channels */ 1,
+            FixedSync::Input,
         ) {
             Ok(resampler) => {
-                let out_buf = resampler.output_buffer_allocate(true);
+                // `output_buffer_allocate` is gone in rubato 5; the maximum output
+                // length is still exposed, and allocating once here keeps the
+                // steady-state path allocation-free as before.
+                let out_buf = vec![vec![0.0f32; resampler.output_frames_max()]; 1];
                 Self {
                     resampler: Some(resampler),
                     in_buf: Vec::with_capacity(CHUNK_IN),
@@ -188,13 +195,28 @@ impl AudioResampler {
 
     /// One FFT pass, appending whatever came out. Shared by `push` and `finish` so the
     /// two cannot drift apart on buffer handling.
-    fn run(
-        resampler: &mut FftFixedIn<f32>,
-        input: &[f32],
-        scratch: &mut [Vec<f32>],
-        out: &mut Vec<f32>,
-    ) {
-        match resampler.process_into_buffer(&[input], scratch, None) {
+    fn run(resampler: &mut Fft<f32>, input: &[f32], scratch: &mut [Vec<f32>], out: &mut Vec<f32>) {
+        // rubato 5 takes audioadapter views rather than raw slices.
+        // `SequentialSliceOfVecs` is the adapter for the vector-of-vectors layout
+        // this module already used, so the buffers themselves are unchanged.
+        let frames_in = input.len();
+        let in_view = match SequentialSlice::new(input, 1, frames_in) {
+            Ok(view) => view,
+            Err(e) => {
+                crate::dev_log!("[RESAMPLER] input adapter rejected: {}", e);
+                return;
+            }
+        };
+        let frames_out_max = scratch[0].len();
+        let mut out_view = match SequentialSliceOfVecs::new_mut(scratch, 1, frames_out_max) {
+            Ok(view) => view,
+            Err(e) => {
+                crate::dev_log!("[RESAMPLER] output adapter rejected: {}", e);
+                return;
+            }
+        };
+
+        match resampler.process_into_buffer(&in_view, &mut out_view, None) {
             Ok((_, frames_out)) => out.extend_from_slice(&scratch[0][..frames_out]),
             Err(e) => crate::dev_log!("[RESAMPLER] process failed: {}", e),
         }
@@ -399,13 +421,32 @@ mod tests {
         r.push(&[0.5f32; 100], &mut sink);
         r.finish(&mut sink);
 
-        // One fresh full chunk must produce at most one chunk's worth of output. If
-        // `finish` had left its padded input behind, this would emit more.
+        // One fresh full chunk must produce about one chunk's worth of output. If
+        // `finish` had left its padded input behind, the four silent chunks it feeds
+        // through would come back out here — several times this much.
+        //
+        // Measured against a resampler in steady state rather than against
+        // `CHUNK_IN * OUT_HZ / IN_HZ`: rubato emits in blocks of its own and a single
+        // call returns a little more or less than the exact ratio, while the total
+        // stays right. Pinning the arithmetic result is what made this test read a
+        // library change as a leak.
+        let steady = {
+            let mut reference = AudioResampler::new(IN_HZ, OUT_HZ);
+            let mut sink = Vec::new();
+            for _ in 0..4 {
+                sink.clear();
+                reference.push(&[0.25f32; CHUNK_IN], &mut sink);
+            }
+            sink.len()
+        };
+
         let emitted = collect(&mut r, &[0.25f32; CHUNK_IN]);
         assert!(
-            emitted.len() <= CHUNK_IN * OUT_HZ as usize / IN_HZ as usize + 1,
-            "finish() leaked its padded tail: {} samples",
-            emitted.len()
+            emitted.len() <= steady * 2,
+            "finish() leaked its padded tail: {} samples for a chunk that yields {} \
+             in steady state",
+            emitted.len(),
+            steady
         );
     }
 

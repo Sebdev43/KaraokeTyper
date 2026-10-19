@@ -1,0 +1,38 @@
+# Advisories cargo-audit may pass over, each with the reason it does not reach
+# this application. Reviewed on 2026-10-19; revisit whenever one of the crates
+# below moves.
+
+[advisories]
+ignore = [
+    # zip 4.6.1, three advisories on ZipArchive::extract — symlink escape
+    # (0368), SUID/SGID preservation (0367, high) and permissions applied
+    # through symlinks (0369, critical). All three are fixed in zip >= 9.0.0,
+    # which this crate already uses directly; 4.6.1 arrives only through
+    # tauri-plugin-updater 2.13.3, the latest stable release, whose own
+    # dependency is pinned to ^4. The only version past it is 3.0.0-alpha.3.
+    #
+    # Two things keep this out of reach. The plugin verifies the minisign
+    # signature of the downloaded bundle *before* calling install, so reaching
+    # the extraction code at all means already holding the signing key. And the
+    # zip path only runs for a `.nsis.zip` bundle on Windows — this project
+    # ships `.exe` and `.msi`, so it is never taken.
+    #
+    # Revisit when tauri-plugin-updater 3.0 is stable.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+
+    # Unmaintained transitive crates, no known vulnerability. Each is pulled by
+    # Tauri's own GTK and D-Bus stack, none by this project directly, and none
+    # can be moved without Tauri moving first.
+    "RUSTSEC-2024-0370", # proc-macro-error
+    "RUSTSEC-2024-0436", # paste
+    "RUSTSEC-2026-0370", # zvariant
+    "RUSTSEC-2026-0371", # zbus_names
+    "RUSTSEC-2026-0372", # zvariant_derive
+
+    # glib 0.18.5, unsoundness in VariantStrIter's Iterator impls. Reached only
+    # through gtk-rs inside Tauri, never from this code, and no fixed release
+    # exists on the 0.18 line that Tauri pins.
+    "RUSTSEC-2024-0429",
+]

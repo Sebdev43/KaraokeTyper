@@ -33,18 +33,25 @@ fn play_embedded_sound(data: &'static [u8], volume: f32) {
 }
 
 fn play_sound_blocking(data: &'static [u8], volume: f32) -> Result<(), String> {
-    use rodio::{Decoder, OutputStream, Sink};
+    use rodio::{Decoder, DeviceSinkBuilder, Player};
 
-    let (_stream, stream_handle) =
-        OutputStream::try_default().map_err(|e| format!("No audio output: {}", e))?;
+    // rodio 0.22 renamed the entry points: `OutputStream::try_default` is now
+    // `DeviceSinkBuilder::open_default_sink`, and `Sink` is `Player`, connected
+    // to the device's mixer rather than built from a stream handle. The handle
+    // has to outlive playback — dropping it closes the device mid-sound.
+    let mut device =
+        DeviceSinkBuilder::open_default_sink().map_err(|e| format!("No audio output: {}", e))?;
+    // It otherwise prints its own line to stderr when the sound ends; this
+    // module logs through `dev_log!` or stays quiet.
+    device.log_on_drop(false);
 
-    let sink = Sink::try_new(&stream_handle).map_err(|e| format!("Sink error: {}", e))?;
-    sink.set_volume(volume.clamp(0.0, 1.0));
+    let player = Player::connect_new(device.mixer());
+    player.set_volume(volume.clamp(0.0, 1.0));
 
     let cursor = Cursor::new(data);
     let source = Decoder::new(cursor).map_err(|e| format!("Decode error: {}", e))?;
-    sink.append(source);
-    sink.sleep_until_end();
+    player.append(source);
+    player.sleep_until_end();
 
     Ok(())
 }

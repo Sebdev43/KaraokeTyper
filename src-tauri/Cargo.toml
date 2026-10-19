@@ -89,13 +89,13 @@ transcribe-cpp = { version = "0.3.1", default-features = false }
 #
 # Voice Activity Detection (Silero VAD v4) uses ort directly (vad.rs). Only one ort
 # can be linked (`links = "onnxruntime"`), so its version is dictated by transcribe-rs
-# (0.3.11 requires exactly rc.12). `download-binaries` needs a TLS feature since
+# (0.3.12 requires exactly rc.13). `download-binaries` needs a TLS feature since
 # rc.11; rustls keeps OpenSSL out of the build.
-transcribe-rs = { version = "=0.3.11", default-features = false, features = ["onnx"] }
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
+transcribe-rs = { version = "=0.3.12", default-features = false, features = ["onnx"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
 
 # Audio playback for feedback sounds
-rodio = "0.20"
+rodio = "0.22"
 
 # Audio capture (cross-platform: ALSA on Linux via pipewire-alsa, CoreAudio on macOS, WASAPI on Windows)
 cpal = "0.15"
@@ -104,9 +104,10 @@ cpal = "0.15"
 rtrb = "0.4"
 
 # Anti-aliased sample-rate conversion for devices that can't give us 16kHz directly.
-# Kept on 0.16 for its FftFixedIn API: 1.0 renamed it to Fft + FixedSync::Input and
-# moved buffers to audioadapter (resampler.rs rewrite, planned with the cpal 0.18 lot).
-rubato = "0.16"
+# 5.x renamed FftFixedIn to Fft + FixedSync::Input and passes buffers as audioadapter
+# views; see resampler.rs. It also returns a little more or less than the exact ratio
+# per call — the total stays right, which one of the tests had to be taught.
+rubato = "5.0"
 
 # Optional: Ollama LLM client for text correction. `rustls` instead of its
 # default native-tls, so the `ollama` feature does not pull OpenSSL into the binary.

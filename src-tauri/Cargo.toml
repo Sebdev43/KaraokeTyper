@@ -89,10 +89,18 @@ transcribe-cpp = { version = "0.3.1", default-features = false }
 #
 # Voice Activity Detection (Silero VAD v4) uses ort directly (vad.rs). Only one ort
 # can be linked (`links = "onnxruntime"`), so its version is dictated by transcribe-rs
-# (0.3.12 requires exactly rc.13). `download-binaries` needs a TLS feature since
+# (0.3.11 requires exactly rc.12). `download-binaries` needs a TLS feature since
 # rc.11; rustls keeps OpenSSL out of the build.
-transcribe-rs = { version = "=0.3.12", default-features = false, features = ["onnx"] }
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
+#
+# Held at rc.12 on purpose. rc.13 builds and passes every test on a machine with
+# GCC 13's libstdc++ or newer, then fails to link on the ubuntu-22.04 release
+# runner: its prebuilt ONNX archives reference `_M_replace_cold`, a symbol that
+# older libstdc++ does not export. Moving the runner to ubuntu-24.04 would fix
+# the link and simultaneously raise the glibc floor of the .deb and the
+# AppImage, locking out everyone still on 22.04 — a worse trade than staying on
+# rc.12, which has no user-visible shortcoming here.
+transcribe-rs = { version = "=0.3.11", default-features = false, features = ["onnx"] }
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
 
 # Audio playback for feedback sounds
 rodio = "0.22"

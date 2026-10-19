@@ -84,6 +84,13 @@ Prefixes follow [Conventional Commits](https://www.conventionalcommits.org):
   comment restating the line below it is noise.
 - Clippy runs with `-D warnings`. An `#[allow]` needs a comment saying why.
 
+## Security advisories
+
+`cargo audit` runs in CI and blocks. Advisories it passes over live in
+`src-tauri/.cargo/audit.toml`, each with the reason it does not reach this
+application — never a bare id. If a new one appears, answer it there or fix it;
+do not widen the list to make the job green.
+
 ## Models
 
 `src-tauri/src/catalog/catalog.json` pins every model by SHA-256. Never edit a

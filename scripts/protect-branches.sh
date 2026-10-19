@@ -18,6 +18,7 @@ CHECKS=(
     "Rust — fmt, clippy, tests"
     "Frontend — build and lint"
     "check-dev-files"
+    "Rust — security advisories"
 )
 
 visibility=$(gh repo view "$REPO" --json visibility -q .visibility)

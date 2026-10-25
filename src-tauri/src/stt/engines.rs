@@ -203,8 +203,16 @@ pub fn transcribe(
                 }
             }
             if !language.is_empty() && !language.eq_ignore_ascii_case("auto") {
+                // Not a cosmetic warning: NVIDIA's model card states the model
+                // "automatically detects the language of the audio and transcribes it
+                // without requiring additional prompting", and there is no input to
+                // override that. On a long dictation the detection drifts mid-sentence
+                // and braids two languages together, which is why a pinned language
+                // caps this engine's share of the work — see
+                // `HybridPolicy::effective_threshold_secs`.
                 crate::dev_log!(
-                    "[STT/Parakeet] language hint '{}' ignored — model auto-detects.",
+                    "[STT/Parakeet] language hint '{}' ignored — model auto-detects and \
+                     offers no way to be told. Long dictations go to Whisper instead.",
                     language
                 );
             }

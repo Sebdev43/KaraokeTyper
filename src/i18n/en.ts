@@ -104,9 +104,17 @@ export const en: Dict = {
     hybridParakeetMissing:
       'Parakeet V3 is not installed: every dictation goes through Whisper until you download it under "Models" below.',
     hybridThreshold: (seconds: number) => `Switch to Whisper past ${seconds} s`,
+    hybridLanguageCapped: (configured: number, capped: number) =>
+      `You picked a language, and Parakeet cannot be told one: it detects by itself, and on a ` +
+      `long dictation it braids two languages into the same sentence. So the handover to ` +
+      `Whisper happens at ${capped}s instead of ${configured}s — Whisper is given the language ` +
+      `and holds it. Choose "Automatic detection" to use your ${configured}s.`,
+    languageAuto: "Automatic detection",
     spokenLanguage: "Dictation language",
     spokenLanguageHelp:
-      "The language the engine transcribes. It has no effect on the language of this window.",
+      "The language Whisper transcribes. It has no effect on the language of this window. " +
+      "Parakeet detects by itself and cannot be told: naming a language therefore keeps long " +
+      "dictations on Whisper.",
   },
   performance: {
     title: "Performance",

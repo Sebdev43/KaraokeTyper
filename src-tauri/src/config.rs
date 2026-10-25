@@ -243,10 +243,14 @@ impl AppConfig {
 
 impl From<&AppConfig> for HybridPolicy {
     fn from(config: &AppConfig) -> Self {
+        let language = config.language.trim();
         Self {
             primary: config.stt_backend,
             enabled: config.hybrid_engine_enabled,
             threshold_secs: config.hybrid_threshold_secs,
+            // An empty value and "auto" both mean "let the engine decide", which is
+            // the one case where Parakeet's own detection is what the user asked for.
+            language_pinned: !language.is_empty() && !language.eq_ignore_ascii_case("auto"),
         }
     }
 }
@@ -547,9 +551,35 @@ mod tests {
                 primary: EngineType::Whisper,
                 enabled: true,
                 threshold_secs: 12,
+                // The default config names a language ("fr"), so the policy is pinned
+                // and Parakeet's share is capped. Only "auto" or an empty value
+                // hands the choice back to the engine.
+                language_pinned: true,
             }
         );
         assert!(policy.is_active());
+    }
+
+    /// "auto" is the one case where Parakeet detecting the language itself is what was
+    /// asked for, so nothing caps its share of the work.
+    #[test]
+    fn automatic_language_leaves_the_policy_unpinned() {
+        for value in ["auto", "AUTO", "", "  "] {
+            let config = AppConfig {
+                language: value.to_string(),
+                ..AppConfig::default()
+            };
+            assert!(
+                !config.hybrid_policy().language_pinned,
+                "{value:?} must not pin a language"
+            );
+        }
+
+        let config = AppConfig {
+            language: "de".to_string(),
+            ..AppConfig::default()
+        };
+        assert!(config.hybrid_policy().language_pinned);
     }
 
     #[test]

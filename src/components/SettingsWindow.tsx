@@ -69,6 +69,15 @@ interface DownloadProgress {
 /** Bounds and default of the hold-or-toggle threshold, mirrored by the backend clamp. */
 const HOLD_THRESHOLD = { min: 100, max: 1000, step: 50, default: 300 } as const;
 
+/**
+ * Longest dictation Parakeet is trusted with once a language is named, mirroring
+ * `PARAKEET_LANGUAGE_SAFE_SECS` in `src-tauri/src/stt/hybrid.rs`.
+ *
+ * The backend applies the cap; this copy only exists so the screen can say so instead
+ * of showing a handover value that is not the one being used.
+ */
+const PARAKEET_LANGUAGE_SAFE_SECS = 20;
+
 const clampHoldThreshold = (ms: number) =>
   Math.min(HOLD_THRESHOLD.max, Math.max(HOLD_THRESHOLD.min, Math.round(ms)));
 
@@ -860,6 +869,12 @@ function SettingsWindow() {
   // Hybrid mode only makes sense with Whisper as primary: `model` is one field, so a
   // Parakeet primary has no Whisper model to hand long dictations to.
   const hybridAvailable = sttBackend === "whisper";
+  // Mirrors `HybridPolicy::effective_threshold_secs` in src-tauri/src/stt/hybrid.rs:
+  // Parakeet detects the language itself and cannot be told one, so naming a language
+  // holds its share of the work down. Kept in sync by hand — a Rust constant does not
+  // cross into the bundle.
+  const languageCapsThreshold =
+    language !== "auto" && hybridThresholdSecs > PARAKEET_LANGUAGE_SAFE_SECS;
   const parakeetInstalled = installedModels.some(
     (m) => m.engine_type === "parakeet" && m.installed,
   );
@@ -1291,6 +1306,14 @@ function SettingsWindow() {
                         value={[hybridThresholdSecs]}
                         onValueChange={([v]) => setHybridThresholdSecs(v)}
                       />
+                      {languageCapsThreshold && (
+                        <p className="text-xs text-muted-foreground">
+                          {t.stt.hybridLanguageCapped(
+                            hybridThresholdSecs,
+                            PARAKEET_LANGUAGE_SAFE_SECS,
+                          )}
+                        </p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1302,6 +1325,7 @@ function SettingsWindow() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
+                      <SelectItem value="auto">{t.stt.languageAuto}</SelectItem>
                       <SelectItem value="fr">Français (French)</SelectItem>
                       <SelectItem value="en">English</SelectItem>
                       <SelectItem value="es">Español (Spanish)</SelectItem>

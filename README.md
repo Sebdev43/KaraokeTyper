@@ -286,6 +286,18 @@ npm run tauri dev
 Models ship as GGUF. Sizes are the actual download, already quantised — Large v3
 was 3.1 GB before version 1.9.0.
 
+**Parakeet detects the language itself and cannot be told one.** NVIDIA's model card
+says it "automatically detects the language of the audio and transcribes it without
+requiring additional prompting" — there is no language input. On a short phrase that
+detection is reliable; on a longer one it drifts mid-sentence and returns two languages
+braided together.
+
+So the dictation language you pick is honoured by holding Parakeet to the short
+dictations: naming a language caps the hybrid handover at 20 seconds, and anything
+longer goes to Whisper, which is given the language and keeps it. Pick **Automatic
+detection** instead to use your own threshold in full. The Speech Recognition screen
+says which of the two is in force.
+
 ## Building
 
 ```bash
@@ -565,6 +577,18 @@ npm run tauri dev
 | **Whisper Large v3 Turbo** | 886 Mo | Rapide | Excellente | Presque Large v3, bien plus vite |
 | **Whisper Large-v3** | 1,16 Go | Plus lente | Meilleure | Précision maximale |
 | **Parakeet TDT 0.6B v3** | 640 Mo | Plus rapide | Très bonne | 25 langues européennes, détectées seules |
+
+**Parakeet détecte la langue lui-même et ne peut pas se la faire imposer.** La fiche du
+modèle chez NVIDIA indique qu'il « détecte automatiquement la langue de l'audio et le
+transcrit sans invite supplémentaire » : il n'existe aucune entrée de langue. Sur une
+phrase courte, cette détection est fiable ; sur une dictée plus longue elle dérape en
+cours de phrase et rend deux langues entremêlées.
+
+La langue que vous choisissez est donc respectée en réservant Parakeet aux dictées
+courtes : nommer une langue plafonne la bascule hybride à 20 secondes, et tout ce qui
+dépasse part sur Whisper, à qui la langue est transmise et qui s'y tient. Choisissez
+**Détection automatique** pour utiliser pleinement votre propre seuil. L'écran
+Reconnaissance vocale indique lequel des deux s'applique.
 
 Les modèles sont au format GGUF. Les tailles sont celles du téléchargement réel,
 déjà quantifié — Large v3 pesait 3,1 Go avant la version 1.9.0.

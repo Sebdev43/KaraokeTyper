@@ -252,13 +252,25 @@ impl EngineSlots {
         let parakeet_installed = lock(&self.fast).is_some()
             || model_downloader::installed_model_path_for(EngineType::Parakeet).is_some();
         let lane = policy.lane_for(duration_secs, parakeet_installed);
-        crate::dev_log!(
-            "[STT] Hybrid: {:.1}s vs {}s threshold, parakeet_installed={} → {:?}",
-            duration_secs,
-            policy.threshold_secs,
-            parakeet_installed,
-            lane
-        );
+        if policy.threshold_capped_by_language() {
+            crate::dev_log!(
+                "[STT] Hybrid: {:.1}s vs {}s threshold (capped from {}s — a language is \
+                 pinned and Parakeet cannot be told one), parakeet_installed={} → {:?}",
+                duration_secs,
+                policy.effective_threshold_secs(),
+                policy.threshold_secs,
+                parakeet_installed,
+                lane
+            );
+        } else {
+            crate::dev_log!(
+                "[STT] Hybrid: {:.1}s vs {}s threshold, parakeet_installed={} → {:?}",
+                duration_secs,
+                policy.effective_threshold_secs(),
+                parakeet_installed,
+                lane
+            );
+        }
         lane
     }
 

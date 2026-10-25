@@ -5,6 +5,17 @@ All notable changes to KaraokeTyper will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Non publié]
+
+### Corrigé
+
+- **La langue dictée est enfin respectée.** Parakeet détecte la langue lui-même et n'offre aucun moyen de se la faire imposer — la fiche du modèle chez NVIDIA le dit explicitement. Sur une dictée longue, cette détection dérape en cours de phrase et rend deux langues entremêlées : une phrase dictée entièrement en français revenait en « In parallel to the recherche and tutorial in the detail ». Le choix de langue était donc accepté puis silencieusement jeté à chaque dictée partie sur Parakeet. Désormais, nommer une langue plafonne la bascule hybride à 20 secondes : les dictées courtes gardent la réponse instantanée de Parakeet, les longues passent à Whisper, à qui la langue est transmise.
+
+### Ajouté
+
+- **Option « Détection automatique »** dans la langue dictée. Elle existait côté moteur mais n'était pas proposée : impossible de demander la détection, et donc d'utiliser son propre seuil au-delà de 20 secondes.
+- L'écran Reconnaissance vocale explique, quand c'est le cas, pourquoi la bascule se fait plus tôt que le réglage affiché.
+
 ## [1.9.0] - 2026-10-14
 
 **Une action vous est demandée : retéléchargez votre modèle Whisper.** Le moteur lit désormais des fichiers au format GGUF, et celui installé par une version précédente n'est plus lisible. Ouvrez Paramètres → Modèles, relancez le téléchargement : le nouveau fichier est deux à trois fois plus léger. L'ancien reste sur votre disque — l'application vous dit où il se trouve et sa taille, à vous de décider.

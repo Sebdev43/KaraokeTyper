@@ -109,9 +109,17 @@ export const fr = {
     hybridParakeetMissing:
       "Parakeet V3 n'est pas installé : toutes les dictées passent par Whisper jusqu'à son téléchargement dans \"Modèles\" ci-dessous.",
     hybridThreshold: (seconds: number) => `Bascule vers Whisper au-delà de ${seconds} s`,
+    hybridLanguageCapped: (configured: number, capped: number) =>
+      `Vous avez choisi une langue, et Parakeet ne sait pas en tenir compte : il détecte seul, ` +
+      `et sur une dictée longue il mélange deux langues dans la même phrase. La bascule vers ` +
+      `Whisper se fait donc à ${capped} s au lieu de ${configured} s — Whisper, lui, reçoit la ` +
+      `langue et s'y tient. Choisissez « Détection automatique » pour utiliser vos ${configured} s.`,
+    languageAuto: "Détection automatique",
     spokenLanguage: "Langue dictée",
     spokenLanguageHelp:
-      "La langue que le moteur transcrit. Elle n'a aucun effet sur la langue de cette fenêtre.",
+      "La langue que Whisper transcrit. Elle n'a aucun effet sur la langue de cette fenêtre. " +
+      "Parakeet détecte seul et ne peut pas en tenir compte : nommer une langue réserve donc " +
+      "les dictées longues à Whisper.",
   },
   performance: {
     title: "Performance",

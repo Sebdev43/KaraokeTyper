@@ -106,7 +106,7 @@ ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "
 rodio = "0.22"
 
 # Audio capture (cross-platform: ALSA on Linux via pipewire-alsa, CoreAudio on macOS, WASAPI on Windows)
-cpal = "0.15"
+cpal = "0.17"
 # Wait-free SPSC ring between the cpal callback and the audio worker (no allocation
 # on the audio thread)
 rtrb = "0.4"

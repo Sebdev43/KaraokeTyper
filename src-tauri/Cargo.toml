@@ -81,7 +81,7 @@ rdev = "0.5"
 # decode knobs it exposes — temperature fallback above all, which neither
 # transcribe-rs nor whisper-rs surfaces, and whose absence shows up as replaced
 # words on long dictations. Its GPU backend follows the `gpu-*` features below.
-transcribe-cpp = { version = "0.3.1", default-features = false }
+transcribe-cpp = { version = "0.4.1", default-features = false }
 #
 # transcribe-rs keeps the ONNX engines (Parakeet; Canary/Cohere available). Reduced
 # to `onnx`: linking two ggml builds (whisper-rs's and transcribe-cpp's) is not

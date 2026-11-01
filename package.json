@@ -23,31 +23,31 @@
     "@radix-ui/react-slider": "^1.6.1",
     "@radix-ui/react-slot": "^1.5.0",
     "@radix-ui/react-switch": "^1.4.1",
-    "@tauri-apps/api": "^2.12.3",
-    "@tauri-apps/plugin-dialog": "^2.8.2",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
     "@tauri-apps/plugin-global-shortcut": "^2.4.1",
-    "@tauri-apps/plugin-opener": "^2.7.1",
+    "@tauri-apps/plugin-opener": "^2.7.2",
     "@tauri-apps/plugin-os": "^2.4.0",
     "@tauri-apps/plugin-process": "^2.4.0",
-    "@tauri-apps/plugin-shell": "^2.5.0",
-    "@tauri-apps/plugin-updater": "^2.13.3",
+    "@tauri-apps/plugin-shell": "^2.6.0",
+    "@tauri-apps/plugin-updater": "^2.14.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.57.0",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0",
+    "lucide-react": "^1.64.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tailwind-merge": "^3.7.0",
-    "zustand": "^5.0.15"
+    "zustand": "^5.0.16"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.15",
+    "@biomejs/biome": "^2.6.4",
     "@tailwindcss/vite": "^4.3.3",
-    "@tauri-apps/cli": "^2.12.2",
+    "@tauri-apps/cli": "^2.12.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.3.4"
+    "vite": "^8.3.5"
   }
 }

@@ -99,8 +99,8 @@ transcribe-cpp = { version = "0.3.1", default-features = false }
 # the link and simultaneously raise the glibc floor of the .deb and the
 # AppImage, locking out everyone still on 22.04 — a worse trade than staying on
 # rc.12, which has no user-visible shortcoming here.
-transcribe-rs = { version = "=0.3.11", default-features = false, features = ["onnx"] }
-ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
+transcribe-rs = { version = "=0.3.12", default-features = false, features = ["onnx"] }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-rustls", "api-24"] }
 
 # Audio playback for feedback sounds
 rodio = "0.22"
